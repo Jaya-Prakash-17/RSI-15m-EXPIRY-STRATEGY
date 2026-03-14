@@ -397,24 +397,31 @@ class LiveTrader:
             best = alert_candidates[0]
             self.logger.info(f"Best ALERT from {best['underlying']}: {best['symbol']}")
             
-            # Send Telegram alert with full setup details
-            signal = best['signal']
-            targets = signal.get('targets', [])
-            self.telegram.alert_setup(
-                symbol=best['symbol'],
-                underlying=best['underlying'],
-                strike=best['strike'],
-                opt_type=best['opt_type'],
-                alert_high=signal['price'],
-                alert_low=signal.get('alert_low', signal['sl'] + 1),
-                sl=signal['sl'],
-                t1=targets[0] if len(targets) > 0 else 0,
-                t2=targets[1] if len(targets) > 1 else 0,
-                t3=targets[2] if len(targets) > 2 else 0,
-                rsi=signal.get('rsi', 0),
-                expiry_date=best.get('expiry_date'),
-                alert_validity_candles=self.config['strategy'].get('alert_validity', 1)
-            )
+            # Send Telegram alert for ALL candidates (ranked), not just the best
+            # This lets you manually pick a different strike/CE/PE if you prefer
+            for rank, candidate in enumerate(alert_candidates, 1):
+                signal = candidate['signal']
+                targets = signal.get('targets', [])
+                # Add ranking prefix: ⭐ for #1 (auto-selected), numbers for others
+                rank_label = f"⭐ #{rank} (AUTO)" if rank == 1 else f"#{rank}"
+                self.telegram.alert_setup(
+                    symbol=f"{rank_label} {candidate['symbol']}" if rank > 1 else candidate['symbol'],
+                    underlying=candidate['underlying'],
+                    strike=candidate['strike'],
+                    opt_type=candidate['opt_type'],
+                    alert_high=signal['price'],
+                    alert_low=signal.get('alert_low', signal['sl'] + 1),
+                    sl=signal['sl'],
+                    t1=targets[0] if len(targets) > 0 else 0,
+                    t2=targets[1] if len(targets) > 1 else 0,
+                    t3=targets[2] if len(targets) > 2 else 0,
+                    rsi=signal.get('rsi', 0),
+                    expiry_date=candidate.get('expiry_date'),
+                    alert_validity_candles=self.config['strategy'].get('alert_validity', 1)
+                )
+            
+            if len(alert_candidates) > 1:
+                self.logger.info(f"📱 Sent {len(alert_candidates)} alert candidates to Telegram")
             
             self._place_pending_entry(best)
     
@@ -648,15 +655,32 @@ class LiveTrader:
         # Consume the alert
         self.strategy.consume_alert(trading_symbol.replace('-', '_'))
         
-        # Place SL order
+        # Place SL order — CRITICAL: retry up to 3 times, emergency exit if all fail
         sl_price = self._round_to_tick(signal['sl'], underlying)
-        sl_order = self.om.place_sl_order(trading_symbol, qty, sl_price, trading_symbol)
-        sl_order_id = sl_order.get('groww_order_id') if sl_order else None
+        sl_order_id = None
         
-        if sl_order_id:
-            self.logger.info(f"🛡️ SL Order Placed: {sl_order_id} @ ₹{sl_price}")
-        else:
-            self.logger.warning(f"⚠️ Failed to place SL order")
+        for attempt in range(1, 4):
+            sl_order = self.om.place_sl_order(trading_symbol, qty, sl_price, trading_symbol)
+            sl_order_id = sl_order.get('groww_order_id') if sl_order else None
+            if sl_order_id:
+                self.logger.info(f"🛡️ SL Order Placed: {sl_order_id} @ ₹{sl_price}")
+                break
+            self.logger.warning(f"⚠️ SL order attempt {attempt}/3 failed for {trading_symbol}")
+            if attempt < 3:
+                import time as _time
+                _time.sleep(1)
+        
+        # CRITICAL: Never hold an unprotected position
+        if not sl_order_id and not self.paper_trading:
+            self.logger.critical(f"🚨 SL PLACEMENT FAILED after 3 attempts for {trading_symbol}. EMERGENCY EXIT.")
+            # Place immediate market exit
+            try:
+                self.om.place_exit_order(trading_symbol, qty, trading_symbol, "SL_PLACEMENT_FAILED")
+                self.logger.critical(f"🚨 Emergency market exit placed for {trading_symbol} ({qty} qty)")
+            except Exception as e:
+                self.logger.critical(f"🚨 EMERGENCY EXIT ALSO FAILED: {e} — MANUAL INTERVENTION REQUIRED")
+            self.telegram.square_off(trading_symbol, fill_price, fill_price, qty, 'SL_PLACEMENT_FAILED')
+            return
         
         # Place TARGET orders (limit sell orders at each target)
         target_order_ids = []
@@ -960,7 +984,7 @@ class LiveTrader:
         # Update trail state
         exit_orders['trail_state'] = tp_level
         
-        # Trail SL
+        # Trail SL — same rule as _handle_tp_hit and _handle_multi_lot_exits
         new_sl = 0
         if tp_level == 1:
             new_sl = trade['entry_price']  # Move to cost
@@ -972,7 +996,27 @@ class LiveTrader:
             exit_orders['current_sl'] = new_sl
             self.logger.info(f"📈 [PAPER] Trailing SL to ₹{new_sl}")
         
-        self.tracker.update_trade(trade_id, {'exit_orders': exit_orders})
+        # CRITICAL FIX: Calculate partial P&L for paper trades too
+        lot_size = self.config['indices'][underlying]['lot_size']
+        partial_qty = lot_size  # 1 lot per partial exit
+        partial_profit = (ltp - float(trade['entry_price'])) * partial_qty
+        self.daily_pnl += partial_profit
+        trade['partial_pnl'] = trade.get('partial_pnl', 0) + partial_profit
+        
+        # Update remaining qty
+        remaining = trade.get('remaining_qty', trade['qty']) - partial_qty
+        trade['remaining_qty'] = remaining
+        
+        self.tracker.update_trade(trade_id, {
+            'exit_orders': exit_orders,
+            'remaining_qty': remaining,
+            'partial_pnl': trade['partial_pnl']
+        })
+        
+        self.logger.info(f"✅ [PAPER] Partial Exit TP{tp_level}: {partial_qty} units | P&L: ₹{partial_profit:.2f}")
+        
+        # Telegram: notify
+        self.telegram.target_hit(trade['symbol'], tp_level, ltp, float(trade['entry_price']), partial_qty, new_sl if new_sl > 0 else None)
 
     def _handle_tp_hit(self, trade, tp_level, order_status):
         """Handle logic when a Target is hit (Partial Exit + Trail SL)."""
@@ -988,21 +1032,30 @@ class LiveTrader:
         new_remaining = current_remaining - qty_filled
         self.tracker.update_trade(trade_id, {'remaining_qty': new_remaining})
         
-        self.logger.info(f"Partial Exit {tp_level}: Exited {qty_filled}, Remaining {new_remaining}")
+        # CRITICAL FIX: Calculate and add partial profit to daily P&L
+        # Without this, daily loss limit check uses stale numbers all day
+        partial_profit = (fill_price - float(trade['entry_price'])) * qty_filled
+        self.daily_pnl += partial_profit
+        trade['partial_pnl'] = trade.get('partial_pnl', 0) + partial_profit
+        self.tracker.update_trade(trade_id, {
+            'partial_pnl': trade['partial_pnl']
+        })
+        
+        self.logger.info(f"Partial Exit TP{tp_level}: Exited {qty_filled} @ ₹{fill_price} | Partial P&L: ₹{partial_profit:.2f} | Remaining {new_remaining}")
         
         # Log partial exit
         self.trade_logger.log_partial_exit(trade, fill_price, qty_filled, f"TP{tp_level}", self.daily_pnl)
         
-        # TRAIL SL
+        # TRAIL SL — use cost-to-cost (entry_price) at TP1, TP1 price at TP2
+        # This matches the conservative trailing approach
         new_sl_price = 0
         if tp_level == 1:
-            # Move SL to Cost
+            # Move SL to Cost (entry price)
             new_sl_price = trade['entry_price']
             exit_orders['trail_state'] = 1
         elif tp_level == 2:
             # Move SL to TP1
             exit_orders['trail_state'] = 2
-            # Use TP1 price from targets if available
             targets = trade.get('targets', [])
             if len(targets) > 0:
                 new_sl_price = targets[0]
@@ -1018,6 +1071,16 @@ class LiveTrader:
              # Update internal state
              exit_orders['current_sl'] = new_sl_price
              self.tracker.update_trade(trade_id, {'exit_orders': exit_orders})
+        
+        # Telegram: notify target hit
+        self.telegram.target_hit(
+            symbol=trade['symbol'],
+            tp_num=tp_level,
+            price=fill_price,
+            entry_price=float(trade['entry_price']),
+            qty_exited=qty_filled,
+            new_sl=new_sl_price if new_sl_price > 0 else None
+        )
 
     def _monitor_legacy_trade(self, trade, ltp):
         """Monitor trades without exit_orders (legacy format)."""
@@ -1049,11 +1112,17 @@ class LiveTrader:
             self._close_entire_position(trade, exit_price, reason)
 
     def _handle_multi_lot_exits(self, trade, ltp, exit_orders, targets, trail_state, alert_range):
-        """Handle multi-lot mode: partial exits + trailing SL."""
+        """Handle multi-lot mode: partial exits + trailing SL.
+        
+        Trailing SL rule (matches _handle_tp_hit for live mode):
+        - TP1: Trail SL to entry_price (cost-to-cost)
+        - TP2: Trail SL to targets[0] (TP1 price)
+        """
         trade_id = trade['trade_id']
         symbol = trade['symbol']
         trading_symbol = trade['trading_symbol']
         sl_order_id = trade.get('sl_order_id')
+        entry_price = float(trade['entry_price'])
         
         # Check TP1 hit (not yet trailed)
         if ltp >= targets[0] and trail_state == 0:
@@ -1067,21 +1136,27 @@ class LiveTrader:
             self.om.execute_partial_exit(symbol, trading_symbol, qty, "TP1")
             exit_order['status'] = 'executed'
             
-            # Trail SL
-            new_sl = exit_orders['current_sl'] + alert_range
+            # CRITICAL FIX: Trail SL to entry_price (cost-to-cost) — matches _handle_tp_hit
+            new_sl = self._round_to_tick(entry_price, trade.get('underlying', 'NIFTY'))
             exit_orders['current_sl'] = new_sl
             exit_orders['trail_state'] = 1
             
-            # Calculate remaining qty
+            # Calculate remaining qty and partial P&L
             remaining_qty = trade.get('remaining_qty', trade['qty']) - qty
             trade['remaining_qty'] = remaining_qty
+            partial_profit = (ltp - entry_price) * qty
+            self.daily_pnl += partial_profit
+            trade['partial_pnl'] = trade.get('partial_pnl', 0) + partial_profit
             
             # Modify broker SL order with new trigger and qty
             if sl_order_id:
                 self.om.modify_sl_order(sl_order_id, new_sl, remaining_qty)
                 self.logger.info(f"🛡️ Broker SL Modified: {sl_order_id} → ₹{new_sl} | Qty: {remaining_qty}")
             
-            self.logger.info(f"✅ Partial Exit: {qty} lots | SL trailed to ₹{new_sl}")
+            self.logger.info(f"✅ Partial Exit TP1: {qty} units | P&L: ₹{partial_profit:.2f} | SL trailed to ₹{new_sl}")
+            
+            # Telegram: notify
+            self.telegram.target_hit(symbol, 1, ltp, entry_price, qty, new_sl)
         
         # Check TP2 hit
         elif ltp >= targets[1] and trail_state == 1:
@@ -1095,21 +1170,27 @@ class LiveTrader:
             self.om.execute_partial_exit(symbol, trading_symbol, qty, "TP2")
             exit_order['status'] = 'executed'
             
-            # Trail SL
-            new_sl = exit_orders['current_sl'] + alert_range
+            # CRITICAL FIX: Trail SL to TP1 price — matches _handle_tp_hit
+            new_sl = self._round_to_tick(targets[0], trade.get('underlying', 'NIFTY'))
             exit_orders['current_sl'] = new_sl
             exit_orders['trail_state'] = 2
             
-            # Calculate remaining qty
+            # Calculate remaining qty and partial P&L
             remaining_qty = trade.get('remaining_qty', trade['qty']) - qty
             trade['remaining_qty'] = remaining_qty
+            partial_profit = (ltp - entry_price) * qty
+            self.daily_pnl += partial_profit
+            trade['partial_pnl'] = trade.get('partial_pnl', 0) + partial_profit
             
             # Modify broker SL order with new trigger and qty
             if sl_order_id:
                 self.om.modify_sl_order(sl_order_id, new_sl, remaining_qty)
                 self.logger.info(f"🛡️ Broker SL Modified: {sl_order_id} → ₹{new_sl} | Qty: {remaining_qty}")
             
-            self.logger.info(f"✅ Partial Exit: {qty} lots | SL trailed to ₹{new_sl}")
+            self.logger.info(f"✅ Partial Exit TP2: {qty} units | P&L: ₹{partial_profit:.2f} | SL trailed to ₹{new_sl}")
+            
+            # Telegram: notify
+            self.telegram.target_hit(symbol, 2, ltp, entry_price, qty, new_sl)
         
         # Check TP3 hit (final exit)
         elif ltp >= targets[2] and trail_state == 2:

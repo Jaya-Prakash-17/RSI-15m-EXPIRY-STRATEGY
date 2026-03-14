@@ -158,7 +158,13 @@ class GrowwClient:
             return {"status": "ERROR"}
 
     def get_ltp(self, symbol):
-        """Get Last Traded Price."""
+        """Get Last Traded Price.
+        
+        For INDEX spot prices: pass just the name ('NIFTY', 'BANKNIFTY', 'SENSEX')
+            → queries CASH segment with correct index symbol mapping.
+        For OPTION prices: pass the FULL Groww symbol (e.g. 'NSE-NIFTY-25Jan24-21500-CE')
+            → queries FNO segment. Do NOT pass just 'NIFTY' for option LTP.
+        """
         try:
             # Index Mapping Logic for LTP
             index_candidates = {

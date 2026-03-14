@@ -97,10 +97,14 @@ class PerformanceReporter:
         # Risk-adjusted metrics
         std_pnl = pnl.std() if len(pnl) > 1 else 0
         
-        # Sharpe Ratio (annualized, assuming daily returns)
-        # Using 252 trading days per year
+        # Sharpe Ratio (annualized)
+        # For expiry-only strategy (~1 trade/week), use sqrt(52) not sqrt(252)
+        # sqrt(252) would overstate Sharpe by ~2.2× for weekly strategies
+        trade_only_on_expiry = self.config.get('strategy', {}).get('trade_only_on_expiry', False)
+        annualization_factor = np.sqrt(52) if trade_only_on_expiry else np.sqrt(252)
+        
         if std_pnl > 0:
-            sharpe_ratio = (avg_pnl / std_pnl) * np.sqrt(252)
+            sharpe_ratio = (avg_pnl / std_pnl) * annualization_factor
         else:
             sharpe_ratio = 0
         
@@ -108,7 +112,7 @@ class PerformanceReporter:
         negative_returns = pnl[pnl < 0]
         downside_std = negative_returns.std() if len(negative_returns) > 1 else 0
         if downside_std > 0:
-            sortino_ratio = (avg_pnl / downside_std) * np.sqrt(252)
+            sortino_ratio = (avg_pnl / downside_std) * annualization_factor
         else:
             sortino_ratio = 0
         
@@ -386,18 +390,8 @@ class PerformanceReporter:
                 elif 'SENSEX' in trade['symbol']:
                     underlying = 'SENSEX'
                 
-                # Determine lot size based on year
-                try:
-                    trade_year = pd.to_datetime(trade['entry_time']).year
-                except:
-                    trade_year = 2026
-                    
-                if underlying == 'NIFTY':
-                    lot_size = 75 if trade_year <= 2025 else 65
-                elif underlying == 'BANKNIFTY':
-                    lot_size = 35 if trade_year <= 2025 else 30
-                else:
-                    lot_size = 20
+                # Use config for lot size (no hardcoded values)
+                lot_size = self.config.get('indices', {}).get(underlying, {}).get('lot_size', 50)
                 
                 lots = qty // lot_size if lot_size > 0 else 0
                 
