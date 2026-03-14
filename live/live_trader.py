@@ -11,6 +11,7 @@ from execution.trade_tracker import TradeTracker
 from strategy.expiry_rsi_breakout import ExpiryRSIBreakout
 from core.groww_client import GrowwClient
 from utils.trade_logger import TradeLogger
+from utils.telegram_notifier import TelegramNotifier
 
 class LiveTrader:
     def __init__(self, config):
@@ -22,6 +23,7 @@ class LiveTrader:
         self.strategy = ExpiryRSIBreakout(config)
         self.tracker = TradeTracker()  # Bot trade tracking
         self.trade_logger = TradeLogger(config)  # CSV trade audit log
+        self.telegram = TelegramNotifier()  # Telegram alerts
         
         # Paper trading mode
         self.paper_trading = config['trading'].get('paper_trading', True)
@@ -106,6 +108,14 @@ class LiveTrader:
         self.logger.info(f"="*60)
         self.logger.info(f"Trading today on: {', '.join(self.underlyings)}")
         self.logger.info(f"="*60)
+        
+        # Notify Telegram that bot has started
+        mode = "PAPER" if self.paper_trading else "LIVE"
+        self.telegram.bot_started(
+            mode=mode,
+            window_start=self.config['trading']['window']['start'],
+            window_end=self.config['trading']['window']['end']
+        )
         
         self.expiry_dates = {}
         self.spot_symbols = {}
@@ -386,6 +396,26 @@ class LiveTrader:
             alert_candidates.sort(key=lambda x: (x['dist'], -x['volume']))
             best = alert_candidates[0]
             self.logger.info(f"Best ALERT from {best['underlying']}: {best['symbol']}")
+            
+            # Send Telegram alert with full setup details
+            signal = best['signal']
+            targets = signal.get('targets', [])
+            self.telegram.alert_setup(
+                symbol=best['symbol'],
+                underlying=best['underlying'],
+                strike=best['strike'],
+                opt_type=best['opt_type'],
+                alert_high=signal['price'],
+                alert_low=signal.get('alert_low', signal['sl'] + 1),
+                sl=signal['sl'],
+                t1=targets[0] if len(targets) > 0 else 0,
+                t2=targets[1] if len(targets) > 1 else 0,
+                t3=targets[2] if len(targets) > 2 else 0,
+                rsi=signal.get('rsi', 0),
+                expiry_date=best.get('expiry_date'),
+                alert_validity_candles=self.config['strategy'].get('alert_validity', 1)
+            )
+            
             self._place_pending_entry(best)
     
     def _cancel_pending_entry(self, symbol, reason):
@@ -409,6 +439,14 @@ class LiveTrader:
         
         # Remove from tracking
         del self.pending_entries[symbol]
+        
+        # Telegram: notify that setup expired/was negated
+        if reason == 'EXPIRED':
+            parts = symbol.split('-')
+            underlying = parts[1] if len(parts) > 1 else ''
+            strike = float(parts[3]) if len(parts) > 3 else 0
+            opt_type = parts[4] if len(parts) > 4 else ''
+            self.telegram.alert_expired(symbol, underlying, strike, opt_type, pending.get('trigger_price', 0))
     
     def _place_pending_entry(self, candidate):
         """Place a pending SL-M BUY order when an alert is generated."""
@@ -572,6 +610,18 @@ class LiveTrader:
                 })
                 
                 self.logger.info(f"✅ Trade Activated: {trade_id} | {underlying} | Fill: ₹{fill_price} | SL Order: {sl_order_id} | Mode: {exit_orders['mode']}")
+                
+                # Telegram: entry confirmed
+                self.telegram.entry_confirmed(
+                    symbol=symbol,
+                    entry_price=fill_price,
+                    sl=sl_price,
+                    t1=signal['targets'][0] if len(signal['targets']) > 0 else 0,
+                    t2=signal['targets'][1] if len(signal['targets']) > 1 else 0,
+                    t3=signal['targets'][2] if len(signal['targets']) > 2 else 0,
+                    qty=qty,
+                    mode=exit_orders['mode']
+                )
             else:
                 # Order failed/rejected - DO NOT consume alert
                 self.logger.warning(f"Order {order_id} not filled (Rejected/Cancelled). Alert remains active.")
@@ -687,6 +737,18 @@ class LiveTrader:
         })
         
         self.logger.info(f"✅ Trade Created: {trade_id} | {underlying} | Entry: ₹{fill_price} | SL: ₹{sl_price} | Targets: {targets}")
+        
+        # Telegram: entry confirmed
+        self.telegram.entry_confirmed(
+            symbol=trading_symbol,
+            entry_price=fill_price,
+            sl=sl_price,
+            t1=targets[0] if len(targets) > 0 else 0,
+            t2=targets[1] if len(targets) > 1 else 0,
+            t3=targets[2] if len(targets) > 2 else 0,
+            qty=qty,
+            mode=exit_mode
+        )
     
     def _monitor_pending_entries(self):
         """Monitor pending entry orders for fills.
@@ -1129,6 +1191,17 @@ class LiveTrader:
         self.tracker.close_trade(trade_id, ltp, reason, total_pnl)
         
         self.logger.info(f"Trade closed: {trade_id} | P&L: ₹{total_pnl:.2f} | Daily P&L: ₹{self.daily_pnl:.2f}")
+        
+        # Telegram: notify based on exit reason
+        entry_price = float(trade['entry_price'])
+        if 'SL' in reason:
+            self.telegram.sl_hit(symbol, ltp, entry_price, remaining_qty, self.daily_pnl)
+        elif 'TP' in reason:
+            tp_num = int(reason.replace('TP', '').replace('_HIT', '')) if reason.replace('TP', '').replace('_HIT', '').isdigit() else 0
+            new_sl = exit_orders.get('current_sl') if 'exit_orders' in trade else None
+            self.telegram.target_hit(symbol, tp_num, ltp, entry_price, remaining_qty, new_sl)
+        elif 'SQ_OFF' in reason or 'DAILY_LOSS' in reason:
+            self.telegram.square_off(symbol, ltp, entry_price, remaining_qty, reason)
 
     def run(self):
         """Main trading loop."""
@@ -1223,6 +1296,7 @@ class LiveTrader:
                 # Check daily loss limit
                 if self._check_daily_loss_limit():
                     self.logger.critical("Daily loss limit reached. Stopping trading.")
+                    self.telegram.daily_loss_limit_hit(self.daily_pnl, self.max_loss_per_day)
                     # Square off remaining positions
                     active_trades = self.tracker.get_active_trades()
                     for trade in active_trades:
@@ -1267,3 +1341,12 @@ class LiveTrader:
         self.logger.info("=" * 60)
         self.logger.info(f" TRADING SESSION ENDED | Daily P&L: ₹{self.daily_pnl:.2f}")
         self.logger.info("=" * 60)
+        
+        # Telegram: daily summary
+        closed_trades = self.tracker.get_closed_trades_today() if hasattr(self.tracker, 'get_closed_trades_today') else []
+        total = len(closed_trades)
+        wins = sum(1 for t in closed_trades if float(t.get('pnl', 0)) > 0)
+        losses = total - wins
+        best = max((float(t.get('pnl', 0)) for t in closed_trades), default=None) if closed_trades else None
+        worst = min((float(t.get('pnl', 0)) for t in closed_trades), default=None) if closed_trades else None
+        self.telegram.daily_summary(total, wins, losses, self.daily_pnl, best, worst)
