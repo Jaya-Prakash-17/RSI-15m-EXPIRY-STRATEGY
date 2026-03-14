@@ -1,0 +1,49 @@
+backtest:
+  start_date: '2026-01-01'
+  end_date: '2026-03-13'
+capital:
+  initial: 100000
+data:
+  download_retry_count: 3
+  storage_path: data
+indices:
+  BANKNIFTY:
+    expiry_day: Wednesday
+    lot_size: 30
+    tick_size: 0.05
+  NIFTY:
+    expiry_day: Tuesday  # Current expiry day (code handles historical Thursday → Tuesday change)
+    lot_size: 65
+    tick_size: 0.05
+  SENSEX:
+    expiry_day: Thursday
+    lot_size: 20
+    tick_size: 0.05
+risk:
+  lot_sizing:
+    type: fixed_capital
+    value: 100000
+  max_loss_per_day: 5000
+strategy:
+  alert_validity: 1  # Candles allowed for price to break alert_high (after alert candle)
+  exit_mode: multi_lot #single_lot or multi_lot
+  lots_per_trade: 3
+  partial_exits:
+    tp1_percent: 33
+    tp2_percent: 33
+    tp3_percent: 34
+  rsi:
+    period: 9
+    threshold: 60
+    warmup_periods: 2
+  trade_only_on_expiry: false
+  trailing_stop:
+    enabled: true
+    move_by_alert_range: true
+trading:
+  paper_trading: true  # Set to false for REAL trading with actual money
+  trade_log_file: "logs/PAPER_TRADES_LOG.csv"  # Separate file for trade audit trail
+  window:
+    auto_square_off: '15:25'
+    end: '15:00'
+    start: '10:15'
