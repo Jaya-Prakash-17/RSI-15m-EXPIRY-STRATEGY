@@ -1057,9 +1057,12 @@ class LiveTrader:
             self._close_entire_position(trade, ltp, 'TP3')
 
     def _handle_single_lot_exits(self, trade, ltp, exit_orders, targets, trail_state, alert_range):
-        """Handle single-lot mode: exit fully at TP2 (matching backtest behaviour)."""
+        """Handle single-lot mode: exit fully at configured target (default: TP2, matching backtest)."""
         trade_id = trade['trade_id']
         sl_order_id = trade.get('sl_order_id')
+        
+        # BUG-003 FIX: Config-driven single-lot exit target (default: T2)
+        target_idx = self.config['strategy'].get('single_lot_exit_target', 2) - 1
         
         # Check TP1 hit (trail SL, don't exit)
         if ltp >= targets[0] and trail_state == 0:
@@ -1077,12 +1080,12 @@ class LiveTrader:
             
             self.logger.info(f"✅ SL trailed to ₹{new_sl} (no exit)")
         
-        # Check TP2 hit (FINAL EXIT for single-lot mode — matches backtest)
-        elif ltp >= targets[1] and trail_state == 1:
-            self.logger.info(f"🎯 TP2 HIT (FINAL) for {trade_id} at ₹{ltp}")
+        # Check configured target hit (FINAL EXIT for single-lot mode)
+        elif ltp >= targets[target_idx] and trail_state >= 1:
+            self.logger.info(f"🎯 TP{target_idx+1} HIT (FINAL) for {trade_id} at ₹{ltp}")
             
-            # Close entire position at TP2
-            self._close_entire_position(trade, ltp, 'TP2')
+            # Close entire position
+            self._close_entire_position(trade, ltp, f'TP{target_idx+1}')
 
     def _close_entire_position(self, trade, ltp, reason):
         """Close entire position and update tracker."""

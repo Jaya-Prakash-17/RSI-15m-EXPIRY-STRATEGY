@@ -345,8 +345,8 @@ class IntradayEngine:
                             'dist': dist,
                             'volume': row['volume']
                         })
-                    except:
-                        pass
+                    except (ValueError, IndexError) as e:
+                        self.logger.warning(f"Symbol parse failed: {symbol} — {e}")
             
             if candidates:
                 candidates.sort(key=lambda x: (x['dist'], -x['volume']))
@@ -368,17 +368,10 @@ class IntradayEngine:
         sl = self._round_to_tick(signal['sl'], underlying)
         targets = [self._round_to_tick(tgt, underlying) for tgt in signal['targets']]
         
-        # Get lot size - handle historical changes
-        # NIFTY: 75 in 2025, 65 in 2026
-        # BANKNIFTY: 35 in 2025, 30 in 2026
-        trade_year = time.year if hasattr(time, 'year') else time.date().year
-        
-        if underlying == 'NIFTY':
-            lot_size = 75 if trade_year <= 2025 else 65
-        elif underlying == 'BANKNIFTY':
-            lot_size = 35 if trade_year <= 2025 else 30
-        else:
-            lot_size = self.config['indices'][underlying]['lot_size']
+        # BUG-004 FIX: Use config for lot size instead of hardcoded values
+        # Historical lot sizes (NIFTY 75→65, BANKNIFTY 35→30 in Sep 2025)
+        # are documented in git history. Config always has current values.
+        lot_size = self.config['indices'][underlying]['lot_size']
         
         # Get lots_per_trade from config (for multi-lot mode)
         lots_per_trade = self.config['strategy'].get('lots_per_trade', 1)
@@ -458,14 +451,8 @@ class IntradayEngine:
         if exit_mode == 'multi_lot' and lots_per_trade >= 3:
             # Get lot size for this underlying
             underlying = trade.get('underlying', 'NIFTY')
-            trade_year = time.year if hasattr(time, 'year') else 2026
-            
-            if underlying == 'NIFTY':
-                lot_size = 75 if trade_year <= 2025 else 65
-            elif underlying == 'BANKNIFTY':
-                lot_size = 35 if trade_year <= 2025 else 30
-            else:
-                lot_size = self.config['indices'].get(underlying, {}).get('lot_size', 50)
+            # BUG-004 FIX: Use config for lot size instead of hardcoded values
+            lot_size = self.config['indices'][underlying]['lot_size']
             
             # Check TP1 (exit 1 lot)
             if trade['tp_hits'] == 0 and row['high'] >= trade['targets'][0]:
@@ -525,20 +512,21 @@ class IntradayEngine:
                 return realized_pnl
         
         else:
-            # Single lot mode: Exit fully at TP2
-            if row['high'] >= trade['targets'][1]:
-                exit_price = trade['targets'][1]
+            # Single lot mode: Exit fully at configured target (default: T2)
+            target_idx = self.config['strategy'].get('single_lot_exit_target', 2) - 1
+            if row['high'] >= trade['targets'][target_idx]:
+                exit_price = trade['targets'][target_idx]
                 pnl = (exit_price - trade['entry_price']) * trade['qty']
                 
                 self.capital += exit_price * trade['qty']
                 
                 trade['exit_time'] = time
                 trade['exit_price'] = exit_price
-                trade['reason'] = 'TARGET'
+                trade['reason'] = f'TP{target_idx+1}'
                 trade['status'] = 'CLOSED'
                 trade['pnl'] = pnl
                 
-                self.logger.info(f"EXIT TARGET: {symbol} at {exit_price} | PnL: {pnl}")
+                self.logger.info(f"EXIT TP{target_idx+1}: {symbol} at {exit_price} | PnL: {pnl}")
                 return pnl
         
         return 0
@@ -555,17 +543,22 @@ class IntradayEngine:
             else:
                 exit_price = trade['entry_price']
         
-        credit = exit_price * trade['qty']
+        # BUG-001 FIX: Use remaining_qty (not original qty) to avoid
+        # inflated P&L after partial exits at TP1/TP2
+        remaining = trade.get('remaining_qty', trade['qty'])
+        partial_pnl = trade.get('partial_pnl', 0)
+        credit = exit_price * remaining
         self.capital += credit
-        pnl = credit - trade['cost']
+        pnl = (exit_price - trade['entry_price']) * remaining + partial_pnl
         
         trade['exit_time'] = time
         trade['exit_price'] = exit_price
         trade['reason'] = reason
         trade['status'] = 'CLOSED'
         trade['pnl'] = pnl
+        trade['qty'] = remaining  # Record actual exit quantity
         
-        self.logger.info(f"EXIT: {symbol} at {exit_price} | PnL: {pnl} | Reason: {reason}")
+        self.logger.info(f"EXIT: {symbol} at {exit_price} | Remaining Qty: {remaining} | PnL: {pnl} | Reason: {reason}")
         return pnl
 
     def generate_report(self):

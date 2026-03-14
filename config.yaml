@@ -28,15 +28,16 @@ strategy:
   alert_validity: 1  # Candles allowed for price to break alert_high (after alert candle)
   exit_mode: multi_lot #single_lot or multi_lot
   lots_per_trade: 3
+  single_lot_exit_target: 2  # 1=T1, 2=T2, 3=T3 — used in single_lot exit mode
   partial_exits:
     tp1_percent: 33
     tp2_percent: 33
     tp3_percent: 34
   rsi:
-    period: 9
+    period: 14       # RSI(14) — standard Wilder RSI, matches strategy design
     threshold: 60
-    warmup_periods: 2
-  trade_only_on_expiry: false
+    warmup_periods: 100  # Minimum for stable Wilder RSI EMA convergence
+  trade_only_on_expiry: true  # Strategy is designed for expiry-day dynamics
   trailing_stop:
     enabled: true
     move_by_alert_range: true
