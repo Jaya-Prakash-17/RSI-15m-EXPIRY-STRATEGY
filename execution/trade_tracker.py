@@ -209,3 +209,67 @@ class TradeTracker:
                 self.logger.info("Position reconciliation successful - all trades match")
             
             return discrepancies
+
+    def get_closed_trades_today(self):
+        """Get all trades closed today. Used for daily Telegram summary.
+        
+        Returns:
+            List of closed trade dicts from today's session.
+        """
+        date_str = datetime.now().strftime("%Y%m%d")
+        with self.lock:
+            data = self._load_data()
+            return [t for t in data["closed_trades"] if t.get("trade_id", "").startswith(f"BOT_{date_str}")]
+
+    # --- Pending Entries Persistence (MEDIUM FIX) ---
+    
+    def save_pending_entries(self, pending_entries):
+        """Persist pending entries to JSON so they survive crashes.
+        
+        Args:
+            pending_entries: dict of {symbol: pending_entry_data}
+        """
+        filepath = self.filepath.replace("bot_trades", "pending_entries")
+        try:
+            # Convert datetime objects to strings for JSON serialization
+            serializable = {}
+            for symbol, entry in pending_entries.items():
+                entry_copy = {}
+                for k, v in entry.items():
+                    if hasattr(v, 'isoformat'):
+                        entry_copy[k] = v.isoformat()
+                    elif hasattr(v, 'strftime'):
+                        entry_copy[k] = v.strftime('%Y-%m-%d')
+                    else:
+                        entry_copy[k] = v
+                serializable[symbol] = entry_copy
+            
+            with open(filepath, 'w') as f:
+                json.dump(serializable, f, indent=2, default=str)
+        except Exception as e:
+            self.logger.error(f"Error saving pending entries: {e}")
+
+    def load_pending_entries(self):
+        """Load pending entries from JSON (for crash recovery).
+        
+        Returns:
+            dict of {symbol: pending_entry_data} or empty dict
+        """
+        filepath = self.filepath.replace("bot_trades", "pending_entries")
+        try:
+            if os.path.exists(filepath):
+                with open(filepath, 'r') as f:
+                    return json.load(f)
+        except Exception as e:
+            self.logger.error(f"Error loading pending entries: {e}")
+        return {}
+
+    def clear_pending_entries(self):
+        """Clear pending entries file (called when entries are processed)."""
+        filepath = self.filepath.replace("bot_trades", "pending_entries")
+        try:
+            if os.path.exists(filepath):
+                with open(filepath, 'w') as f:
+                    json.dump({}, f)
+        except Exception as e:
+            self.logger.error(f"Error clearing pending entries: {e}")

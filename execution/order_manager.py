@@ -26,7 +26,7 @@ class OrderManager:
         if self.paper_trading:
             self.logger.info("[PAPER TRADE] Simulated entry order (no real order placed)")
             return {
-                'groww_order_id': f"PAPER_{symbol}_{int(pd.Timestamp.now().timestamp())}",
+                'groww_order_id': f"PAPER_{symbol}_{int(time.time())}",
                 'status': 'PAPER',
                 'message': 'Paper trade - no real order'
             }
@@ -83,14 +83,16 @@ class OrderManager:
             
             time.sleep(1)
         
-        # Timeout - cancel the order
-        self.logger.warning(f"Order {order_id} check timed out after {timeout}s. Attempting to cancel...")
+        # Timeout - cancel the order to prevent orphaned fills
+        self.logger.warning(f"Order {order_id} check timed out after {timeout}s. Cancelling to prevent orphan fill...")
         try:
-            # Cancel order (implement if Groww API supports)
-            # cancel_resp = self.client.cancel_order(order_id)
-            self.logger.warning("Order cancellation not implemented. Manual check required.")
+            cancel_resp = self.client.cancel_order(order_id)
+            if cancel_resp:
+                self.logger.warning(f"Order {order_id} cancelled after timeout")
+            else:
+                self.logger.error(f"Failed to cancel order {order_id} after timeout — may still fill!")
             
-            # Final status check
+            # Final status check — order may have filled between timeout and cancel
             time.sleep(2)
             final_status = self.client.get_order_status(order_id)
             if final_status and final_status.get('status') in ['EXECUTED', 'COMPLETED']:
@@ -142,6 +144,12 @@ class OrderManager:
         targets = signal['targets']
         sl_price = signal['sl']
         
+        # Read partial exit percentages from config (CONFIG #3 fix)
+        partial_config = self.config.get('strategy', {}).get('partial_exits', {})
+        tp1_pct = partial_config.get('tp1_percent', 33) / 100
+        tp2_pct = partial_config.get('tp2_percent', 33) / 100
+        # tp3 gets the remainder
+        
         exit_orders = {
             'mode': exit_mode,
             'orders': [],
@@ -151,45 +159,60 @@ class OrderManager:
         }
         
         if exit_mode == 'multi_lot':
-            # Place 3 partial exit orders
-            lot_qty = lots // 3
-            remaining_qty = lots - (2 * lot_qty)
+            # Use config percentages for partial exit quantities
+            tp1_qty = max(1, round(lots * tp1_pct))
+            tp2_qty = max(1, round(lots * tp2_pct))
+            tp3_qty = lots - tp1_qty - tp2_qty
+            if tp3_qty <= 0:
+                tp3_qty = 1
+                tp2_qty = lots - tp1_qty - tp3_qty
             
-            # TP1: 33% (1 lot)
-            self.logger.info(f"Setting up partial exit TP1: {lot_qty} lots at ₹{targets[0]}")
-            exit_orders['orders'].append({
-                'target_level': 1,
-                'target_price': targets[0],
-                'quantity': lot_qty,
-                'status': 'pending'
-            })
+            quantities = [tp1_qty, tp2_qty, tp3_qty]
             
-            # TP2: 33% (1 lot)
-            self.logger.info(f"Setting up partial exit TP2: {lot_qty} lots at ₹{targets[1]}")
-            exit_orders['orders'].append({
-                'target_level': 2,
-                'target_price': targets[1],
-                'quantity': lot_qty,
-                'status': 'pending'
-            })
-            
-            # TP3: 34% (remaining lot)
-            self.logger.info(f"Setting up partial exit TP3: {remaining_qty} lots at ₹{targets[2]}")
-            exit_orders['orders'].append({
-                'target_level': 3,
-                'target_price': targets[2],
-                'quantity': remaining_qty,
-                'status': 'pending'
-            })
+            for i, (qty, target_price) in enumerate(zip(quantities, targets)):
+                tp_level = i + 1
+                self.logger.info(f"Setting up partial exit TP{tp_level}: {qty} lots at ₹{target_price}")
+                
+                # CRITICAL FIX #2: Actually place broker target orders (not just tracking)
+                order_id = None
+                if not self.paper_trading:
+                    order_resp = self.place_target_order(symbol, qty, target_price, trading_symbol)
+                    if order_resp and 'groww_order_id' in order_resp:
+                        order_id = order_resp['groww_order_id']
+                        self.logger.info(f"🎯 Broker Target TP{tp_level} placed: {order_id} @ ₹{target_price}")
+                    else:
+                        self.logger.warning(f"⚠️ Failed to place broker TP{tp_level} order — using software monitoring")
+                
+                exit_orders['orders'].append({
+                    'target_level': tp_level,
+                    'target_price': target_price,
+                    'quantity': qty,
+                    'status': 'pending',
+                    'order_id': order_id
+                })
             
         elif exit_mode == 'single_lot':
-            # Single exit at TP3
-            self.logger.info(f"Setting up single-lot exit at TP3: {lots} lots at ₹{targets[2]}")
+            # CRITICAL FIX #4: Use config-driven target, aligned with _handle_single_lot_exits
+            target_idx = self.config.get('strategy', {}).get('single_lot_exit_target', 2) - 1
+            target_price = targets[target_idx] if target_idx < len(targets) else targets[-1]
+            tp_level = target_idx + 1
+            
+            self.logger.info(f"Setting up single-lot exit at TP{tp_level}: {lots} lots at ₹{target_price}")
+            
+            # Place broker order in live mode
+            order_id = None
+            if not self.paper_trading:
+                order_resp = self.place_target_order(symbol, lots, target_price, trading_symbol)
+                if order_resp and 'groww_order_id' in order_resp:
+                    order_id = order_resp['groww_order_id']
+                    self.logger.info(f"🎯 Broker Target TP{tp_level} placed: {order_id} @ ₹{target_price}")
+            
             exit_orders['orders'].append({
-                'target_level': 3,
-                'target_price': targets[2],
+                'target_level': tp_level,
+                'target_price': target_price,
                 'quantity': lots,
-                'status': 'pending'
+                'status': 'pending',
+                'order_id': order_id
             })
         
         return exit_orders

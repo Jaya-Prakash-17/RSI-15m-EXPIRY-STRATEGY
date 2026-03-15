@@ -135,21 +135,54 @@ class LiveTrader:
         return True
 
     def _reconcile_positions(self):
-        """Reconcile bot trades with broker positions on startup."""
+        """Reconcile bot trades with broker positions on startup.
+        Also recovers any pending entries that were in-flight during a crash.
+        """
         self.logger.info("Reconciling positions with broker...")
         
         try:
-            # Get broker positions (implement this in GrowwClient if available)
-            # For now, just verify our tracked trades
+            # Verify tracked active trades
             active_trades = self.tracker.get_active_trades()
             
             if active_trades:
                 self.logger.warning(f"Found {len(active_trades)} active trades from previous session:")
                 for trade in active_trades:
-                    self.logger.warning(f"  - {trade['symbol']} | Qty: {trade['qty']} | Entry: {trade['entry_price']}")
+                    self.logger.warning(f"  - {trade['symbol']} | Qty: {trade.get('remaining_qty', trade['qty'])} | Entry: {trade['entry_price']}")
                 self.logger.warning("⚠️  These positions will be managed by the bot")
             else:
                 self.logger.info("No active bot trades found. Starting fresh.")
+            
+            # MEDIUM FIX #3: Recover pending entries from crash
+            saved_pending = self.tracker.load_pending_entries()
+            if saved_pending:
+                self.logger.warning(f"Found {len(saved_pending)} pending entries from previous session")
+                for symbol, pending in saved_pending.items():
+                    order_id = pending.get('order_id', '')
+                    
+                    # Paper trades: just cancel (can't check status)
+                    if order_id.startswith('PAPER_'):
+                        self.logger.info(f"Discarding stale paper pending entry: {symbol}")
+                        continue
+                    
+                    # Live trades: check broker order status
+                    try:
+                        status = self.client.get_order_status(order_id)
+                        if status and status.get('status') in ['COMPLETE', 'FILLED']:
+                            # Order filled while we were down — activate trade
+                            fill_price = status.get('avg_price') or status.get('average_price') or pending.get('trigger_price')
+                            self.logger.critical(f"🚨 Pending entry {order_id} FILLED while bot was offline @ ₹{fill_price}")
+                            self._activate_trade_from_pending(pending, fill_price=float(fill_price))
+                        elif status and status.get('status') in ['PENDING', 'OPEN', 'NOT_FILLED']:
+                            # Still pending — cancel to avoid surprise fill
+                            self.logger.warning(f"Cancelling stale pending entry {order_id} for {symbol}")
+                            self.om.cancel_order(order_id)
+                        else:
+                            self.logger.info(f"Pending entry {order_id} status: {status.get('status', 'UNKNOWN')} — ignoring")
+                    except Exception as e:
+                        self.logger.error(f"Error checking pending entry {order_id}: {e}")
+                
+                # Clear persisted pending entries after reconciliation
+                self.tracker.clear_pending_entries()
         
         except Exception as e:
             self.logger.error(f"Error during position reconciliation: {e}")
@@ -335,6 +368,13 @@ class LiveTrader:
                     if last_processed and current_candle_time <= last_processed:
                         continue
                     
+                    # MEDIUM FIX: Verify option candle has advanced past spot candle detection
+                    # Option candles from API can lag spot by 1-3 minutes.
+                    # If option candle time < spot candle time, we'd run RSI on stale data.
+                    if self.last_candle_time and current_candle_time < self.last_candle_time:
+                        self.logger.debug(f"Skipping {symbol}: option candle ({current_candle_time}) behind spot ({self.last_candle_time})")
+                        continue
+                    
                     self.last_processed_candle_time[symbol] = current_candle_time
                     
                     # Get price history with warmup
@@ -512,6 +552,8 @@ class LiveTrader:
                 'opt_type': candidate['opt_type'],
                 'placed_at': datetime.now()
             }
+            # Persist to disk for crash recovery
+            self.tracker.save_pending_entries(self.pending_entries)
         else:
             self.logger.error(f"Failed to place pending entry order for {symbol}")
             # Consume the alert so we don't get orphan ENTRY signals later
@@ -804,6 +846,7 @@ class LiveTrader:
                         self.logger.info(f"🎯 [PAPER] PENDING ENTRY FILLED: {symbol} @ ₹{ltp} (trigger: {trigger_price})")
                         self._activate_trade_from_pending(pending, fill_price=ltp)
                         del self.pending_entries[symbol]
+                        self.tracker.save_pending_entries(self.pending_entries)
                     continue
                 
                 # LIVE TRADING: Check actual broker order status
@@ -821,10 +864,12 @@ class LiveTrader:
                     self.logger.info(f"🎯 PENDING ENTRY FILLED: {symbol} @ ₹{fill_price}")
                     self._activate_trade_from_pending(pending, fill_price=fill_price)
                     del self.pending_entries[symbol]
+                    self.tracker.save_pending_entries(self.pending_entries)
                     
                 elif status in ['CANCELLED', 'REJECTED', 'EXPIRED']:
                     self.logger.warning(f"Pending entry order {order_id} {status} for {symbol}")
                     del self.pending_entries[symbol]
+                    self.tracker.save_pending_entries(self.pending_entries)
                     
             except Exception as e:
                 self.logger.error(f"Error monitoring pending entry for {symbol}: {e}")
@@ -1381,16 +1426,21 @@ class LiveTrader:
                     # Square off remaining positions
                     active_trades = self.tracker.get_active_trades()
                     for trade in active_trades:
+                        # CRITICAL FIX #6: Use remaining_qty, not original qty
+                        remaining_qty = trade.get('remaining_qty', trade['qty'])
                         self.om.place_exit_order(
                             trade['symbol'],
-                            trade['qty'],
+                            remaining_qty,
                             trade['trading_symbol'],
                             "DAILY_LOSS_LIMIT"
                         )
                         ltp = self.client.get_ltp(trade['symbol']) or trade['entry_price']
-                        pnl = (ltp - trade['entry_price']) * trade['qty']
-                        self.daily_pnl += pnl
-                        self.tracker.close_trade(trade['trade_id'], ltp, "DAILY_LOSS_LIMIT", pnl)
+                        # Only calculate P&L on remaining qty; partials already in daily_pnl
+                        final_pnl = (ltp - trade['entry_price']) * remaining_qty
+                        partial_pnl = trade.get('partial_pnl', 0)
+                        total_pnl = final_pnl + partial_pnl
+                        self.daily_pnl += final_pnl
+                        self.tracker.close_trade(trade['trade_id'], ltp, "DAILY_LOSS_LIMIT", total_pnl)
                     break
                 
                 # Wait for market open

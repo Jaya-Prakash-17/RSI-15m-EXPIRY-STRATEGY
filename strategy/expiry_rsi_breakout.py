@@ -173,7 +173,9 @@ class ExpiryRSIBreakout:
                  'alert': None, 
                  'age': 0, 
                  'alert_time': None, 
-                 'last_processed_time': None
+                 'last_processed_time': None,
+                 'prev_rsi': None,
+                 'current_rsi': None
              }
         
         state = self.state[symbol]
@@ -188,10 +190,14 @@ class ExpiryRSIBreakout:
         if current_rsi is None:
             return None
         
-        # Calculate Prev RSI (if enough history)
-        prev_rsi = None
-        if len(price_history) > 1:
-             prev_rsi = self.calculate_latest_rsi(price_history.iloc[:-1])
+        # MEDIUM FIX #5: Optimized RSI calculation
+        # Cache the previous RSI value instead of calculating Wilder's RSI twice per candle.
+        # Only update prev_rsi when moving to a strictly new candle.
+        if state['last_processed_time'] is not None and current_time > state['last_processed_time']:
+            state['prev_rsi'] = state.get('current_rsi')
+            
+        state['current_rsi'] = current_rsi
+        prev_rsi = state['prev_rsi']
 
         # Age Increment Logic
         # Increment only if we have moved to a NEW candle strictly after the alert

@@ -130,9 +130,11 @@ class DataManager:
             return None
         
         # Search for files with dates around this period
-        # File format: NSE-{underlying}-{ddMMMYY}-{strike}-{type}.csv
+        # File format: {Exchange}-{underlying}-{ddMMMYY}-{strike}-{type}.csv
+        # CRASH FIX: SENSEX uses BSE- prefix, not NSE-
         import re
-        expiry_pattern = re.compile(r'NSE-' + underlying + r'-([0-9]{2}[A-Za-z]{3}[0-9]{2})-')
+        exchange_prefix = 'BSE' if underlying == 'SENSEX' else 'NSE'
+        expiry_pattern = re.compile(rf'{exchange_prefix}-{underlying}-([0-9]{{2}}[A-Za-z]{{3}}[0-9]{{2}})-')
         
         found_expiries = set()
         for filename in os.listdir(year_path):
@@ -276,13 +278,13 @@ class DataManager:
                     self.logger.info(f"[Tier 2] Calculated expiry {current_date} for {underlying} (holiday-aware)")
                     return current_date
                 else:
-                    self.logger.warning(f"Holiday on {current_date} ({expiry_day_name}), finding next trading day")
-                    adjusted_date = current_date
-                    for adj_days in range(1, 7):
-                        adjusted_date = current_date + pd.Timedelta(days=adj_days)
-                        if is_trading_day(adjusted_date):
-                            self.logger.info(f"[Tier 2] Adjusted expiry to {adjusted_date} (next trading day after holiday)")
-                            return adjusted_date
+                    # MEDIUM FIX: NSE rule — expiry moves to PREVIOUS trading day on holiday
+                    self.logger.warning(f"Holiday on {current_date} ({expiry_day_name}), finding previous trading day")
+                    adjusted_date = current_date - pd.Timedelta(days=1)
+                    while not is_trading_day(adjusted_date):
+                        adjusted_date -= pd.Timedelta(days=1)
+                    self.logger.info(f"[Tier 2] Adjusted expiry to {adjusted_date} (previous trading day before holiday)")
+                    return adjusted_date
             
             current_date += pd.Timedelta(days=1)
         
