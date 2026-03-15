@@ -35,112 +35,14 @@ class IntradayEngine:
         tick_size = self.config['indices'][underlying]['tick_size']
         return round(price / tick_size) * tick_size
 
-    def _is_expiry_day(self, underlying, date):
+    def _is_expiry_day(self, underlying: str, date) -> bool:
         """
-        Calculate if a given date is an expiry day for the underlying.
-        Works for historical backtesting by calculating based on NSE rules.
-        
-        NIFTY: Weekly expiry
-            - Jan 2025 – Aug 2025: Thursday
-            - From Sep 2, 2025: Tuesday
-        
-        SENSEX: Weekly expiry
-            - Jan 2025 – Aug 2025: Tuesday
-            - From Sep 1, 2025: Thursday
-        
-        BANKNIFTY: Monthly expiry (Last week of month)
-            - Jan 2025 – Aug 2025: Last Thursday of month
-            - From Sep 1, 2025: Last Tuesday of month
+        Check if date is an expiry day for the given underlying.
+        Delegates to utils.expiry_calendar which has the full verified
+        timeline from Jan 2020 to present (all NSE/BSE circular changes).
         """
-        import calendar
-        from datetime import date as date_type
-        from utils.nse_calendar import is_trading_day
-        
-        if isinstance(date, datetime):
-            check_date = date.date()
-        elif isinstance(date, pd.Timestamp):
-            check_date = date.date()
-        else:
-            check_date = date
-        
-        weekday = check_date.weekday()  # 0=Mon, 1=Tue, 2=Wed, 3=Thu, 4=Fri
-        
-        # Date thresholds for rule changes
-        nifty_change_date = date_type(2025, 9, 2)    # NIFTY: Sep 2, 2025
-        sensex_change_date = date_type(2025, 9, 1)   # SENSEX: Sep 1, 2025
-        banknifty_change_date = date_type(2025, 9, 1) # BANKNIFTY: Sep 1, 2025
-        
-        if underlying == 'NIFTY':
-            # NIFTY: Weekly expiry
-            if check_date < nifty_change_date:
-                target_weekday = 3  # Thursday (before Sep 2, 2025)
-            else:
-                target_weekday = 1  # Tuesday (from Sep 2, 2025)
-            
-            # Check if this is the target weekday
-            if weekday != target_weekday:
-                return False
-            
-            # Check if it's a trading day (not holiday)
-            if not is_trading_day(check_date):
-                return False
-            
-            return True
-        
-        elif underlying == 'SENSEX':
-            # SENSEX: Weekly expiry
-            if check_date < sensex_change_date:
-                target_weekday = 1  # Tuesday (before Sep 1, 2025)
-            else:
-                target_weekday = 3  # Thursday (from Sep 1, 2025)
-            
-            # Check if this is the target weekday
-            if weekday != target_weekday:
-                return False
-            
-            # Check if it's a trading day (not holiday)
-            if not is_trading_day(check_date):
-                return False
-            
-            return True
-        
-        elif underlying == 'BANKNIFTY':
-            # BANKNIFTY: Monthly expiry (LAST occurrence of expiry day in month)
-            if check_date < banknifty_change_date:
-                target_weekday = 3  # Last Thursday (before Sep 1, 2025)
-            else:
-                target_weekday = 1  # Last Tuesday (from Sep 1, 2025)
-            
-            # Check if this is the target weekday
-            if weekday != target_weekday:
-                return False
-            
-            # Check if this is the LAST occurrence of this weekday in the month
-            year = check_date.year
-            month = check_date.month
-            last_day = calendar.monthrange(year, month)[1]
-            last_date = date_type(year, month, last_day)
-            
-            # Find last occurrence of target weekday
-            while last_date.weekday() != target_weekday:
-                last_date = last_date - pd.Timedelta(days=1)
-            
-            # If holiday, adjust to previous trading day
-            original_last_date = last_date
-            if not is_trading_day(last_date):
-                while not is_trading_day(last_date):
-                    last_date = last_date - pd.Timedelta(days=1)
-            
-            # Match if this is the calculated last expiry
-            return check_date == last_date or check_date == original_last_date
-        
-        else:
-            # Other indices: Use config expiry_day for weekly
-            exp_day_name = self.config['indices'][underlying].get('expiry_day', 'Thursday')
-            day_map = {'Monday': 0, 'Tuesday': 1, 'Wednesday': 2, 'Thursday': 3, 'Friday': 4}
-            target_weekday = day_map.get(exp_day_name, 3)
-            
-            return weekday == target_weekday and is_trading_day(check_date)
+        from utils.expiry_calendar import is_expiry_day
+        return is_expiry_day(underlying, date)
 
     def run(self, start_date, end_date):
         self.logger.info(f"Starting backtest from {start_date} to {end_date}")

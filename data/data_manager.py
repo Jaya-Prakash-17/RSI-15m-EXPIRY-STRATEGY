@@ -161,142 +161,29 @@ class DataManager:
         
         return None
     
-    def calculate_historical_expiry(self, underlying, reference_date):
+    def calculate_historical_expiry(self, underlying: str, reference_date) -> 'date':
         """
-        Tier 2 & 3: Calculate historical expiry with holiday awareness.
-        
-        This is a hybrid approach:
-        1. Try to detect from existing data files (most accurate)
-        2. Use holiday-aware calculation  
-        3. Fall back to simple weekday calculation
-        
-        Args:
-            underlying: Index name (NIFTY, BANKNIFTY, SENSEX)
-            reference_date: Historical date for which to find expiry
-        
-        Returns:
-            Correct expiry date for that historical period
+        Calculate the historical expiry date for an underlying on a given
+        reference date. Uses utils.expiry_calendar — the single source of
+        truth covering all NSE/BSE changes from Jan 2020 to present.
+
+        This is used in backtesting where the Groww API doesn't have
+        historical expiry data, so we compute it from rules.
         """
+        from utils.expiry_calendar import get_expiry_for_date
+        from datetime import datetime
+
         if isinstance(reference_date, datetime):
             reference_date = reference_date.date()
-        
-        # Tier 1: Check existing files
-        expiry_from_files = self.detect_expiry_from_files(underlying, reference_date)
-        if expiry_from_files:
-            return expiry_from_files
-        
-        # Tier 2 & 3: Calculate with holiday awareness
-        from utils.nse_calendar import is_trading_day
-        from datetime import date as date_type
-        import calendar
-        
-        # Get expiry day - handle historical changes based on NSE rules
-        # NIFTY: Weekly - Thursday before Sep 2, 2025 → Tuesday after
-        # SENSEX: Weekly - Tuesday before Sep 1, 2025 → Thursday after
-        # BANKNIFTY: Monthly - Last Thursday before Sep 1, 2025 → Last Tuesday after
-        nifty_change_date = date_type(2025, 9, 2)
-        sensex_change_date = date_type(2025, 9, 1)
-        banknifty_change_date = date_type(2025, 9, 1)
-        
-        is_monthly_expiry = False  # Flag for monthly vs weekly
-        
-        if underlying == 'NIFTY':
-            if reference_date < nifty_change_date:
-                expiry_day_name = 'Thursday'  # Weekly Thursday (before Sep 2, 2025)
-            else:
-                expiry_day_name = 'Tuesday'   # Weekly Tuesday (from Sep 2, 2025)
-        elif underlying == 'SENSEX':
-            if reference_date < sensex_change_date:
-                expiry_day_name = 'Tuesday'   # Weekly Tuesday (before Sep 1, 2025)
-            else:
-                expiry_day_name = 'Thursday'  # Weekly Thursday (from Sep 1, 2025)
-        elif underlying == 'BANKNIFTY':
-            is_monthly_expiry = True
-            if reference_date < banknifty_change_date:
-                expiry_day_name = 'Thursday'  # Monthly last Thursday (before Sep 1, 2025)
-            else:
-                expiry_day_name = 'Tuesday'   # Monthly last Tuesday (from Sep 1, 2025)
-        else:
-            # Use config for other indices
-            expiry_day_name = self.config['indices'][underlying]['expiry_day']
-        
-        # Map day names to weekday numbers (0=Monday, 6=Sunday)
-        day_map = {
-            'Monday': 0, 'Tuesday': 1, 'Wednesday': 2, 'Thursday': 3,
-            'Friday': 4, 'Saturday': 5, 'Sunday': 6
-        }
-        target_weekday = day_map[expiry_day_name]
-        
-        # For BANKNIFTY (monthly): Find last occurrence of expiry day in current/next month
-        if is_monthly_expiry:
-            # Find last expiry day of this month
-            year = reference_date.year
-            month = reference_date.month
-            
-            # Get last day of month
-            last_day = calendar.monthrange(year, month)[1]
-            last_date = date_type(year, month, last_day)
-            
-            # Find last occurrence of target weekday in this month
-            while last_date.weekday() != target_weekday:
-                last_date -= pd.Timedelta(days=1)
-            
-            # If reference_date is after this month's expiry, use next month
-            if reference_date > last_date:
-                # Move to next month
-                if month == 12:
-                    year += 1
-                    month = 1
-                else:
-                    month += 1
-                
-                last_day = calendar.monthrange(year, month)[1]
-                last_date = date_type(year, month, last_day)
-                
-                while last_date.weekday() != target_weekday:
-                    last_date -= pd.Timedelta(days=1)
-            
-            # Check if it's a trading day, adjust if holiday
-            if is_trading_day(last_date):
-                self.logger.info(f"[Tier 2] Monthly expiry {last_date} for {underlying} ({expiry_day_name})")
-                return last_date
-            else:
-                # Holiday - find previous trading day
-                adjusted = last_date - pd.Timedelta(days=1)
-                while not is_trading_day(adjusted):
-                    adjusted -= pd.Timedelta(days=1)
-                self.logger.info(f"[Tier 2] Monthly expiry adjusted to {adjusted} (holiday on {last_date})")
-                return adjusted
-        
-        # For NIFTY (weekly): Find next occurrence of expiry day >= reference_date
-        current_date = reference_date
-        max_search_days = 8  # Search up to next week
-        
-        for _ in range(max_search_days):
-            if current_date.weekday() == target_weekday:
-                if is_trading_day(current_date):
-                    self.logger.info(f"[Tier 2] Calculated expiry {current_date} for {underlying} (holiday-aware)")
-                    return current_date
-                else:
-                    # MEDIUM FIX: NSE rule — expiry moves to PREVIOUS trading day on holiday
-                    self.logger.warning(f"Holiday on {current_date} ({expiry_day_name}), finding previous trading day")
-                    adjusted_date = current_date - pd.Timedelta(days=1)
-                    while not is_trading_day(adjusted_date):
-                        adjusted_date -= pd.Timedelta(days=1)
-                    self.logger.info(f"[Tier 2] Adjusted expiry to {adjusted_date} (previous trading day before holiday)")
-                    return adjusted_date
-            
-            current_date += pd.Timedelta(days=1)
-        
-        # Tier 3: Fallback to simple calculation
-        self.logger.warning(f"Using Tier 3 fallback for {underlying} expiry")
-        days_ahead = target_weekday - reference_date.weekday()
-        if days_ahead < 0:
-            days_ahead += 7
-        
-        expiry_date = reference_date + pd.Timedelta(days=days_ahead)
-        self.logger.info(f"[WARNING] Tier 3: Simple calc expiry {expiry_date} for {underlying} (no holiday adjustment)")
-        return expiry_date
+        elif hasattr(reference_date, 'date'):
+            reference_date = reference_date.date()
+
+        expiry = get_expiry_for_date(underlying, reference_date)
+        self.logger.info(
+            f"[ExpiryCalendar] Expiry for {underlying} "
+            f"(ref: {reference_date}) = {expiry}"
+        )
+        return expiry
 
     def get_trading_symbol(self, underlying, expiry_date, strike, opt_type):
         """

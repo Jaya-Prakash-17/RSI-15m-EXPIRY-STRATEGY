@@ -68,31 +68,51 @@ class LiveTrader:
         self.trade_only_on_expiry = config['strategy'].get('trade_only_on_expiry', True)
 
     def _get_tradeable_indices(self):
-        """Get all indices that should be traded today."""
-        today_str = datetime.now().strftime("%Y-%m-%d")
-        day_name = datetime.now().strftime("%A")
-        
+        """
+        Get all indices that should be traded today.
+        Uses expiry_calendar for accurate expiry detection — handles
+        all historical day changes for NIFTY, BANKNIFTY, SENSEX.
+        """
+        from utils.expiry_calendar import is_expiry_day
+        from datetime import datetime
+
+        today = datetime.now().date()
+        today_str = today.strftime("%Y-%m-%d")
+
         tradeable = []
-        
-        # If trade_only_on_expiry is False, trade ALL configured indices
+
         if not self.trade_only_on_expiry:
             indices = list(self.config['indices'].keys())
             self.logger.info(f"trade_only_on_expiry=False, trading ALL indices: {indices}")
             return indices
-        
-        # Otherwise, only trade indices that have expiry today
-        for idx, details in self.config['indices'].items():
-            if details['expiry_day'] == day_name:
-                try:
-                    expiries = self.dm.get_expiries(idx)
-                    if today_str in expiries:
-                        self.logger.info(f"Confirmed API Expiry for {idx} today.")
-                        tradeable.append(idx)
-                    else:
-                        self.logger.warning(f"Config says {idx} expiry today, but API expiries: {expiries}")
-                except Exception as e:
-                    self.logger.error(f"Error checking expiries for {idx}: {e}")
-        
+
+        for idx in self.config['indices'].keys():
+            # Fast local check first (no API call)
+            if not is_expiry_day(idx, today):
+                self.logger.debug(f"{idx}: not an expiry day today ({today})")
+                continue
+
+            # Confirm with Groww API (verifies holiday adjustments and
+            # catches any future rule changes we haven't coded yet)
+            try:
+                expiries = self.dm.get_expiries(idx)
+                if today_str in expiries:
+                    self.logger.info(f"✅ Confirmed API expiry for {idx} today ({today})")
+                    tradeable.append(idx)
+                else:
+                    self.logger.warning(
+                        f"⚠️  expiry_calendar says {idx} expires today "
+                        f"but API disagrees. API expiries: {expiries[:5]}. "
+                        f"Skipping {idx} to be safe."
+                    )
+            except Exception as e:
+                # API failure: trust local calendar (don't skip trading day)
+                self.logger.warning(
+                    f"API expiry check failed for {idx}: {e}. "
+                    f"Trusting local expiry_calendar."
+                )
+                tradeable.append(idx)
+
         return tradeable
 
     def _initialize_day(self):

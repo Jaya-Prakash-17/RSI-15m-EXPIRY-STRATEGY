@@ -1,5 +1,5 @@
 backtest:
-  start_date: '2026-01-01'
+  start_date: '2026-03-1'
   end_date: '2026-03-13'
 capital:
   initial: 100000
