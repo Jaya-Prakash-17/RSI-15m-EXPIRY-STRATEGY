@@ -42,7 +42,7 @@ def is_trading_day_from_api(date, groww_client, index='NIFTY'):
         
         df = groww_client.get_historical_candles(
             symbol=index,
-            interval='15m',
+            interval=15,
             start_date=start_time,
             end_date=end_time
         )

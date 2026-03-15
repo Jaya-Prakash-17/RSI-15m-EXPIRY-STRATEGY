@@ -166,37 +166,32 @@ class GrowwClient:
             → queries FNO segment. Do NOT pass just 'NIFTY' for option LTP.
         """
         try:
-            # Index Mapping Logic for LTP
-            index_candidates = {
-                "NIFTY": ["NSE-NIFTY-INDEX", "NSE-Nifty 50"],
-                "BANKNIFTY": ["NSE-BANKNIFTY-INDEX", "NSE-Nifty Bank"],
-                "SENSEX": ["BSE-SENSEX-INDEX", "BSE-SENSEX"]
+            # Index Mapping Logic for LTP (Compact format)
+            index_map = {
+                "NIFTY": "NSE_NIFTY",
+                "BANKNIFTY": "NSE_BANKNIFTY",
+                "SENSEX": "BSE_SENSEX"
             }
             
-            candidates = [symbol]
-            if symbol in index_candidates:
-                candidates = index_candidates[symbol]
-            
-            for groww_sym in candidates:
-                segment = GrowwAPI.SEGMENT_FNO
-                if symbol in index_candidates:
-                    segment = GrowwAPI.SEGMENT_CASH
+            if symbol in index_map:
+                key = index_map[symbol]
+                segment = GrowwAPI.SEGMENT_CASH
+            else:
+                # Option LTP - resolve to compact format via instruments
+                instr = self.client.get_instrument_by_groww_symbol(symbol)
+                if not instr:
+                    self.logger.error(f"Could not resolve instrument for option symbol {symbol}")
+                    return None
                 
-                try:
-                    resp = self.client.get_ltp(
-                        segment=segment,
-                        exchange_trading_symbols=groww_sym
-                    )
-                    if resp:
-                        for k, v in resp.items():
-                            # Groww API returns keys like "NSE_NIFTY..." or matching the input
-                            # Flexible check
-                            if k == groww_sym or k.replace("_", "-") == groww_sym.replace("_", "-"):
-                                return float(v)
-                except:
-                    continue
+                key = f"{instr['exchange']}_{instr['trading_symbol']}"
+                segment = GrowwAPI.SEGMENT_FNO
+
+            resp = self.client.get_ltp(
+                segment=segment,
+                exchange_trading_symbols=key
+            )
+            return float(resp['ltp']) if resp and 'ltp' in resp else None
             
-            return None
         except Exception as e:
             self.logger.error(f"Error fetching LTP for {symbol}: {e}")
             return None
@@ -229,8 +224,11 @@ class GrowwClient:
                 trigger_price = price
             
             # Determine exchange from symbol/trading_symbol
-            # SENSEX options start with 'BSE-', others with 'NSE-'
-            exchange = GrowwAPI.EXCHANGE_BSE if trading_symbol.startswith("BSE-") else GrowwAPI.EXCHANGE_NSE
+            # SENSEX options may just be 'SENSEX...' in compact format
+            if (trading_symbol and trading_symbol.startswith("SENSEX")) or (symbol and symbol.startswith("BSE-")):
+                exchange = GrowwAPI.EXCHANGE_BSE
+            else:
+                exchange = GrowwAPI.EXCHANGE_NSE
             
             resp = self.client.place_order(
                 trading_symbol=trading_symbol,
@@ -314,20 +312,22 @@ class GrowwClient:
             self.logger.error(f"Failed to modify order {order_id}: {e}")
             return None
 
-    def cancel_order(self, order_id):
+    def cancel_order(self, order_id, segment=None):
         """
         Cancel a pending/open order.
         
         Args:
             order_id: groww_order_id to cancel
+            segment: segment type (defaults to SEGMENT_FNO)
         
         Returns:
             Cancellation response or None on failure
         """
         try:
+            seg = segment or GrowwAPI.SEGMENT_FNO
             resp = self.client.cancel_order(
                 groww_order_id=order_id,
-                segment=GrowwAPI.SEGMENT_FNO
+                segment=seg
             )
             
             if resp:
@@ -383,8 +383,11 @@ class GrowwClient:
                 underlying=underlying,
                 expiry_date=expiry_date.strftime("%Y-%m-%d")
             )
+            
+            self.logger.debug(f"Option chain response keys for {underlying}: {list(resp.keys()) if resp else 'None'}")
+            
             mapping = {}
-            if 'strikes' in resp:
+            if resp and 'strikes' in resp:
                 for strike_price, data in resp['strikes'].items():
                     for type_ in ['CE', 'PE']:
                         if type_ in data:

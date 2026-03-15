@@ -544,6 +544,7 @@ class LiveTrader:
                 'trigger_price': trigger_price,
                 'qty': qty,
                 'trading_symbol': trading_symbol,
+                'original_symbol': symbol,
                 'signal': signal,
                 'alert_candle': signal.get('alert_candle'),
                 'underlying': underlying,
