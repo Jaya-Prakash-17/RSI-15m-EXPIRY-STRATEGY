@@ -98,10 +98,9 @@ class PerformanceReporter:
         std_pnl = pnl.std() if len(pnl) > 1 else 0
         
         # Sharpe Ratio (annualized)
-        # For expiry-only strategy (~1 trade/week), use sqrt(52) not sqrt(252)
-        # sqrt(252) would overstate Sharpe by ~2.2× for weekly strategies
-        trade_only_on_expiry = self.config.get('strategy', {}).get('trade_only_on_expiry', False)
-        annualization_factor = np.sqrt(52) if trade_only_on_expiry else np.sqrt(252)
+        # For weekly expiry strategy (~52 trades/year), use sqrt(52)
+        n_annual = 52
+        annualization_factor = np.sqrt(n_annual)
         
         if std_pnl > 0:
             sharpe_ratio = (avg_pnl / std_pnl) * annualization_factor

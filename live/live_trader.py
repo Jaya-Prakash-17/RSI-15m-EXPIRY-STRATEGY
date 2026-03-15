@@ -685,17 +685,15 @@ class LiveTrader:
         4. Create trade record
         5. Log everything
         """
-        symbol = pending['trading_symbol'].replace('-', '_') if 'trading_symbol' in pending else pending.get('order_id', '').split('_')[1] if 'order_id' in pending else 'UNKNOWN'
-        # Actually use the symbol from pending entries key - we need to pass it
-        # Let's extract from order_id for paper trades: PAPER_{symbol}_{timestamp}
         order_id = pending['order_id']
         underlying = pending['underlying']
         signal = pending['signal']
         qty = pending['qty']
         trading_symbol = pending['trading_symbol']
+        original_symbol = pending.get('original_symbol', trading_symbol)
         
         # Consume the alert
-        self.strategy.consume_alert(trading_symbol.replace('-', '_'))
+        self.strategy.consume_alert(original_symbol)
         
         # Place SL order — CRITICAL: retry up to 3 times, emergency exit if all fail
         sl_price = self._round_to_tick(signal['sl'], underlying)
@@ -725,35 +723,16 @@ class LiveTrader:
             return
         
         # Place TARGET orders (limit sell orders at each target)
-        target_order_ids = []
-        targets = signal.get('targets', [])
-        lots_per_trade = self.config['strategy'].get('lots_per_trade', 3)
-        exit_mode = self.config['strategy'].get('exit_mode', 'multi_lot')
+        # We delegate this entirely to om.place_partial_exits to avoid duplication
+        # and ensure percentage/lot rules from config are strictly followed.
+        exit_orders = self.om.place_partial_exits(original_symbol, trading_symbol, signal, fill_price)
         
-        # For multi-lot mode, calculate qty per target
-        if exit_mode == 'multi_lot' and lots_per_trade >= 3:
-            lots_for_tp1 = 1
-            lots_for_tp2 = 1
-            lots_for_tp3 = lots_per_trade - 2
-            lot_size = self.config['indices'][underlying]['lot_size']
-            qty_per_target = [lots_for_tp1 * lot_size, lots_for_tp2 * lot_size, lots_for_tp3 * lot_size]
-        else:
-            # Single lot mode - all qty exits at TP2 (not TP3)
-            qty_per_target = [0, qty, 0]  # Only TP2 has quantity
-        
-        for i, target in enumerate(targets):
-            target_qty = qty_per_target[i] if i < len(qty_per_target) else 0
-            if target_qty > 0:
-                target_price = self._round_to_tick(target, underlying)
-                target_order = self.om.place_target_order(trading_symbol, target_qty, target_price, trading_symbol)
-                if target_order and 'groww_order_id' in target_order:
-                    target_order_ids.append(target_order['groww_order_id'])
-                    self.logger.info(f"🎯 Target {i+1} Order Placed: {target_order['groww_order_id']} @ ₹{target_price} (qty: {target_qty})")
-                else:
-                    target_order_ids.append(None)
-                    self.logger.warning(f"⚠️ Failed to place Target {i+1} order")
-            else:
-                target_order_ids.append(None)
+        target_order_ids = [None, None, None]
+        for order in exit_orders['orders']:
+            # map order ids to their respective index (0 for TP1, 1 for TP2, 2 for TP3)
+            idx = int(order['target_level']) - 1
+            if 0 <= idx < 3:
+                target_order_ids[idx] = order.get('order_id')
         
         # Create trade record
         trade_record = {
@@ -787,16 +766,10 @@ class LiveTrader:
             'status': 'ACTIVE'
         }
         
-        # Set up exit orders tracking (for trailing SL)
-        exit_orders = {
-            'mode': exit_mode,
-            'current_sl': sl_price,
-            'original_sl': sl_price,
-            'trail_state': 0,  # 0=no trail, 1=TP1 hit, 2=TP2 hit
-            'tp1_price': targets[0] if len(targets) > 0 else fill_price,
-            'tp2_price': targets[1] if len(targets) > 1 else fill_price,
-            'tp3_price': targets[2] if len(targets) > 2 else fill_price,
-        }
+        # Update tracker with exit orders from om.place_partial_exits
+        trade_record['exit_orders'] = exit_orders
+        trade_record['alert_range'] = signal.get('alert_range', 0)
+        
         self.tracker.update_trade(trade_id, {
             'exit_orders': exit_orders,
             'alert_range': signal.get('alert_range', 0)
@@ -915,28 +888,33 @@ class LiveTrader:
                     self.trade_logger.log_exit(trade, exit_price, exit_reason, self.daily_pnl)
                     continue
                 
+                # Check single lot final target first
+                if exit_mode == 'single_lot':
+                    target_idx = self.config.get('strategy', {}).get('single_lot_exit_target', 2) - 1
+                    target_price = targets[target_idx] if target_idx < len(targets) else targets[-1]
+                    if ltp >= target_price:
+                        # Single lot mode: Target is final exit
+                        self.logger.info(f"🎯 [PAPER] TARGET HIT (FINAL) for {symbol} @ ₹{ltp} - Closing Trade")
+                        pnl = (ltp - float(trade['entry_price'])) * float(trade['remaining_qty'])
+                        self.daily_pnl += pnl
+                        self.tracker.close_trade(trade_id, ltp, f"TP{target_idx+1}_HIT", pnl)
+                        self.trade_logger.log_exit(trade, ltp, f"TP{target_idx+1}_HIT", self.daily_pnl)
+                    continue
+                
                 # Check TP1 (multi-lot only - trail SL)
                 if exit_mode == 'multi_lot' and len(targets) > 0 and trail_state < 1 and ltp >= targets[0]:
                     self.logger.info(f"🎯 [PAPER] TP1 HIT for {symbol} @ ₹{ltp}")
                     self._handle_paper_tp_hit(trade, 1, ltp)
+                    trail_state = trade.get('exit_orders', {}).get('trail_state', 0)  # Re-read
                 
                 # Check TP2 
-                if len(targets) > 1 and ltp >= targets[1]:
-                    if exit_mode == 'single_lot':
-                        # Single lot mode: TP2 is final exit
-                        self.logger.info(f"🎯 [PAPER] TP2 HIT (FINAL) for {symbol} @ ₹{ltp} - Closing Trade")
-                        pnl = (ltp - float(trade['entry_price'])) * float(trade['remaining_qty'])
-                        self.daily_pnl += pnl
-                        self.tracker.close_trade(trade_id, ltp, "TP2_HIT", pnl)
-                        self.trade_logger.log_exit(trade, ltp, "TP2_HIT", self.daily_pnl)
-                        continue
-                    elif trail_state < 2:
-                        # Multi-lot mode: TP2 is partial exit + trail
-                        self.logger.info(f"🎯 [PAPER] TP2 HIT for {symbol} @ ₹{ltp}")
-                        self._handle_paper_tp_hit(trade, 2, ltp)
+                if exit_mode == 'multi_lot' and len(targets) > 1 and trail_state == 1 and ltp >= targets[1]:
+                    self.logger.info(f"🎯 [PAPER] TP2 HIT for {symbol} @ ₹{ltp}")
+                    self._handle_paper_tp_hit(trade, 2, ltp)
+                    trail_state = trade.get('exit_orders', {}).get('trail_state', 0)  # Re-read
                 
                 # Check TP3 (multi-lot only - final exit)
-                if exit_mode == 'multi_lot' and len(targets) > 2 and ltp >= targets[2]:
+                if exit_mode == 'multi_lot' and len(targets) > 2 and trail_state == 2 and ltp >= targets[2]:
                     self.logger.info(f"🚀 [PAPER] TP3 HIT for {symbol} @ ₹{ltp} - Closing Trade")
                     pnl = (ltp - float(trade['entry_price'])) * float(trade['remaining_qty'])
                     self.daily_pnl += pnl
@@ -968,23 +946,24 @@ class LiveTrader:
             # 2. Check Target Order Statuses
             exit_mode = exit_orders.get('mode', 'single_lot')
             
-            # Check TP1 (multi-lot only)
-            if exit_mode == 'multi_lot' and len(target_ids) > 0 and target_ids[0] and trail_state < 1:
-                tp1_status = self.client.get_order_status(target_ids[0])
-                if tp1_status and tp1_status.get('status') in ['FILLED', 'COMPLETE']:
-                    self.logger.info(f"🎯 TP1 HIT for {symbol}")
-                    self._handle_tp_hit(trade, 1, tp1_status)
-
-            # Check TP2
-            if len(target_ids) > 1 and target_ids[1]:
-                tp2_status = self.client.get_order_status(target_ids[1])
-                if tp2_status and tp2_status.get('status') in ['FILLED', 'COMPLETE']:
-                    if exit_mode == 'single_lot':
-                        # Single lot mode: TP2 is final - cancel SL and close trade
-                        self.logger.info(f"🎯 TP2 HIT (FINAL) for {symbol} - Closing Trade")
-                        fill_price = tp2_status.get('average_price') or tp2_status.get('price')
+            # Check Targets Iteratively
+            for i, tid in enumerate(target_ids):
+                tp_level = i + 1
+                if not tid: continue
+                
+                # Only check if this target level hasn't been hit yet 
+                # (For multi-lot, trail_state keeps track. For single-lot, it's just one hit then exit)
+                if exit_mode == 'multi_lot' and tp_level <= trail_state:
+                    continue
+                    
+                t_status = self.client.get_order_status(tid)
+                if t_status and t_status.get('status') in ['FILLED', 'COMPLETE']:
+                    fill_price = t_status.get('average_price') or t_status.get('price')
+                    
+                    if exit_mode == 'single_lot' or (exit_mode == 'multi_lot' and tp_level == 3):
+                        # Final Exit (Single Lot OR Multi-lot TP3)
+                        self.logger.info(f"🚀 TP{tp_level} HIT (FINAL) for {symbol} - Closing Trade")
                         
-                        # Cancel SL Order
                         if sl_order_id:
                             self.om.cancel_order(sl_order_id)
                             self.logger.info(f"🛡️ SL Order Cancelled: {sl_order_id}")
@@ -992,32 +971,15 @@ class LiveTrader:
                         # Calculate PnL and close trade
                         pnl = (float(fill_price) - float(trade['entry_price'])) * float(trade['remaining_qty'])
                         self.daily_pnl += pnl
-                        self.tracker.close_trade(trade_id, fill_price, "TP2_HIT", pnl)
-                        self.trade_logger.log_exit(trade, fill_price, "TP2_HIT", self.daily_pnl)
-                        continue
-                    elif trail_state < 2:
-                        # Multi-lot mode: TP2 is partial exit
-                        self.logger.info(f"🎯 TP2 HIT for {symbol}")
-                        self._handle_tp_hit(trade, 2, tp2_status)
-
-            # Check TP3 (multi-lot only - Final)
-            if exit_mode == 'multi_lot' and len(target_ids) > 2 and target_ids[2]:
-                tp3_status = self.client.get_order_status(target_ids[2])
-                if tp3_status and tp3_status.get('status') in ['FILLED', 'COMPLETE']:
-                    self.logger.info(f"🚀 TP3 HIT for {symbol} - Closing Trade")
-                    fill_price = tp3_status.get('average_price') or tp3_status.get('price')
+                        self.tracker.close_trade(trade_id, fill_price, f"TP{tp_level}_HIT", pnl)
+                        self.trade_logger.log_exit(trade, fill_price, f"TP{tp_level}_HIT", self.daily_pnl)
+                        break  # Trade is closed
                     
-                    # Cancel SL Order
-                    if sl_order_id:
-                        self.om.cancel_order(sl_order_id)
-                        self.logger.info(f"🛡️ SL Order Cancelled: {sl_order_id}")
-                    
-                    # Calculate PnL and close trade
-                    pnl = (float(fill_price) - float(trade['entry_price'])) * float(trade['remaining_qty'])
-                    self.daily_pnl += pnl
-                    self.tracker.close_trade(trade_id, fill_price, "TP3_HIT", pnl) 
-                    self.trade_logger.log_exit(trade, fill_price, "TP3_HIT", self.daily_pnl)
-                    continue
+                    elif exit_mode == 'multi_lot':
+                        # Partial Exit (TP1 or TP2)
+                        self.logger.info(f"🎯 TP{tp_level} HIT for {symbol}")
+                        self._handle_tp_hit(trade, tp_level, t_status)
+                        trail_state = trade.get('exit_orders', {}).get('trail_state', 0)
     
     def _handle_paper_tp_hit(self, trade, tp_level, ltp):
         """Handle paper trading TP hit with LTP-based simulation."""
@@ -1043,7 +1005,15 @@ class LiveTrader:
         
         # CRITICAL FIX: Calculate partial P&L for paper trades too
         lot_size = self.config['indices'][underlying]['lot_size']
-        partial_qty = lot_size  # 1 lot per partial exit
+        lots = self.config['strategy'].get('lots_per_trade', 3)
+        lots_per_tp = lots // 3
+        remainder = lots - (2 * lots_per_tp)
+        
+        if tp_level == 1 or tp_level == 2:
+            partial_qty = lots_per_tp * lot_size
+        else:
+            partial_qty = remainder * lot_size
+            
         partial_profit = (ltp - float(trade['entry_price'])) * partial_qty
         self.daily_pnl += partial_profit
         trade['partial_pnl'] = trade.get('partial_pnl', 0) + partial_profit
@@ -1089,7 +1059,7 @@ class LiveTrader:
         self.logger.info(f"Partial Exit TP{tp_level}: Exited {qty_filled} @ ₹{fill_price} | Partial P&L: ₹{partial_profit:.2f} | Remaining {new_remaining}")
         
         # Log partial exit
-        self.trade_logger.log_partial_exit(trade, fill_price, qty_filled, f"TP{tp_level}", self.daily_pnl)
+        self.trade_logger.log_partial_exit(trade, qty_filled, fill_price, f"TP{tp_level}", partial_profit, self.daily_pnl)
         
         # TRAIL SL — use cost-to-cost (entry_price) at TP1, TP1 price at TP2
         # This matches the conservative trailing approach

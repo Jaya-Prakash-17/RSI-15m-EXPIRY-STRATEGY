@@ -144,12 +144,6 @@ class OrderManager:
         targets = signal['targets']
         sl_price = signal['sl']
         
-        # Read partial exit percentages from config (CONFIG #3 fix)
-        partial_config = self.config.get('strategy', {}).get('partial_exits', {})
-        tp1_pct = partial_config.get('tp1_percent', 33) / 100
-        tp2_pct = partial_config.get('tp2_percent', 33) / 100
-        # tp3 gets the remainder
-        
         exit_orders = {
             'mode': exit_mode,
             'orders': [],
@@ -159,15 +153,11 @@ class OrderManager:
         }
         
         if exit_mode == 'multi_lot':
-            # Use config percentages for partial exit quantities
-            tp1_qty = max(1, round(lots * tp1_pct))
-            tp2_qty = max(1, round(lots * tp2_pct))
-            tp3_qty = lots - tp1_qty - tp2_qty
-            if tp3_qty <= 0:
-                tp3_qty = 1
-                tp2_qty = lots - tp1_qty - tp3_qty
+            # Use floor division step function for lots
+            lots_per_tp = lots // 3          # floor division — always whole lots
+            remainder   = lots - (2 * lots_per_tp)  # goes to TP3
             
-            quantities = [tp1_qty, tp2_qty, tp3_qty]
+            quantities = [lots_per_tp, lots_per_tp, remainder]
             
             for i, (qty, target_price) in enumerate(zip(quantities, targets)):
                 tp_level = i + 1
