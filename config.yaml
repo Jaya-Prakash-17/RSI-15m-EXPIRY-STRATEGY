@@ -1,5 +1,5 @@
 backtest:
-  start_date: '2026-03-1'
+  start_date: '2026-3-01'
   end_date: '2026-03-13'
 capital:
   initial: 100000
@@ -8,7 +8,7 @@ data:
   storage_path: data
 indices:
   BANKNIFTY:
-    expiry_day: Wednesday  # Monthly last Tuesday (from Sep 2025)
+    expiry_day: Tuesday  # Monthly last Tuesday (from Sep 2025)
     lot_size: 30
     tick_size: 0.05
   NIFTY:
@@ -30,7 +30,7 @@ strategy:
     period: 9       # RSI(14) — standard Wilder RSI, matches strategy design
     threshold: 60
     warmup_periods: 100  # Minimum for stable Wilder RSI EMA convergence
-  trade_only_on_expiry: false  # Strategy is designed for expiry-day dynamics
+  trade_only_on_expiry: false  # false:trade on every day, true:trade only on expiry day
   trailing_stop:
     enabled: true
     move_by_alert_range: true
