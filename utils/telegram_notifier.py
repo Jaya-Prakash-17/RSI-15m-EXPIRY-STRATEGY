@@ -46,12 +46,13 @@ class TelegramNotifier:
 
     def __init__(self):
         self.token = os.getenv("TELEGRAM_BOT_TOKEN")
-        self.chat_id = os.getenv("TELEGRAM_CHAT_ID")
+        chat_id_env = os.getenv("TELEGRAM_CHAT_ID", "")
+        self.chat_ids = [c.strip() for c in chat_id_env.split(',') if c.strip()]
         self.logger = logging.getLogger("TelegramNotifier")
 
-        self.enabled = bool(self.token and self.chat_id)
+        self.enabled = bool(self.token and self.chat_ids)
         if self.enabled:
-            self.logger.info("✅ Telegram notifications enabled")
+            self.logger.info(f"✅ Telegram notifications enabled for {len(self.chat_ids)} chat(s)")
         else:
             self.logger.warning(
                 "⚠️  Telegram not configured — add TELEGRAM_BOT_TOKEN and "
@@ -66,23 +67,25 @@ class TelegramNotifier:
         """Send a message. Silent fail — will never crash the bot."""
         if not self.enabled:
             return
-        try:
-            url = f"https://api.telegram.org/bot{self.token}/sendMessage"
-            resp = requests.post(
-                url,
-                json={
-                    "chat_id": self.chat_id,
-                    "text": message,
-                    "parse_mode": "HTML",
-                },
-                timeout=5,
-            )
-            if not resp.ok:
-                self.logger.error(f"Telegram error {resp.status_code}: {resp.text[:200]}")
-        except requests.exceptions.Timeout:
-            self.logger.warning("Telegram send timed out (5s) — skipping")
-        except Exception as e:
-            self.logger.error(f"Telegram send failed: {e}")
+            
+        url = f"https://api.telegram.org/bot{self.token}/sendMessage"
+        for chat_id in self.chat_ids:
+            try:
+                resp = requests.post(
+                    url,
+                    json={
+                        "chat_id": chat_id,
+                        "text": message,
+                        "parse_mode": "HTML",
+                    },
+                    timeout=5,
+                )
+                if not resp.ok:
+                    self.logger.error(f"Telegram error {resp.status_code} for chat {chat_id}: {resp.text[:200]}")
+            except requests.exceptions.Timeout:
+                self.logger.warning(f"Telegram send timed out (5s) for chat {chat_id} — skipping")
+            except Exception as e:
+                self.logger.error(f"Telegram send failed for chat {chat_id}: {e}")
 
     @staticmethod
     def _now():
