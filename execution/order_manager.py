@@ -3,6 +3,16 @@ import logging
 import time
 from core.groww_client import GrowwClient
 
+def is_order_filled(status: str) -> bool:
+    """
+    Unified order fill check.
+    Covers all Groww API status string variants.
+    Use this everywhere instead of inline status string comparisons.
+    """
+    if not status:
+        return False
+    return status.upper() in {'COMPLETE', 'FILLED', 'EXECUTED', 'COMPLETED'}
+
 class OrderManager:
     def __init__(self, config):
         self.logger = logging.getLogger("OrderManager")
@@ -66,7 +76,7 @@ class OrderManager:
             filled_qty = int(status.get('filled_quantity', 0))
             avg_price = float(status.get('avg_price', 0) or 0)
             
-            if s in ['EXECUTED', 'COMPLETED']:
+            if is_order_filled(s):
                 self.logger.info(f"Order {order_id} FILLED: Qty={filled_qty}, Price=₹{avg_price}")
                 return avg_price  # Returning just price for backward compatibility
             
@@ -95,7 +105,7 @@ class OrderManager:
             # Final status check — order may have filled between timeout and cancel
             time.sleep(2)
             final_status = self.client.get_order_status(order_id)
-            if final_status and final_status.get('status') in ['EXECUTED', 'COMPLETED']:
+            if final_status and is_order_filled(final_status.get('status', '')):
                 avg_price = float(final_status.get('avg_price', 0) or 0)
                 self.logger.info(f"Order {order_id} filled during final check: ₹{avg_price}")
                 return avg_price

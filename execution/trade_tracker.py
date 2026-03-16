@@ -85,6 +85,14 @@ class TradeTracker:
         with self.lock:
             data = self._load_data()
             return data.get("active_trades", [])
+            
+    def has_active_trade_for_index(self, index_name):
+        """Check if there is already an active trade for a specific underlying index."""
+        active_trades = self.get_active_trades()
+        for trade in active_trades:
+            if trade.get("underlying") == index_name:
+                return True
+        return False
     
     def update_trade(self, trade_id, updates):
         """Update an existing trade."""

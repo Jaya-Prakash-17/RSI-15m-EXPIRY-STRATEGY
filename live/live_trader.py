@@ -6,7 +6,7 @@ import math
 import pandas as pd
 from datetime import datetime, timedelta
 from data.data_manager import DataManager
-from execution.order_manager import OrderManager
+from execution.order_manager import OrderManager, is_order_filled
 from execution.trade_tracker import TradeTracker
 from strategy.expiry_rsi_breakout import ExpiryRSIBreakout
 from core.groww_client import GrowwClient
@@ -187,9 +187,9 @@ class LiveTrader:
                     # Live trades: check broker order status
                     try:
                         status = self.client.get_order_status(order_id)
-                        if status and status.get('status') in ['COMPLETE', 'FILLED']:
+                        if status and is_order_filled(status.get('status')):
                             # Order filled while we were down — activate trade
-                            fill_price = status.get('avg_price') or status.get('average_price') or pending.get('trigger_price')
+                            fill_price = status.get('average_price') or status.get('avg_price') or status.get('price') or pending.get('trigger_price')
                             self.logger.critical(f"🚨 Pending entry {order_id} FILLED while bot was offline @ ₹{fill_price}")
                             self._activate_trade_from_pending(pending, fill_price=float(fill_price))
                         elif status and status.get('status') in ['PENDING', 'OPEN', 'NOT_FILLED']:
@@ -443,18 +443,30 @@ class LiveTrader:
         
         # Place pending entry order for best alert candidate
         if alert_candidates and is_tradable:
-            # Check if we already have a pending entry or active trade
-            if self.pending_entries:
-                self.logger.info(f"Already have {len(self.pending_entries)} pending entry order(s). Skipping new alerts.")
+            # Check if we already have a pending entry or active trade (PER INDEX LIMIT)
+            filtered_candidates = []
+            
+            for candidate in alert_candidates:
+                under_idx = candidate['underlying']
+                
+                has_pending = any(p.get('underlying') == under_idx for p in self.pending_entries.values())
+                has_active = self.tracker.has_active_trade_for_index(under_idx)
+                
+                if has_pending:
+                    self.logger.info(f"Already have pending entry for {under_idx}. Skipping new alerts for {under_idx}.")
+                    continue
+                    
+                if has_active:
+                    self.logger.info(f"Already have active trade for {under_idx}. Skipping new alerts for {under_idx}.")
+                    continue
+                    
+                filtered_candidates.append(candidate)
+            
+            if not filtered_candidates:
                 return
             
-            active_trades = self.tracker.get_active_trades()
-            if active_trades:
-                self.logger.info(f"Already have {len(active_trades)} active trade(s). Skipping new alerts.")
-                return
-            
-            alert_candidates.sort(key=lambda x: (x['dist'], -x['volume']))
-            best = alert_candidates[0]
+            filtered_candidates.sort(key=lambda x: (x['dist'], -x['volume']))
+            best = filtered_candidates[0]
             self.logger.info(f"Best ALERT from {best['underlying']}: {best['symbol']}")
             
             # Send Telegram alert for ALL candidates (ranked), not just the best
@@ -851,9 +863,9 @@ class LiveTrader:
                 
                 status = order_status.get('status', '').upper()
                 
-                if status == 'COMPLETE' or status == 'FILLED':
+                if is_order_filled(status):
                     # ORDER FILLED - Create active trade
-                    fill_price = order_status.get('average_price') or order_status.get('price') or pending['trigger_price']
+                    fill_price = order_status.get('average_price') or order_status.get('avg_price') or order_status.get('price') or pending['trigger_price']
                     
                     self.logger.info(f"🎯 PENDING ENTRY FILLED: {symbol} @ ₹{fill_price}")
                     self._activate_trade_from_pending(pending, fill_price=fill_price)
@@ -948,9 +960,9 @@ class LiveTrader:
             # 1. Check SL Order Status
             if sl_order_id:
                 sl_status = self.client.get_order_status(sl_order_id)
-                if sl_status and sl_status.get('status') in ['FILLED', 'COMPLETE']:
+                if sl_status and is_order_filled(sl_status.get('status')):
                     self.logger.info(f"🔴 SL HIT for {symbol} (Order {sl_order_id})")
-                    fill_price = sl_status.get('average_price') or sl_status.get('price')
+                    fill_price = sl_status.get('average_price') or sl_status.get('avg_price') or sl_status.get('price')
                     
                     # Cancel all pending target orders
                     for tid in target_ids:
@@ -978,8 +990,8 @@ class LiveTrader:
                     continue
                     
                 t_status = self.client.get_order_status(tid)
-                if t_status and t_status.get('status') in ['FILLED', 'COMPLETE']:
-                    fill_price = t_status.get('average_price') or t_status.get('price')
+                if t_status and is_order_filled(t_status.get('status')):
+                    fill_price = t_status.get('average_price') or t_status.get('avg_price') or t_status.get('price')
                     
                     if exit_mode == 'single_lot' or (exit_mode == 'multi_lot' and tp_level == 3):
                         # Final Exit (Single Lot OR Multi-lot TP3)
