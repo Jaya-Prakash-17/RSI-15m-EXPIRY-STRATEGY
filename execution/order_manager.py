@@ -24,6 +24,14 @@ class OrderManager:
         if self.paper_trading:
             self.logger.warning("*** PAPER TRADING MODE ENABLED - No real orders will be placed ***") 
 
+    def _resolve_lot_size(self, symbol, trading_symbol=None):
+        """Infer lot size from the configured underlying names."""
+        symbol_text = f"{symbol or ''} {trading_symbol or ''}"
+        for underlying, details in self.config.get('indices', {}).items():
+            if underlying in symbol_text:
+                return details.get('lot_size', 1)
+        return 1
+
     def place_entry_order(self, symbol, qty, price, trading_symbol, order_type="SL-M"):
         """
         Places an entry order.
@@ -116,6 +124,14 @@ class OrderManager:
 
     def place_exit_order(self, symbol, qty, trading_symbol, reason="TARGET"):
         self.logger.info(f"Placing EXIT for {symbol} (TS: {trading_symbol}) Qty: {qty} Reason: {reason}")
+
+        if self.paper_trading:
+            self.logger.info("[PAPER TRADE] Simulated exit order (no real order placed)")
+            return {
+                'groww_order_id': f"PAPER_EXIT_{symbol}_{int(time.time())}",
+                'status': 'PAPER',
+                'message': 'Paper trade - no real order'
+            }
         
         resp = self.client.place_order(
             symbol=symbol,
@@ -153,6 +169,7 @@ class OrderManager:
         lots = signal.get('lots_per_trade', 3)
         targets = signal['targets']
         sl_price = signal['sl']
+        lot_size = self._resolve_lot_size(symbol, trading_symbol)
         
         exit_orders = {
             'mode': exit_mode,
@@ -167,11 +184,24 @@ class OrderManager:
             lots_per_tp = lots // 3          # floor division — always whole lots
             remainder   = lots - (2 * lots_per_tp)  # goes to TP3
             
-            quantities = [lots_per_tp, lots_per_tp, remainder]
+            quantities = [
+                lots_per_tp * lot_size,
+                lots_per_tp * lot_size,
+                remainder * lot_size
+            ]
             
             for i, (qty, target_price) in enumerate(zip(quantities, targets)):
                 tp_level = i + 1
-                self.logger.info(f"Setting up partial exit TP{tp_level}: {qty} lots at ₹{target_price}")
+                if qty <= 0:
+                    exit_orders['orders'].append({
+                        'target_level': tp_level,
+                        'target_price': target_price,
+                        'quantity': qty,
+                        'status': 'skipped',
+                        'order_id': None
+                    })
+                    continue
+                self.logger.info(f"Setting up partial exit TP{tp_level}: {qty} units at ₹{target_price}")
                 
                 # CRITICAL FIX #2: Actually place broker target orders (not just tracking)
                 order_id = None
@@ -196,13 +226,14 @@ class OrderManager:
             target_idx = self.config.get('strategy', {}).get('single_lot_exit_target', 2) - 1
             target_price = targets[target_idx] if target_idx < len(targets) else targets[-1]
             tp_level = target_idx + 1
+            exit_qty = lots * lot_size
             
-            self.logger.info(f"Setting up single-lot exit at TP{tp_level}: {lots} lots at ₹{target_price}")
+            self.logger.info(f"Setting up single-lot exit at TP{tp_level}: {exit_qty} units at ₹{target_price}")
             
             # Place broker order in live mode
             order_id = None
             if not self.paper_trading:
-                order_resp = self.place_target_order(symbol, lots, target_price, trading_symbol)
+                order_resp = self.place_target_order(symbol, exit_qty, target_price, trading_symbol)
                 if order_resp and 'groww_order_id' in order_resp:
                     order_id = order_resp['groww_order_id']
                     self.logger.info(f"🎯 Broker Target TP{tp_level} placed: {order_id} @ ₹{target_price}")
@@ -210,7 +241,7 @@ class OrderManager:
             exit_orders['orders'].append({
                 'target_level': tp_level,
                 'target_price': target_price,
-                'quantity': lots,
+                'quantity': exit_qty,
                 'status': 'pending',
                 'order_id': order_id
             })

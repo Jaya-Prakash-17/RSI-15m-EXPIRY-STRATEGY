@@ -70,9 +70,29 @@ class TradeLogger:
             }
             self._write_row(row)
     
-    def log_exit(self, trade, daily_pnl=0, capital=0):
-        """Log trade exit."""
+    def log_exit(self, trade, daily_pnl=0, capital=0, *legacy_args):
+        """Log trade exit.
+
+        Supports both `(trade, daily_pnl, capital)` and the older
+        `(trade, exit_price, reason, daily_pnl[, capital])` call style.
+        """
         with self.lock:
+            exit_price = trade.get('exit_price', 0)
+            exit_time = trade.get('exit_time', datetime.now().isoformat())
+            reason = trade.get('reason', 'UNKNOWN')
+            pnl = trade.get('pnl', 0)
+
+            if isinstance(capital, str):
+                exit_price = daily_pnl
+                reason = capital
+                daily_pnl = legacy_args[0] if legacy_args else 0
+                capital = legacy_args[1] if len(legacy_args) > 1 else 0
+
+                remaining_qty = trade.get('remaining_qty', trade.get('qty', 0))
+                partial_pnl = trade.get('partial_pnl', 0)
+                pnl = (exit_price - trade.get('entry_price', 0)) * remaining_qty + partial_pnl
+                exit_time = datetime.now().isoformat()
+
             row = {
                 'timestamp': datetime.now().isoformat(),
                 'trade_id': trade.get('trade_id', ''),
@@ -83,12 +103,12 @@ class TradeLogger:
                 'entry_time': trade.get('entry_time', ''),
                 'entry_price': trade.get('entry_price', 0),
                 'qty': trade.get('qty', 0),
-                'exit_time': trade.get('exit_time', datetime.now().isoformat()),
-                'exit_price': trade.get('exit_price', 0),
+                'exit_time': exit_time,
+                'exit_price': exit_price,
                 'sl': trade.get('sl', 0),
                 'target': trade.get('targets', [0, 0, 0])[2] if trade.get('targets') else 0,
-                'reason': trade.get('reason', 'UNKNOWN'),
-                'pnl': trade.get('pnl', 0),
+                'reason': reason,
+                'pnl': pnl,
                 'pnl_if_sl_hit': trade.get('pnl_if_sl_hit', ''),
                 'max_loss_savings': trade.get('max_loss_savings', ''),
                 'remaining_qty': trade.get('remaining_qty', 0),
@@ -99,10 +119,10 @@ class TradeLogger:
             self._write_row(row)
             
             # Log MAX_LOSS comparison
-            if trade.get('reason') == 'MAX_LOSS':
+            if reason == 'MAX_LOSS':
                 self.logger.info(
                     f"MAX_LOSS EXIT: {trade.get('symbol')} | "
-                    f"Actual PnL: ₹{trade.get('pnl', 0):.2f} | "
+                    f"Actual PnL: ₹{pnl:.2f} | "
                     f"If SL hit: ₹{trade.get('pnl_if_sl_hit', 0):.2f} | "
                     f"Saved: ₹{trade.get('max_loss_savings', 0):.2f}"
                 )

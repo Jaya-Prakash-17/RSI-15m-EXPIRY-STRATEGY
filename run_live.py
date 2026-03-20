@@ -84,7 +84,7 @@ def signal_handler(sig, frame):
                 logger.info(f"Emergency square-off: {trade['symbol']}")
                 trader_instance.om.place_exit_order(
                     trade['symbol'],
-                    trade['qty'],
+                    trade.get('remaining_qty', trade['qty']),
                     trade['trading_symbol'],
                     "EMERGENCY_SHUTDOWN"
                 )

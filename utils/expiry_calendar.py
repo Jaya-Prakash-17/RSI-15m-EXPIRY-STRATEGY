@@ -90,6 +90,18 @@ def _last_weekday_of_month(year: int, month: int, target_weekday: int) -> date:
     return _prev_trading_day(d)
 
 
+def _is_adjusted_weekly_expiry(check_date: date, weekday_resolver) -> bool:
+    """Return True when check_date is the traded day for a weekly expiry."""
+    for offset in range(7):
+        scheduled = check_date + timedelta(days=offset)
+        target_weekday = weekday_resolver(scheduled)
+        if target_weekday is None or scheduled.weekday() != target_weekday:
+            continue
+        if _prev_trading_day(scheduled) == check_date:
+            return True
+    return False
+
+
 # ─── Core: expiry weekday lookup ────────────────────────────────────────────
 
 def _nifty_expiry_weekday(d: date) -> int:
@@ -171,13 +183,7 @@ def is_expiry_day(underlying: str, check_date: date) -> bool:
 
     # ── NIFTY ──────────────────────────────────────────────────────────────
     if underlying == 'NIFTY':
-        target_wd = _nifty_expiry_weekday(check_date)
-        if weekday != target_wd:
-            return False
-        # Every target weekday is an expiry (weekly).
-        # Holiday adjustment: if target weekday is holiday, it already moved;
-        # _is_trading_day above handles that naturally.
-        return True
+        return _is_adjusted_weekly_expiry(check_date, _nifty_expiry_weekday)
 
     # ── BANKNIFTY ──────────────────────────────────────────────────────────
     elif underlying == 'BANKNIFTY':
@@ -198,13 +204,7 @@ def is_expiry_day(underlying: str, check_date: date) -> bool:
 
     # ── SENSEX ─────────────────────────────────────────────────────────────
     elif underlying == 'SENSEX':
-        # SENSEX: weekly expiry every target weekday
-        weekly_wd = _sensex_expiry_weekday(check_date)
-        if weekly_wd is None:
-            return False  # No weekly contracts yet
-        if weekday != weekly_wd:
-            return False
-        return True
+        return _is_adjusted_weekly_expiry(check_date, _sensex_expiry_weekday)
 
     else:
         logger.warning(f"Unknown underlying: {underlying}")
