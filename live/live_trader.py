@@ -724,6 +724,7 @@ class LiveTrader:
         qty = pending['qty']
         trading_symbol = pending['trading_symbol']
         original_symbol = pending.get('original_symbol', trading_symbol)
+        targets = [self._round_to_tick(t, underlying) for t in signal.get('targets', [])]
         
         # Consume the alert
         self.strategy.consume_alert(original_symbol)
@@ -769,7 +770,7 @@ class LiveTrader:
         
         # Create trade record
         trade_record = {
-            'symbol': trading_symbol,
+            'symbol': original_symbol,
             'trading_symbol': trading_symbol,
             'underlying': underlying,
             'qty': qty,
@@ -777,7 +778,7 @@ class LiveTrader:
             'entry_price': fill_price,
             'entry_time': datetime.now().isoformat(),
             'sl': sl_price,
-            'targets': [self._round_to_tick(t, underlying) for t in targets],
+            'targets': targets,
             # Order IDs for tracking
             'entry_order_id': order_id,
             'sl_order_id': sl_order_id,
@@ -802,6 +803,7 @@ class LiveTrader:
         # Update tracker with exit orders from om.place_partial_exits
         trade_record['exit_orders'] = exit_orders
         trade_record['alert_range'] = signal.get('alert_range', 0)
+        exit_mode = exit_orders.get('mode', signal.get('exit_mode', 'single_lot'))
         
         self.tracker.update_trade(trade_id, {
             'exit_orders': exit_orders,
@@ -812,7 +814,7 @@ class LiveTrader:
         
         # Telegram: entry confirmed
         self.telegram.entry_confirmed(
-            symbol=trading_symbol,
+            symbol=original_symbol,
             entry_price=fill_price,
             sl=sl_price,
             t1=targets[0] if len(targets) > 0 else 0,
@@ -915,9 +917,10 @@ class LiveTrader:
                     exit_reason = "SL_HIT"
                     self.logger.info(f"🔴 [PAPER] SL HIT for {symbol} @ ₹{exit_price}")
                     
-                    pnl = (exit_price - float(trade['entry_price'])) * float(trade['remaining_qty'])
-                    self.daily_pnl += pnl
-                    self.tracker.close_trade(trade_id, exit_price, exit_reason, pnl)
+                    final_pnl = (exit_price - float(trade['entry_price'])) * float(trade['remaining_qty'])
+                    total_pnl = final_pnl + float(trade.get('partial_pnl', 0))
+                    self.daily_pnl += final_pnl
+                    self.tracker.close_trade(trade_id, exit_price, exit_reason, total_pnl)
                     self.trade_logger.log_exit(trade, exit_price, exit_reason, self.daily_pnl)
                     continue
                 
@@ -928,9 +931,10 @@ class LiveTrader:
                     if ltp >= target_price:
                         # Single lot mode: Target is final exit
                         self.logger.info(f"🎯 [PAPER] TARGET HIT (FINAL) for {symbol} @ ₹{ltp} - Closing Trade")
-                        pnl = (ltp - float(trade['entry_price'])) * float(trade['remaining_qty'])
-                        self.daily_pnl += pnl
-                        self.tracker.close_trade(trade_id, ltp, f"TP{target_idx+1}_HIT", pnl)
+                        final_pnl = (ltp - float(trade['entry_price'])) * float(trade['remaining_qty'])
+                        total_pnl = final_pnl + float(trade.get('partial_pnl', 0))
+                        self.daily_pnl += final_pnl
+                        self.tracker.close_trade(trade_id, ltp, f"TP{target_idx+1}_HIT", total_pnl)
                         self.trade_logger.log_exit(trade, ltp, f"TP{target_idx+1}_HIT", self.daily_pnl)
                     continue
                 
@@ -949,9 +953,10 @@ class LiveTrader:
                 # Check TP3 (multi-lot only - final exit)
                 if exit_mode == 'multi_lot' and len(targets) > 2 and trail_state == 2 and ltp >= targets[2]:
                     self.logger.info(f"🚀 [PAPER] TP3 HIT for {symbol} @ ₹{ltp} - Closing Trade")
-                    pnl = (ltp - float(trade['entry_price'])) * float(trade['remaining_qty'])
-                    self.daily_pnl += pnl
-                    self.tracker.close_trade(trade_id, ltp, "TP3_HIT", pnl)
+                    final_pnl = (ltp - float(trade['entry_price'])) * float(trade['remaining_qty'])
+                    total_pnl = final_pnl + float(trade.get('partial_pnl', 0))
+                    self.daily_pnl += final_pnl
+                    self.tracker.close_trade(trade_id, ltp, "TP3_HIT", total_pnl)
                     self.trade_logger.log_exit(trade, ltp, "TP3_HIT", self.daily_pnl)
                 
                 continue
@@ -970,9 +975,10 @@ class LiveTrader:
                             self.om.cancel_order(tid)
                     
                     # Close trade
-                    pnl = (float(fill_price) - float(trade['entry_price'])) * float(trade['remaining_qty'])
-                    self.daily_pnl += pnl 
-                    self.tracker.close_trade(trade_id, fill_price, "SL_HIT", pnl)
+                    final_pnl = (float(fill_price) - float(trade['entry_price'])) * float(trade['remaining_qty'])
+                    total_pnl = final_pnl + float(trade.get('partial_pnl', 0))
+                    self.daily_pnl += final_pnl 
+                    self.tracker.close_trade(trade_id, fill_price, "SL_HIT", total_pnl)
                     self.trade_logger.log_exit(trade, fill_price, "SL_HIT", self.daily_pnl)
                     continue
 
@@ -1002,9 +1008,10 @@ class LiveTrader:
                             self.logger.info(f"🛡️ SL Order Cancelled: {sl_order_id}")
                         
                         # Calculate PnL and close trade
-                        pnl = (float(fill_price) - float(trade['entry_price'])) * float(trade['remaining_qty'])
-                        self.daily_pnl += pnl
-                        self.tracker.close_trade(trade_id, fill_price, f"TP{tp_level}_HIT", pnl)
+                        final_pnl = (float(fill_price) - float(trade['entry_price'])) * float(trade['remaining_qty'])
+                        total_pnl = final_pnl + float(trade.get('partial_pnl', 0))
+                        self.daily_pnl += final_pnl
+                        self.tracker.close_trade(trade_id, fill_price, f"TP{tp_level}_HIT", total_pnl)
                         self.trade_logger.log_exit(trade, fill_price, f"TP{tp_level}_HIT", self.daily_pnl)
                         break  # Trade is closed
                     
@@ -1255,11 +1262,11 @@ class LiveTrader:
         # BUG-003 FIX: Config-driven single-lot exit target (default: T2)
         target_idx = self.config['strategy'].get('single_lot_exit_target', 2) - 1
         
-        # Check TP1 hit (trail SL, don't exit)
-        if ltp >= targets[0] and trail_state == 0:
+        # Trail on TP1 hit (to BE)
+        if target_idx >= 1 and ltp >= targets[0] and trail_state == 0:
             self.logger.info(f"🎯 TP1 reached for {trade_id} at ₹{ltp}")
             
-            # Trail SL (no exit)
+            # Trail SL (no exit) - Move from alert_low-1 to alert_high-1 (Entry)
             new_sl = exit_orders['current_sl'] + alert_range
             exit_orders['current_sl'] = new_sl
             exit_orders['trail_state'] = 1
@@ -1267,12 +1274,33 @@ class LiveTrader:
             # Modify broker SL order with new trigger
             if sl_order_id:
                 self.om.modify_sl_order(sl_order_id, new_sl)
-                self.logger.info(f"🛡️ Broker SL Modified: {sl_order_id} → ₹{new_sl}")
+                self.logger.info(f"🛡️ Broker SL Modified: {sl_order_id} → ₹{new_sl} (BE)")
             
             self.logger.info(f"✅ SL trailed to ₹{new_sl} (no exit)")
+            # Update trail_state local variable for the next check
+            trail_state = 1
+
+        # Trail on TP2 hit (to TP1 level)
+        if target_idx >= 2 and ltp >= targets[1] and trail_state == 1:
+            self.logger.info(f"🎯 TP2 reached for {trade_id} at ₹{ltp}")
+            
+            # Trail SL (no exit) - Move from alert_high-1 to TP1-1
+            new_sl = exit_orders['current_sl'] + alert_range
+            exit_orders['current_sl'] = new_sl
+            exit_orders['trail_state'] = 2
+            
+            # Modify broker SL order with new trigger
+            if sl_order_id:
+                self.om.modify_sl_order(sl_order_id, new_sl)
+                self.logger.info(f"🛡️ Broker SL Modified: {sl_order_id} → ₹{new_sl} (TP1 level)")
+            
+            self.logger.info(f"✅ SL trailed to ₹{new_sl} (no exit)")
+            # Update trail_state local variable for the next check
+            trail_state = 2
         
         # Check configured target hit (FINAL EXIT for single-lot mode)
-        elif ltp >= targets[target_idx] and trail_state >= 1:
+        # Using IF instead of ELIF to allow trail + exit in same poll cycle
+        if ltp >= targets[target_idx]:
             self.logger.info(f"🎯 TP{target_idx+1} HIT (FINAL) for {trade_id} at ₹{ltp}")
             
             # Close entire position
@@ -1285,6 +1313,7 @@ class LiveTrader:
         trade_id = trade['trade_id']
         remaining_qty = trade.get('remaining_qty', trade['qty'])
         sl_order_id = trade.get('sl_order_id')
+        exit_orders = trade.get('exit_orders', {})
         
         # Cancel broker SL order (no longer needed, we're exiting)
         if sl_order_id:
@@ -1413,10 +1442,10 @@ class LiveTrader:
                         
                         # Get LTP for final P&L
                         ltp = self.client.get_ltp(trade['symbol']) or trade['entry_price']
-                        pnl = (ltp - trade['entry_price']) * trade.get('remaining_qty', trade['qty'])
-                        pnl += trade.get('partial_pnl', 0)  # Add any partial profits
-                        self.daily_pnl += pnl
-                        self.tracker.close_trade(trade['trade_id'], ltp, "SQ_OFF", pnl)
+                        final_pnl = (ltp - trade['entry_price']) * trade.get('remaining_qty', trade['qty'])
+                        total_pnl = final_pnl + trade.get('partial_pnl', 0)
+                        self.daily_pnl += final_pnl
+                        self.tracker.close_trade(trade['trade_id'], ltp, "SQ_OFF", total_pnl)
                         self.trade_logger.log_exit(trade, ltp, "SQ_OFF", self.daily_pnl)
                     
                     self.logger.info(f"✅ End of day. Daily P&L: ₹{self.daily_pnl:.2f}")

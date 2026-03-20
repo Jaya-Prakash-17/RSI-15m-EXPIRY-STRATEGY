@@ -31,24 +31,42 @@ class GrowwClient:
             raise ImportError(error_msg)
         
         if not self.api_key or not self.api_secret:
-            error_msg = (
-                "CRITICAL: API credentials missing. "
-                "Set GROWW_API_KEY and GROWW_API_SECRET in .env file"
+            self.logger.warning(
+                "API credentials missing. "
+                "Set GROWW_API_KEY and GROWW_API_SECRET in .env file if trading or downloading data."
             )
-            self.logger.critical(error_msg)
-            raise ValueError(error_msg)
+            # We don't raise here anymore to allow backtests with local data to start.
+            return
         
-        self._authenticate()
+        # Attempt initial authentication but don't crash if it fails (lazy fallback)
+        try:
+            self._authenticate()
+        except Exception as e:
+            self.logger.warning(f"Initial authentication failed: {e}. Will retry on next API call.")
 
 
     def _authenticate(self):
+        """Internal authentication logic with better error messages."""
+        if not self.api_key or not self.api_secret:
+            raise ValueError("API credentials missing. Cannot authenticate.")
+
         try:
             access_token = GrowwAPI.get_access_token(api_key=self.api_key, secret=self.api_secret)
             self.client = GrowwAPI(access_token)
             self.logger.info("Successfully authenticated with Groww API.")
         except Exception as e:
-            error_msg = f"CRITICAL: Authentication failed: {e}"
-            self.logger.critical(error_msg)
+            msg = str(e)
+            if "Authorisation failed" in msg or "permissions" in msg:
+                error_msg = (
+                    "CRITICAL: Groww Authorisation Failed. "
+                    "1. Check if GROWW_API_KEY is correct and NOT EXPIRED (JWT tokens expire daily). "
+                    "2. Ensure 'Trading API' is enabled on your Groww developer portal. "
+                    "3. Ensure you have 'Approved' the daily session if using Key/Secret flow."
+                )
+            else:
+                error_msg = f"CRITICAL: Authentication failed: {e}"
+            
+            self.logger.error(error_msg)
             raise ConnectionError(error_msg)
 
 
@@ -89,6 +107,8 @@ class GrowwClient:
                 # Determine exchange from symbol prefix (BSE-SENSEX... or NSE-NIFTY...)
                 exchange = GrowwAPI.EXCHANGE_BSE if symbol.startswith("BSE-") else GrowwAPI.EXCHANGE_NSE
                 segment = GrowwAPI.SEGMENT_FNO
+            
+            if not self.client: self._authenticate()
             
             try:
                 self.logger.info(f"Fetching candles for {symbol} using symbol: {groww_symbol}, segment: {segment}")
@@ -142,6 +162,7 @@ class GrowwClient:
     def get_order_status(self, order_id):
         """Fetch status of an order."""
         try:
+            if not self.client: self._authenticate()
             segment = GrowwAPI.SEGMENT_FNO
             resp = self.client.get_order_status(
                 groww_order_id=order_id,
@@ -178,6 +199,7 @@ class GrowwClient:
                 segment = GrowwAPI.SEGMENT_CASH
             else:
                 # Option LTP - resolve to compact format via instruments
+                if not self.client: self._authenticate()
                 instr = self.client.get_instrument_by_groww_symbol(symbol)
                 if not instr:
                     self.logger.error(f"Could not resolve instrument for option symbol {symbol}")
@@ -186,6 +208,7 @@ class GrowwClient:
                 key = f"{instr['exchange']}_{instr['trading_symbol']}"
                 segment = GrowwAPI.SEGMENT_FNO
 
+            if not self.client: self._authenticate()
             resp = self.client.get_ltp(
                 segment=segment,
                 exchange_trading_symbols=key
@@ -230,6 +253,7 @@ class GrowwClient:
             else:
                 exchange = GrowwAPI.EXCHANGE_NSE
             
+            if not self.client: self._authenticate()
             resp = self.client.place_order(
                 trading_symbol=trading_symbol,
                 quantity=qty,
@@ -250,6 +274,7 @@ class GrowwClient:
 
     def get_balance(self):
         try:
+            if not self.client: self._authenticate()
             resp = self.client.get_available_margin_details()
             if 'fno_margin_details' in resp:
                 return float(resp['fno_margin_details'].get('option_buy_balance_available', 0.0))
@@ -299,6 +324,7 @@ class GrowwClient:
             if trigger_price is not None:
                 modify_params['trigger_price'] = trigger_price
             
+            if not self.client: self._authenticate()
             resp = self.client.modify_order(**modify_params)
             
             if resp and 'groww_order_id' in resp:
@@ -325,6 +351,7 @@ class GrowwClient:
         """
         try:
             seg = segment or GrowwAPI.SEGMENT_FNO
+            if not self.client: self._authenticate()
             resp = self.client.cancel_order(
                 groww_order_id=order_id,
                 segment=seg
@@ -346,6 +373,7 @@ class GrowwClient:
             # Use BSE for SENSEX, NSE for others
             exchange = GrowwAPI.EXCHANGE_BSE if underlying == "SENSEX" else GrowwAPI.EXCHANGE_NSE
             
+            if not self.client: self._authenticate()
             resp = self.client.get_contracts(
                 exchange=exchange,
                 underlying_symbol=underlying,
@@ -361,6 +389,7 @@ class GrowwClient:
             # Use BSE for SENSEX, NSE for others
             exchange = GrowwAPI.EXCHANGE_BSE if underlying == "SENSEX" else GrowwAPI.EXCHANGE_NSE
             
+            if not self.client: self._authenticate()
             resp = self.client.get_expiries(
                 exchange=exchange,
                 underlying_symbol=underlying
@@ -378,6 +407,7 @@ class GrowwClient:
             # Use BSE for SENSEX, NSE for others
             exchange = GrowwAPI.EXCHANGE_BSE if underlying == "SENSEX" else GrowwAPI.EXCHANGE_NSE
             
+            if not self.client: self._authenticate()
             resp = self.client.get_option_chain(
                 exchange=exchange,
                 underlying=underlying,

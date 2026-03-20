@@ -416,6 +416,22 @@ class IntradayEngine:
         else:
             # Single lot mode: Exit fully at configured target (default: T2)
             target_idx = self.config['strategy'].get('single_lot_exit_target', 2) - 1
+            
+            # Trail on TP1 hit (to BE)
+            if target_idx >= 1 and trade['tp_hits'] < 1 and row['high'] >= trade['targets'][0]:
+                new_sl = trade['sl'] + trade['alert_range']
+                trade['sl'] = new_sl
+                trade['tp_hits'] = 1
+                self.logger.info(f"SINGLE_LOT TRAIL TP1: {symbol} | New SL: {new_sl} (Break-even)")
+            
+            # Trail on TP2 hit (to TP1 level)
+            if target_idx >= 2 and trade['tp_hits'] < 2 and row['high'] >= trade['targets'][1]:
+                new_sl = trade['sl'] + trade['alert_range']
+                trade['sl'] = new_sl
+                trade['tp_hits'] = 2
+                self.logger.info(f"SINGLE_LOT TRAIL TP2: {symbol} | New SL: {new_sl} (TP1 level)")
+
+            # Final Target Exit Condition
             if row['high'] >= trade['targets'][target_idx]:
                 exit_price = trade['targets'][target_idx]
                 pnl = (exit_price - trade['entry_price']) * trade['qty']
