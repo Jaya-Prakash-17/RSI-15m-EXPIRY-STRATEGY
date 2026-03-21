@@ -1,6 +1,6 @@
 backtest:
-  start_date: '2026-01-01'
-  end_date: '2026-03-20'
+  start_date: '2025-01-01'
+  end_date: '2025-12-31'
 capital:
   initial: 100000
 data:
@@ -33,7 +33,7 @@ strategy:
     min_candles_for_signal: 27   # rsi_period × 3 — minimum before any alert fires
   trade_only_on_expiry: false  # false:trade on every day, true:trade only on expiry day
   rsi_debug: false   # set true only when validating RSI values against Groww chart
-  safe_sl_mode: false # If true, caps SL distance to max loss limit below
+  safe_sl_mode: true # If true, caps SL distance to max loss limit below
   safe_sl_max_loss: 5000 # Max ₹ loss per trade position (total across all lots)
   min_sl_pct: 0.08   # 8% of trigger price floor for stop loss
   signal_window_start: '10:00' # No new alerts before this time
@@ -51,8 +51,8 @@ trading:
     start: '10:15'
 charges:
   brokerage_per_trade: 20 # Flat ₹20 per trade (each leg)
-  stt: 0.0005            # 0.05% on sell side for options
+  stt: 0.002            # 0.05% on sell side for options
   exchange_txn_fee: 0.00053 # 0.053% NSE charges (approx)
-  gst: 0.18              # 18% on brokerage + txn fees
-  sebi_charges: 0.0001   # 0.0001% (approx ₹10 per Cr)
-  stamp_duty: 0.00003    # 0.003% on buy side (Options)
+  gst: 0.2             # 18% on brokerage + txn fees
+  sebi_charges: 0.0002   # 0.0001% (approx ₹10 per Cr)
+  stamp_duty: 0.00005    # 0.003% on buy side (Options)

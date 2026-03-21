@@ -590,7 +590,9 @@ class LiveTrader:
                     t3=targets[2] if len(targets) > 2 else 0,
                     rsi=signal.get('rsi', 0),
                     expiry_date=best.get('expiry_date'),
-                    alert_validity_candles=self.config['strategy'].get('alert_validity', 1)
+                    alert_validity_candles=self.config['strategy'].get('alert_validity', 1),
+                    is_safe_sl_applied=signal.get('is_safe_sl_applied', False),
+                    raw_sl=signal.get('raw_sl')
                 )
                 
                 # Log other candidates for this index (if any)

@@ -137,26 +137,25 @@ class TelegramNotifier:
         rsi: float,
         expiry_date=None,
         alert_validity_candles: int = 1,
+        is_safe_sl_applied: bool = False,
+        raw_sl: float = None,
     ):
         """
         THE main alert. Fires when RSI breakout setup is detected.
         Shows exactly what to buy, where to enter, where to put SL, and targets.
-
-        Parameters:
-            symbol          : Full option symbol e.g. NSE-NIFTY-27Mar26-22500-CE
-            underlying      : NIFTY / BANKNIFTY / SENSEX
-            strike          : Strike price (number)
-            opt_type        : CE or PE
-            alert_high      : High of alert candle = your entry trigger price
-            alert_low       : Low of alert candle
-            sl              : Stop loss = alert_low - 1
-            t1/t2/t3        : Target 1, 2, 3 prices
-            rsi             : Current RSI value
-            expiry_date     : Expiry date object or string (optional)
-            alert_validity_candles : How many 15-min candles this alert is valid for
         """
         alert_range = round(alert_high - alert_low, 2)
         sl_points = round(alert_high - sl, 2)
+        
+        # SL display logic for SAFE_SL mode
+        sl_text = f"🔴 Stop Loss:  <b>₹{sl:.2f}</b>  ({sl_points:.2f} pts below entry)\n"
+        if is_safe_sl_applied and raw_sl:
+            raw_sl_points = round(alert_high - raw_sl, 2)
+            sl_text = (
+                f"🛡️ <b>SAFE SL:  ₹{sl:.2f}</b>  ({sl_points:.2f} pts)\n"
+                f"🔴 Normal SL:  ₹{raw_sl:.2f}  ({raw_sl_points:.2f} pts)\n"
+            )
+        
         t1_r = round((t1 - alert_high) / sl_points, 1) if sl_points else 0
         t2_r = round((t2 - alert_high) / sl_points, 1) if sl_points else 0
         t3_r = round((t3 - alert_high) / sl_points, 1) if sl_points else 0
@@ -174,7 +173,7 @@ class TelegramNotifier:
             f"⚡ Buy above:  <b>₹{alert_high:.2f}</b>  ← trigger price\n"
             f"📏 Candle range:  ₹{alert_range:.2f}\n\n"
             f"──── EXITS ────\n"
-            f"🔴 Stop Loss:  <b>₹{sl:.2f}</b>  ({sl_points:.2f} pts below entry)\n"
+            f"{sl_text}"
             f"🎯 Target 1:   <b>₹{t1:.2f}</b>  (+{round(t1-alert_high,2):.2f} | {t1_r}R)\n"
             f"🎯 Target 2:   <b>₹{t2:.2f}</b>  (+{round(t2-alert_high,2):.2f} | {t2_r}R)\n"
             f"🎯 Target 3:   <b>₹{t3:.2f}</b>  (+{round(t3-alert_high,2):.2f} | {t3_r}R)\n\n"

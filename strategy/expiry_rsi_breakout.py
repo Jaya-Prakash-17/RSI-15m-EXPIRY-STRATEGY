@@ -178,12 +178,18 @@ class ExpiryRSIBreakout:
 
 
     def _calculate_effective_sl(self, symbol, entry_price, alert_low):
-        """Calculates SL based on Alert Range, SL Floor, and SAFE_SL mode."""
+        """
+        Calculates SL based on Alert Range, SL Floor, and SAFE_SL mode.
+        Returns: (effective_sl, is_safe_applied, raw_sl)
+        """
         # 1. Base distance (High - Low + ₹1 buffer)
         raw_dist = entry_price - alert_low + 1.0
+        raw_sl = round(entry_price - raw_dist, 2)
+        
+        is_safe_applied = False
+        dist_after_safe = raw_dist
         
         # 2. Apply SAFE_SL cap if enabled
-        # Total distance should not exceed distance required for 5k loss
         if self.safe_sl_mode:
             try:
                 parts = symbol.split('-')
@@ -195,21 +201,22 @@ class ExpiryRSIBreakout:
                 
                 if qty > 0:
                     max_allowed_dist = self.safe_sl_max_loss / qty
-                    if raw_dist > max_allowed_dist:
-                        self.logger.info(f"🛡️ [{symbol}] SAFE_SL applied: cap dist {raw_dist:.2f} -> {max_allowed_dist:.2f}")
-                        raw_dist = max_allowed_dist
+                    if dist_after_safe > max_allowed_dist:
+                        self.logger.info(f"🛡️ [{symbol}] SAFE_SL applied: cap dist {dist_after_safe:.2f} -> {max_allowed_dist:.2f}")
+                        dist_after_safe = max_allowed_dist
+                        is_safe_applied = True
             except Exception as e:
                 self.logger.error(f"Error in SAFE_SL calculation for {symbol}: {e}")
 
         # 3. Apply SL Floor (minimum distance)
-        # We handle this AFTER SAFE_SL because the Floor is a safety minimum.
         min_sl_dist = entry_price * self.min_sl_pct
-        effective_dist = max(raw_dist, min_sl_dist)
+        effective_dist = max(dist_after_safe, min_sl_dist)
         
-        if effective_dist > raw_dist:
-            self.logger.debug(f"[{symbol}] SL floor applied: {raw_dist:.2f} -> {effective_dist:.2f}")
+        if effective_dist > dist_after_safe:
+            self.logger.debug(f"[{symbol}] SL floor applied: {dist_after_safe:.2f} -> {effective_dist:.2f}")
             
-        return round(entry_price - effective_dist, 2)
+        effective_sl = round(entry_price - effective_dist, 2)
+        return effective_sl, is_safe_applied, raw_sl
 
     def consume_alert(self, symbol):
         """Manually consumes the alert for a symbol (e.g. after entry)."""
@@ -304,7 +311,7 @@ class ExpiryRSIBreakout:
                 alert_range = alert_candle['high'] - alert_candle['low']
                 
                 # Calculate Effective SL (Base, Base + SAFE_SL, and Floor)
-                effective_sl = self._calculate_effective_sl(symbol, alert_candle['high'], alert_candle['low'])
+                effective_sl, is_safe_applied, raw_sl = self._calculate_effective_sl(symbol, alert_candle['high'], alert_candle['low'])
 
                 return {
                     'action': 'ENTRY',
@@ -319,6 +326,8 @@ class ExpiryRSIBreakout:
                     'alert_time': state['alert_time'],
                     'alert_range': alert_range,
                     'rsi': current_rsi if current_rsi is not None else 0.0,
+                    'is_safe_sl_applied': is_safe_applied,
+                    'raw_sl': raw_sl,
                     'exit_mode': self.config['strategy'].get('exit_mode', 'multi_lot'),
                     'lots_per_trade': self.config['strategy'].get('lots_per_trade', 3)
                 }
@@ -365,7 +374,7 @@ class ExpiryRSIBreakout:
                 }
                 
                 # Calculate Effective SL (Base, Base + SAFE_SL, and Floor)
-                effective_sl = self._calculate_effective_sl(symbol, alert_candle['high'], alert_candle['low'])
+                effective_sl, is_safe_applied, raw_sl = self._calculate_effective_sl(symbol, alert_candle['high'], alert_candle['low'])
 
                 state['alert'] = alert_candle
                 state['age'] = 0
@@ -386,6 +395,8 @@ class ExpiryRSIBreakout:
                     'alert_time': state['alert_time'],
                     'alert_range': alert_range,
                     'rsi': current_rsi if current_rsi is not None else 0.0,
+                    'is_safe_sl_applied': is_safe_applied,
+                    'raw_sl': raw_sl,
                     'exit_mode': self.config['strategy'].get('exit_mode', 'multi_lot'),
                     'lots_per_trade': self.config['strategy'].get('lots_per_trade', 3)
                 }
