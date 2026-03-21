@@ -209,23 +209,13 @@ class DataManager:
         if trading_symbol:
             return trading_symbol
         
-        # Fallback: Construct trading symbol in Groww format
-        # Format: NIFTY26FEB25300CE or BANKNIFTY26FEB59700PE
-        # Special handling for SENSEX: SENSEX26FEB84000CE
-        try:
-            if isinstance(expiry_date, str):
-                expiry_date = datetime.strptime(expiry_date, "%Y-%m-%d").date()
-            
-            # Format: YYMMDD for compact date
-            expiry_str = expiry_date.strftime("%y%m%d")
-            
-            # Construct symbol: UNDERLYING + YYMMDD + STRIKE + CE/PE
-            trading_symbol = f"{underlying}{expiry_str}{int(strike)}{opt_type}"
-            self.logger.info(f"Using constructed trading symbol: {trading_symbol}")
-            return trading_symbol
-        except Exception as e:
-            self.logger.error(f"Failed to construct trading symbol: {e}")
-            return None
+        # Fallback: Constructing symbols manually is unsafe because formats vary by exchange/SDK.
+        # Instead, we abort and log the failure.
+        self.logger.error(
+            f"Option chain lookup failed for {underlying} {expiry_date} {strike} {opt_type}. "
+            f"Cannot safely construct trading symbol. Entry aborted."
+        )
+        return None  # Caller checks for None and aborts entry
 
     def get_nearest_expiry(self, underlying, reference_date=None):
         """

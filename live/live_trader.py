@@ -4,14 +4,20 @@ import time
 import sys
 import math
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time as datetime_time
+import pytz
 from data.data_manager import DataManager
 from execution.order_manager import OrderManager, is_order_filled
 from execution.trade_tracker import TradeTracker
 from strategy.expiry_rsi_breakout import ExpiryRSIBreakout
 from core.groww_client import GrowwClient
-from utils.trade_logger import TradeLogger
+from utils.trade_logger import TradeLogger, BacktestTradeLogger
 from utils.telegram_notifier import TelegramNotifier
+from utils.expiry_calendar import get_expiry_for_date
+
+IST = pytz.timezone('Asia/Kolkata')
+MARKET_OPEN_IST = datetime_time(9, 15)    # 9:15 AM IST
+MARKET_CLOSE_IST = datetime_time(15, 30)  # 3:30 PM IST
 
 class LiveTrader:
     def __init__(self, config):
@@ -57,6 +63,11 @@ class LiveTrader:
         
         # Daily P&L tracking
         self.daily_pnl = 0.0
+        self.max_loss_limit = config['risk'].get('max_loss_per_day', 5000)
+        
+        # Strategy filters
+        self.enable_direction_filter = config['strategy'].get('direction_filter_enabled', False)
+        self.trade_only_on_expiry = config['strategy'].get('trade_only_on_expiry', False)
         self.max_loss_per_day = config['risk']['max_loss_per_day']
         
         # Trading window
@@ -140,8 +151,41 @@ class LiveTrader:
         self.expiry_dates = {}
         self.spot_symbols = {}
         
+        today = datetime.now().date()
         for underlying in self.underlyings:
-            self.expiry_dates[underlying] = datetime.now().date()
+            try:
+                expiry = get_expiry_for_date(underlying, today)
+                self.expiry_dates[underlying] = expiry
+                self.logger.info(
+                    f"Expiry for {underlying}: {expiry} "
+                    f"({'TODAY' if expiry == today else f'ADJUSTED from {today}'})"
+                )
+            except Exception as e:
+                self.logger.warning(f"Failed to get expiry for {underlying}: {e}. Falling back to today.")
+                self.expiry_dates[underlying] = today
+                
+            # Cross-check calendar expiry with Groww API (advisory)
+            if self.trade_only_on_expiry:
+                try:
+                    from data.groww_data_manager import GrowwDataManager
+                    dm = GrowwDataManager() # or use self.dm if it has get_expiries
+                    api_expiries = self.client.get_expiries(underlying) if hasattr(self.client, 'get_expiries') else []
+                    today_str = datetime.now().strftime("%Y-%m-%d")
+                    if api_expiries and today_str not in api_expiries:
+                        self.logger.warning(
+                            f"\u26a0\ufe0f CALENDAR CHECK: {underlying} calendar says expiry today, "
+                            f"but Groww API disagrees. API expiries: {api_expiries[:3]}"
+                        )
+                        self.telegram._send(
+                            f"\u26a0\ufe0f <b>Expiry Calendar Mismatch</b>\n"
+                            f"{underlying}: Calendar expects expiry today, but Groww API disagrees.\n"
+                            f"Verify before trading. Check: utils/expiry_calendar.py"
+                        )
+                    else:
+                        self.logger.info(f"\u2705 Calendar verified with Groww API for {underlying}")
+                except Exception as e:
+                    self.logger.warning(f"Could not verify {underlying} expiry with API: {e}")
+
             self.spot_symbols[underlying] = underlying
             self.tracked_options[underlying] = {}  # Nested dict: {underlying: {symbol: df}}
         
@@ -184,25 +228,45 @@ class LiveTrader:
                         self.logger.info(f"Discarding stale paper pending entry: {symbol}")
                         continue
                     
-                    # Live trades: check broker order status
                     try:
                         status = self.client.get_order_status(order_id)
-                        if status and is_order_filled(status.get('status')):
-                            # Order filled while we were down — activate trade
-                            fill_price = status.get('average_price') or status.get('avg_price') or status.get('price') or pending.get('trigger_price')
-                            self.logger.critical(f"🚨 Pending entry {order_id} FILLED while bot was offline @ ₹{fill_price}")
+                        if not status:
+                            self.logger.warning(f"Could not check order {order_id} for {symbol}")
+                            continue
+                        
+                        s = status.get('status', '').upper()
+                        
+                        if is_order_filled(s):
+                            # Order filled while bot was offline — activate trade
+                            fill_price = status.get('fill_price') or pending.get('trigger_price')
+                            self.logger.critical(
+                                f"🚨 [RECONCILE] {symbol} order {order_id} filled while bot was "
+                                f"offline @ \u20b9{fill_price}. Activating trade now."
+                            )
                             self._activate_trade_from_pending(pending, fill_price=float(fill_price))
-                        elif status and status.get('status') in ['PENDING', 'OPEN', 'NOT_FILLED']:
-                            # Still pending — cancel to avoid surprise fill
-                            self.logger.warning(f"Cancelling stale pending entry {order_id} for {symbol}")
-                            self.om.cancel_order(order_id)
+                        
+                        elif s in ('OPEN', 'PENDING', 'TRIGGER_PENDING', 'NOT_FILLED'):
+                            # Order still live at broker — resume monitoring (do NOT cancel)
+                            self.logger.info(
+                                f"[RECONCILE] {symbol} order {order_id} still {s} at broker. "
+                                f"Resuming monitoring."
+                            )
+                            self.pending_entries[symbol] = pending  # add back to live monitoring
+                        
+                        elif s in ('CANCELLED', 'REJECTED', 'EXPIRED'):
+                            self.logger.warning(
+                                f"[RECONCILE] {symbol} order {order_id} was {s}. "
+                                f"Removing from pending \u2014 no position opened."
+                            )
+                        
                         else:
-                            self.logger.info(f"Pending entry {order_id} status: {status.get('status', 'UNKNOWN')} — ignoring")
+                            self.logger.warning(f"[RECONCILE] {symbol} unknown status: {s}. Skipping.")
+                    
                     except Exception as e:
-                        self.logger.error(f"Error checking pending entry {order_id}: {e}")
-                
-                # Clear persisted pending entries after reconciliation
-                self.tracker.clear_pending_entries()
+                        self.logger.error(f"Error reconciling pending entry {order_id} for {symbol}: {e}")
+            
+            # Clear pending entries file after reconciliation is complete
+            self.tracker.clear_pending_entries()
         
         except Exception as e:
             self.logger.error(f"Error during position reconciliation: {e}")
@@ -325,10 +389,37 @@ class LiveTrader:
         tick_size = self.config['indices'].get(underlying, {}).get('tick_size', 0.05)
         return round(price / tick_size) * tick_size
 
+    def _get_unrealized_pnl(self) -> float:
+        """
+        Calculates the total unrealized P&L of all currently open trades.
+        Uses current LTP from broker. Returns 0.0 if no open trades or LTP unavailable.
+        """
+        total_unrealized = 0.0
+        active_trades = self.tracker.get_active_trades()
+        for trade in active_trades:
+            ltp = self.client.get_ltp(trade.get('symbol', ''))
+            if ltp and ltp > 0:
+                remaining_qty = trade.get('remaining_qty', trade.get('qty', 0))
+                entry_price = float(trade.get('entry_price', 0))
+                unrealized = (ltp - entry_price) * remaining_qty
+                total_unrealized += unrealized
+        return total_unrealized
+
     def _check_daily_loss_limit(self):
-        """Check if daily loss limit is breached."""
-        if self.daily_pnl <= -self.max_loss_per_day:
-            self.logger.critical(f"🛑 DAILY LOSS LIMIT BREACHED: ₹{self.daily_pnl:.2f} / ₹{-self.max_loss_per_day:.2f}")
+        """
+        Check if daily loss limit is breached.
+        Checks both realized P&L AND unrealized (mark-to-market) P&L.
+        """
+        realized = self.daily_pnl
+        unrealized = self._get_unrealized_pnl()
+        total_exposure = realized + unrealized
+        
+        if total_exposure <= -self.max_loss_per_day:
+            self.logger.critical(
+                f"🛑 DAILY LOSS LIMIT HIT: "
+                f"Realized=\u20b9{realized:.0f} + Unrealized=\u20b9{unrealized:.0f} = "
+                f"\u20b9{total_exposure:.0f} (limit: -\u20b9{self.max_loss_per_day})"
+            )
             return True
         return False
 
@@ -409,9 +500,25 @@ class LiveTrader:
                         if action in ['NEGATED', 'EXPIRED']:
                             self._cancel_pending_entry(symbol, action)
                             continue
-                        
                         # Handle ALERT - place pending SL-M BUY order
                         if action == 'ALERT':
+                            # --- Direction Confirmation ---
+                            if self.enable_direction_filter:
+                                try:
+                                    if len(spot_df) >= 2:
+                                        prev_spot = spot_df.iloc[-2]['close']
+                                        curr_spot = spot_df.iloc[-1]['close']
+                                        opt_type = symbol.split('-')[4]
+                                        
+                                        if opt_type == 'CE' and curr_spot < prev_spot:
+                                            self.logger.info(f"[{symbol}] IGNORED: CE alert on BEARISH spot ({curr_spot} < {prev_spot})")
+                                            continue
+                                        if opt_type == 'PE' and curr_spot > prev_spot:
+                                            self.logger.info(f"[{symbol}] IGNORED: PE alert on BULLISH spot ({curr_spot} > {prev_spot})")
+                                            continue
+                                except Exception as e:
+                                    self.logger.warning(f"Direction filter error for {symbol}: {e}")
+
                             parts = symbol.split('-')
                             strike = float(parts[3])
                             dist = abs(strike - spot_price)
@@ -441,46 +548,40 @@ class LiveTrader:
                 except Exception as e:
                     self.logger.error(f"Error processing {symbol}: {e}")
         
-        # Place pending entry order for best alert candidate
+        # Place pending entry order for best alert candidate(s)
         if alert_candidates and is_tradable:
-            # Check if we already have a pending entry or active trade (PER INDEX LIMIT)
-            filtered_candidates = []
-            
+            # Group candidates by underlying
+            by_index = {}
             for candidate in alert_candidates:
-                under_idx = candidate['underlying']
+                idx = candidate['underlying']
+                if idx not in by_index:
+                    by_index[idx] = []
+                by_index[idx].append(candidate)
+            
+            for index_name, candidates in by_index.items():
+                existing_active = self.tracker.get_active_trades_for_index(index_name)
+                existing_pending = self.tracker.get_pending_for_index(self.pending_entries, index_name)
                 
-                has_pending = any(p.get('underlying') == under_idx for p in self.pending_entries.values())
-                has_active = self.tracker.has_active_trade_for_index(under_idx)
+                if existing_active:
+                    self.logger.info(f"[{index_name}] Signal ignored for {candidates[0]['symbol']}. Already have trade for this index.")
+                    continue
+                if existing_pending:
+                    self.logger.info(f"[{index_name}] Already have pending entry. Skipping new alerts.")
+                    continue
                 
-                if has_pending:
-                    self.logger.info(f"Already have pending entry for {under_idx}. Skipping new alerts for {under_idx}.")
-                    continue
-                    
-                if has_active:
-                    self.logger.info(f"Already have active trade for {under_idx}. Skipping new alerts for {under_idx}.")
-                    continue
-                    
-                filtered_candidates.append(candidate)
-            
-            if not filtered_candidates:
-                return
-            
-            filtered_candidates.sort(key=lambda x: (x['dist'], -x['volume']))
-            best = filtered_candidates[0]
-            self.logger.info(f"Best ALERT from {best['underlying']}: {best['symbol']}")
-            
-            # Send Telegram alert for ALL candidates (ranked), not just the best
-            # This lets you manually pick a different strike/CE/PE if you prefer
-            for rank, candidate in enumerate(alert_candidates, 1):
-                signal = candidate['signal']
+                # Select best candidate for this index
+                candidates.sort(key=lambda x: (x['dist'], -x['volume']))
+                best = candidates[0]
+                self.logger.info(f"[{index_name}] Best ALERT: {best['symbol']}")
+                
+                # Send Telegram alert for this index's best candidate
+                signal = best['signal']
                 targets = signal.get('targets', [])
-                # Add ranking prefix: ⭐ for #1 (auto-selected), numbers for others
-                rank_label = f"⭐ #{rank} (AUTO)" if rank == 1 else f"#{rank}"
                 self.telegram.alert_setup(
-                    symbol=f"{rank_label} {candidate['symbol']}" if rank > 1 else candidate['symbol'],
-                    underlying=candidate['underlying'],
-                    strike=candidate['strike'],
-                    opt_type=candidate['opt_type'],
+                    symbol=best['symbol'],
+                    underlying=best['underlying'],
+                    strike=best['strike'],
+                    opt_type=best['opt_type'],
                     alert_high=signal['price'],
                     alert_low=signal.get('alert_low', signal['sl'] + 1),
                     sl=signal['sl'],
@@ -488,14 +589,16 @@ class LiveTrader:
                     t2=targets[1] if len(targets) > 1 else 0,
                     t3=targets[2] if len(targets) > 2 else 0,
                     rsi=signal.get('rsi', 0),
-                    expiry_date=candidate.get('expiry_date'),
+                    expiry_date=best.get('expiry_date'),
                     alert_validity_candles=self.config['strategy'].get('alert_validity', 1)
                 )
-            
-            if len(alert_candidates) > 1:
-                self.logger.info(f"📱 Sent {len(alert_candidates)} alert candidates to Telegram")
-            
-            self._place_pending_entry(best)
+                
+                # Log other candidates for this index (if any)
+                if len(candidates) > 1:
+                    others = [c['symbol'] for c in candidates[1:]]
+                    self.logger.info(f"[{index_name}] Other candidates for index (not selected): {others}")
+                
+                self._place_pending_entry(best)
     
     def _cancel_pending_entry(self, symbol, reason):
         """Cancel a pending entry order when alert is negated or expired."""
@@ -600,10 +703,10 @@ class LiveTrader:
         underlying = candidate.get('underlying', self.underlyings[0] if self.underlyings else 'NIFTY')
         expiry_date = candidate.get('expiry_date', datetime.now().date())
         
-        # Check if already have active trade
-        active_trades = self.tracker.get_active_trades()
-        if active_trades:
-            self.logger.info(f"Signal ignored for {symbol}. Already have {len(active_trades)} active trade(s).")
+        # Check if already have active trade for this index
+        active_trades_for_index = self.tracker.get_active_trades_for_index(underlying)
+        if active_trades_for_index:
+            self.logger.info(f"[{underlying}] Signal ignored for {symbol}. Already have trade for this index.")
             return
         
         # Check daily loss limit
@@ -711,12 +814,7 @@ class LiveTrader:
     def _activate_trade_from_pending(self, pending, fill_price):
         """Activate a trade after pending entry order is filled.
         
-        This handles all the post-fill logic:
-        1. Consume the alert
-        2. Place SL order
-        3. Place Target orders
-        4. Create trade record
-        5. Log everything
+        Includes a GAP-FILL guard to protect against excessive slippage on open.
         """
         order_id = pending['order_id']
         underlying = pending['underlying']
@@ -724,6 +822,59 @@ class LiveTrader:
         qty = pending['qty']
         trading_symbol = pending['trading_symbol']
         original_symbol = pending.get('original_symbol', trading_symbol)
+        trigger_price = float(pending['trigger_price'])
+        fill_price = float(fill_price)
+        
+        # ─── GAP-FILL GUARD ────────────────────────────────────────────────
+        gap_pct = (fill_price - trigger_price) / trigger_price if trigger_price > 0 else 0
+        ABORT_THRESHOLD = self.config['strategy'].get('gap_abort_pct', 0.04)
+        RECALC_THRESHOLD = self.config['strategy'].get('gap_recalc_pct', 0.02)
+        
+        if gap_pct > ABORT_THRESHOLD:
+            # Gap too large — R:R is completely broken, exit immediately
+            self.logger.warning(
+                f"🚫 GAP-FILL ABORT: {original_symbol} | "
+                f"Trigger=\u20b9{trigger_price} Fill=\u20b9{fill_price} Gap={gap_pct*100:.1f}% "
+                f"(>{ABORT_THRESHOLD*100:.0f}% threshold). Exiting immediately."
+            )
+            self.om.place_exit_order(trading_symbol, qty, trading_symbol, "GAP_FILL_ABORT")
+            self.strategy.consume_alert(original_symbol)
+            self.telegram._send(
+                f"🚫 <b>Gap Fill Abort</b>\n"
+                f"Symbol: <code>{original_symbol}</code>\n"
+                f"Trigger: \u20b9{trigger_price} | Fill: \u20b9{fill_price} | Gap: {gap_pct*100:.1f}%\n"
+                f"R:R too degraded — position closed immediately."
+            )
+            return  # Do NOT create any trade record
+        
+        elif gap_pct > RECALC_THRESHOLD:
+            # Moderate gap — recalculate SL and targets from actual fill price
+            alert_range = signal.get('alert_range', fill_price - float(signal.get('sl', fill_price - 15)))
+            new_sl = round(fill_price - alert_range, 2)
+            new_targets = [
+                round(fill_price + alert_range, 2),
+                round(fill_price + 2 * alert_range, 2),
+                round(fill_price + 3 * alert_range, 2),
+            ]
+            # Create a modified copy of signal — do NOT mutate the original
+            signal = {
+                **signal,
+                'sl': new_sl,
+                'targets': new_targets,
+            }
+            self.logger.warning(
+                f"⚠️ GAP-FILL RECALC: {original_symbol} | "
+                f"Trigger=\u20b9{trigger_price} Fill=\u20b9{fill_price} Gap={gap_pct*100:.1f}%. "
+                f"New SL=\u20b9{new_sl}, T1=\u20b9{new_targets[0]}"
+            )
+            self.telegram._send(
+                f"⚠️ <b>Gap Fill — SL/Targets Recalculated</b>\n"
+                f"Symbol: <code>{original_symbol}</code>\n"
+                f"Fill: \u20b9{fill_price} (trigger \u20b9{trigger_price})\n"
+                f"New SL: \u20b9{new_sl} | T1: \u20b9{new_targets[0]}"
+            )
+        # ─── END GAP-FILL GUARD ────────────────────────────────────────────
+        
         targets = [self._round_to_tick(t, underlying) for t in signal.get('targets', [])]
         
         # Consume the alert
@@ -851,8 +1002,24 @@ class LiveTrader:
                     
                     # SL-M BUY triggers when price >= trigger
                     if ltp >= trigger_price:
-                        self.logger.info(f"🎯 [PAPER] PENDING ENTRY FILLED: {symbol} @ ₹{ltp} (trigger: {trigger_price})")
-                        self._activate_trade_from_pending(pending, fill_price=ltp)
+                        gap_threshold = 0.02  # 2% gap-up threshold
+                        
+                        if ltp > trigger_price * (1 + gap_threshold):
+                            # Large gap — simulate realistic slippage
+                            simulated_fill = round((trigger_price + ltp) / 2, 2)
+                            self.logger.info(
+                                f"[PAPER] Gap-fill simulated: trigger=₹{trigger_price}, "
+                                f"ltp=₹{ltp}, fill=₹{simulated_fill}"
+                            )
+                        else:
+                            # Normal fill — at trigger price
+                            simulated_fill = trigger_price
+                            
+                        self.logger.info(
+                            f"🎯 [PAPER] PENDING ENTRY FILLED: {symbol} @ ₹{simulated_fill} "
+                            f"(trigger: ₹{trigger_price})"
+                        )
+                        self._activate_trade_from_pending(pending, fill_price=simulated_fill)
                         del self.pending_entries[symbol]
                         self.tracker.save_pending_entries(self.pending_entries)
                     continue
@@ -867,15 +1034,32 @@ class LiveTrader:
                 
                 if is_order_filled(status):
                     # ORDER FILLED - Create active trade
-                    fill_price = order_status.get('average_price') or order_status.get('avg_price') or order_status.get('price') or pending['trigger_price']
+                    fill_price = order_status.get('fill_price') or pending['trigger_price']
+                    self.logger.info(f"Fill price extracted: ₹{fill_price} (trigger was: ₹{pending['trigger_price']})")
                     
                     self.logger.info(f"🎯 PENDING ENTRY FILLED: {symbol} @ ₹{fill_price}")
                     self._activate_trade_from_pending(pending, fill_price=fill_price)
                     del self.pending_entries[symbol]
                     self.tracker.save_pending_entries(self.pending_entries)
                     
-                elif status in ['CANCELLED', 'REJECTED', 'EXPIRED']:
-                    self.logger.warning(f"Pending entry order {order_id} {status} for {symbol}")
+                elif status in ('CANCELLED', 'REJECTED', 'EXPIRED'):
+                    self.logger.warning(
+                        f"⚠️ Pending entry {order_id} was {status} for {symbol}. "
+                        f"No position opened."
+                    )
+                    # Notify trader
+                    self.telegram._send(
+                        f"⚠️ <b>Entry Order {status}</b>\n"
+                        f"Symbol: <code>{symbol}</code>\n"
+                        f"Order: {order_id}\n"
+                        f"No position was opened. Reason: {status}\n"
+                        f"Check margin/limits on Groww app."
+                    )
+                    # Consume the strategy alert so no orphan ENTRY signals fire
+                    original_symbol = pending.get('original_symbol', symbol)
+                    self.strategy.consume_alert(original_symbol)
+                    self.logger.info(f"Strategy alert consumed for {original_symbol} after rejection")
+                    
                     del self.pending_entries[symbol]
                     self.tracker.save_pending_entries(self.pending_entries)
                     
@@ -965,22 +1149,70 @@ class LiveTrader:
             # 1. Check SL Order Status
             if sl_order_id:
                 sl_status = self.client.get_order_status(sl_order_id)
-                if sl_status and is_order_filled(sl_status.get('status')):
-                    self.logger.info(f"🔴 SL HIT for {symbol} (Order {sl_order_id})")
-                    fill_price = sl_status.get('average_price') or sl_status.get('avg_price') or sl_status.get('price')
+                if sl_status:
+                    sl_state = sl_status.get('status', '').upper()
                     
-                    # Cancel all pending target orders
-                    for tid in target_ids:
-                        if tid:
-                            self.om.cancel_order(tid)
+                    if is_order_filled(sl_state):
+                        self.logger.info(f"🔴 SL HIT for {symbol} (Order {sl_order_id})")
+                        fill_price = sl_status.get('fill_price') or float(trade['sl'])
+                        self.logger.info(f"SL Fill price extracted: \u20b9{fill_price} (reference was: \u20b9{trade['sl']})")
+                        
+                        # Cancel all pending target orders
+                        for tid in target_ids:
+                            if tid:
+                                self.om.cancel_order(tid)
+                        
+                        # Close trade
+                        final_pnl = (float(fill_price) - float(trade['entry_price'])) * float(trade['remaining_qty'])
+                        total_pnl = final_pnl + float(trade.get('partial_pnl', 0))
+                        self.daily_pnl += final_pnl 
+                        self.tracker.close_trade(trade_id, fill_price, "SL_HIT", total_pnl)
+                        self.trade_logger.log_exit(trade, fill_price, "SL_HIT", self.daily_pnl)
+                        continue
                     
-                    # Close trade
-                    final_pnl = (float(fill_price) - float(trade['entry_price'])) * float(trade['remaining_qty'])
-                    total_pnl = final_pnl + float(trade.get('partial_pnl', 0))
-                    self.daily_pnl += final_pnl 
-                    self.tracker.close_trade(trade_id, fill_price, "SL_HIT", total_pnl)
-                    self.trade_logger.log_exit(trade, fill_price, "SL_HIT", self.daily_pnl)
-                    continue
+                    elif sl_state in ('CANCELLED', 'REJECTED', 'EXPIRED'):
+                        # Exchange cancelled our SL — CRITICAL: re-place immediately
+                        self.logger.critical(
+                            f"🚨 SL order {sl_order_id} was {sl_state} by exchange/broker! "
+                            f"Re-placing SL immediately for {symbol}..."
+                        )
+                        self.telegram._send(
+                            f"🚨 <b>SL ORDER CANCELLED BY EXCHANGE</b>\n"
+                            f"Symbol: <code>{symbol}</code>\n"
+                            f"Order: {sl_order_id} → {sl_state}\n"
+                            f"Re-placing SL now..."
+                        )
+                        current_sl = trade.get('exit_orders', {}).get('current_sl', trade['sl'])
+                        remaining_qty = trade.get('remaining_qty', trade['qty'])
+                        underlying = trade.get('underlying', 'NIFTY')
+                        trading_symbol = trade.get('trading_symbol', symbol)
+                        
+                        # Use place_sl_order from order_manager
+                        new_sl_order = self.om.place_sl_order(
+                            symbol, remaining_qty, current_sl, trading_symbol
+                        )
+                        
+                        if new_sl_order and new_sl_order.get('groww_order_id'):
+                            new_sl_id = new_sl_order['groww_order_id']
+                            self.tracker.update_trade(trade_id, {'sl_order_id': new_sl_id})
+                            trade['sl_order_id'] = new_sl_id
+                            self.logger.critical(f"✅ SL re-placed: {new_sl_id} @ \u20b9{current_sl}")
+                            self.telegram._send(
+                                f"✅ <b>SL Re-placed</b>\n"
+                                f"Symbol: <code>{symbol}</code>\n"
+                                f"New SL: \u20b9{current_sl} | Order: {new_sl_id}"
+                            )
+                        else:
+                            self.logger.critical(
+                                f"🚨🚨 SL RE-PLACEMENT FAILED for {symbol}! "
+                                f"EMERGENCY EXIT to protect capital."
+                            )
+                            ltp = self.client.get_ltp(symbol) or current_sl
+                            # Use _close_entire_position or similar logic locally if not existent
+                            # For now, let's assume we place an exit order immediately
+                            self.om.place_exit_order(symbol, remaining_qty, trading_symbol, "EMERGENCY_NO_SL")
+                            self.tracker.close_trade(trade_id, ltp, "EMERGENCY_NO_SL", trade.get('partial_pnl', 0))
+                            continue
 
             # 2. Check Target Order Statuses
             exit_mode = exit_orders.get('mode', 'single_lot')
@@ -997,7 +1229,8 @@ class LiveTrader:
                     
                 t_status = self.client.get_order_status(tid)
                 if t_status and is_order_filled(t_status.get('status')):
-                    fill_price = t_status.get('average_price') or t_status.get('avg_price') or t_status.get('price')
+                    fill_price = t_status.get('fill_price') or float(trade['entry_price'])
+                    self.logger.info(f"Target Fill price extracted: ₹{fill_price} (reference was: ₹{trade['entry_price']})")
                     
                     if exit_mode == 'single_lot' or (exit_mode == 'multi_lot' and tp_level == 3):
                         # Final Exit (Single Lot OR Multi-lot TP3)
@@ -1079,7 +1312,8 @@ class LiveTrader:
         exit_orders = trade['exit_orders']
         sl_order_id = trade['sl_order_id']
         
-        fill_price = float(order_status.get('average_price') or order_status.get('price'))
+        fill_price = float(order_status.get('fill_price') or order_status.get('price') or trade['entry_price'])
+        self.logger.info(f"Target Hit: Fill price extracted: ₹{fill_price} (reference was: {trade['entry_price']})")
         qty_filled = int(order_status.get('quantity') or 0)
         
         # Update trade record
@@ -1289,15 +1523,6 @@ class LiveTrader:
             exit_orders['current_sl'] = new_sl
             exit_orders['trail_state'] = 2
             
-            # Modify broker SL order with new trigger
-            if sl_order_id:
-                self.om.modify_sl_order(sl_order_id, new_sl)
-                self.logger.info(f"🛡️ Broker SL Modified: {sl_order_id} → ₹{new_sl} (TP1 level)")
-            
-            self.logger.info(f"✅ SL trailed to ₹{new_sl} (no exit)")
-            # Update trail_state local variable for the next check
-            trail_state = 2
-        
         # Check configured target hit (FINAL EXIT for single-lot mode)
         # Using IF instead of ELIF to allow trail + exit in same poll cycle
         if ltp >= targets[target_idx]:
@@ -1347,9 +1572,7 @@ class LiveTrader:
         
         # Close trade in tracker
         self.tracker.close_trade(trade_id, ltp, reason, total_pnl)
-        
-        self.logger.info(f"Trade closed: {trade_id} | P&L: ₹{total_pnl:.2f} | Daily P&L: ₹{self.daily_pnl:.2f}")
-        
+
         # Telegram: notify based on exit reason
         entry_price = float(trade['entry_price'])
         if 'SL' in reason:
@@ -1378,29 +1601,42 @@ class LiveTrader:
         last_heartbeat = datetime.now()
         heartbeat_interval = 60  # Show status every 60 seconds
         
+        # Outage detection variables
+        consecutive_poll_failures = 0
+        MAX_CONSECUTIVE_FAILURES = 10  # ~10 seconds at 1s polling = network outage signal
+        last_outage_alert_time = None   # prevent repeated Telegram spam
+        
         # Main loop
         while True:
             try:
                 now = datetime.now()
                 
-                # Heartbeat - show status periodically so user knows bot is alive
+                # HEARTBEAT
                 if (now - last_heartbeat).total_seconds() >= heartbeat_interval:
-                    active_count = len(self.tracker.get_active_trades())
-                    mode = "PAPER" if self.paper_trading else "LIVE"
-                    indices_str = ", ".join(self.underlyings) if self.underlyings else "None"
-                    next_candle = (now.minute // 15 + 1) * 15
-                    next_candle_time = now.replace(minute=next_candle % 60, second=0, microsecond=0)
-                    if next_candle >= 60:
-                        next_candle_time = next_candle_time.replace(hour=now.hour + 1, minute=0)
-                    
-                    self.logger.info(
-                        f"[HEARTBEAT] {mode} | Indices: {indices_str} | Time: {now.strftime('%H:%M:%S')} | "
-                        f"Daily P&L: Rs.{self.daily_pnl:.2f} | Active Trades: {active_count} | "
-                        f"Next Candle: {next_candle_time.strftime('%H:%M')}"
-                    )
+                    self.logger.info(f"Heartbeat - Bot is running. Active trades: {len(self.tracker.get_active_trades())}")
                     last_heartbeat = now
                 
-                # Auto square-off time
+                # Trading Hours Guard
+                now_ist = datetime.now(IST)
+                current_time_ist = now_ist.time().replace(tzinfo=None)
+                
+                if current_time_ist < MARKET_OPEN_IST:
+                    if (now - last_heartbeat).total_seconds() >= heartbeat_interval:
+                        self.logger.info(
+                            f"[WAITING] Market opens at 09:15 IST. "
+                            f"Current time: {current_time_ist.strftime('%H:%M:%S')} IST"
+                        )
+                        last_heartbeat = now
+                    time.sleep(60)
+                    continue
+                
+                if current_time_ist > MARKET_CLOSE_IST:
+                    self.logger.info("Market closed (past 15:30 IST). Bot idle.")
+                    time.sleep(300)  # check again in 5 minutes
+                    continue
+
+                # Auto square-off (MIS)
+                current_time = now.strftime('%H:%M')
                 if now.time() >= self.sq_off_time:
                     self.logger.info("=" * 60)
                     self.logger.info("🔔 AUTO SQUARE OFF TIME REACHED")
@@ -1412,8 +1648,10 @@ class LiveTrader:
                         for symbol, pending in list(self.pending_entries.items()):
                             order_id = pending.get('order_id')
                             if order_id:
-                                self.om.cancel_order(order_id)
-                                self.logger.info(f"Cancelled pending entry: {symbol}")
+                                try:
+                                    self.om.cancel_order(order_id)
+                                    self.logger.info(f"Cancelled pending entry: {symbol}")
+                                except: pass
                         self.pending_entries.clear()
                     
                     # Square off active trades
@@ -1421,39 +1659,71 @@ class LiveTrader:
                     for trade in active_trades:
                         self.logger.info(f"Squaring off: {trade['trade_id']}")
                         
-                        # Cancel broker SL order first
-                        sl_order_id = trade.get('sl_order_id')
-                        if sl_order_id:
-                            self.om.cancel_order(sl_order_id)
-                            self.logger.info(f"Cancelled SL order: {sl_order_id}")
-                        
-                        # Cancel any target orders
+                        # Cancel SL and target orders
+                        sl_id = trade.get('sl_order_id')
+                        if sl_id:
+                            try: self.om.cancel_order(sl_id)
+                            except: pass
                         for tid in trade.get('target_order_ids', []):
                             if tid:
-                                self.om.cancel_order(tid)
+                                try: self.om.cancel_order(tid)
+                                except: pass
+                        
+                        remaining_qty = trade.get('remaining_qty', trade['qty'])
                         
                         # Place exit order
-                        self.om.place_exit_order(
-                            trade['symbol'],
-                            trade.get('remaining_qty', trade['qty']),
-                            trade['trading_symbol'],
-                            "SQ_OFF"
+                        exit_resp = self.om.place_exit_order(
+                            trade['symbol'], remaining_qty, trade['trading_symbol'], "SQ_OFF"
                         )
                         
-                        # Get LTP for final P&L
-                        ltp = self.client.get_ltp(trade['symbol']) or trade['entry_price']
-                        final_pnl = (ltp - trade['entry_price']) * trade.get('remaining_qty', trade['qty'])
-                        total_pnl = final_pnl + trade.get('partial_pnl', 0)
+                        # Actual fill Detection (PROMPT 16 - Tiered approach)
+                        actual_fill = None
+                        if exit_resp and exit_resp.get('groww_order_id'):
+                            exit_order_id = exit_resp['groww_order_id']
+                            time.sleep(3)  # Allow time to fill
+                            try:
+                                exit_status = self.client.get_order_status(exit_order_id)
+                                if exit_status and is_order_filled(exit_status.get('status', '')):
+                                    actual_fill = exit_status.get('fill_price')
+                                    self.logger.info(f"SQ_OFF filled at \u20b9{actual_fill} via our order")
+                            except: pass
+                        
+                        # Tier 2: Check for MIS auto-square fill
+                        if not actual_fill:
+                            self.logger.info("Checking for MIS auto-square fills in order book...")
+                            try:
+                                day_orders = self.client.client.get_order_list(segment='FNO')
+                                for order in reversed(day_orders.get('orders', [])):
+                                    if (order.get('trading_symbol') == trade.get('trading_symbol')
+                                        and order.get('transaction_type', '').upper() == 'SELL'
+                                        and is_order_filled(order.get('order_status', ''))):
+                                        actual_fill = float(order.get('average_fill_price') or 0)
+                                        if actual_fill > 0:
+                                            self.logger.info(f"Found auto-square fill: \u20b9{actual_fill}")
+                                            break
+                            except: pass
+                        
+                        # Tier 3: Fallback to LTP
+                        if not actual_fill:
+                            actual_fill = self.client.get_ltp(trade['symbol']) or float(trade['entry_price'])
+                            self.logger.warning(f"Using LTP fallback for SQ_OFF P&L: \u20b9{actual_fill}")
+                            
+                        # Close trade
+                        partial_pnl = trade.get('partial_pnl', 0)
+                        final_pnl = (float(actual_fill) - float(trade['entry_price'])) * remaining_qty
+                        total_pnl = final_pnl + partial_pnl
                         self.daily_pnl += final_pnl
-                        self.tracker.close_trade(trade['trade_id'], ltp, "SQ_OFF", total_pnl)
-                        self.trade_logger.log_exit(trade, ltp, "SQ_OFF", self.daily_pnl)
-                    
-                    self.logger.info(f"✅ End of day. Daily P&L: ₹{self.daily_pnl:.2f}")
+                        
+                        self.tracker.close_trade(trade['trade_id'], actual_fill, "SQ_OFF", total_pnl)
+                        self.trade_logger.log_exit(trade, actual_fill, "SQ_OFF", self.daily_pnl)
+                        self.telegram.square_off(trade['symbol'], actual_fill, float(trade['entry_price']), remaining_qty, "SQ_OFF")
+                        
+                    self.logger.info(f"✅ End of session. Daily P&L: ₹{self.daily_pnl:.2f}")
                     break
-                
-                # Check daily loss limit
+
+                # Check Daily Loss Limit
                 if self._check_daily_loss_limit():
-                    self.logger.critical("Daily loss limit reached. Stopping trading.")
+                    self.logger.critical("Daily loss limit reached. Emergency shutdown.")
                     self.telegram.daily_loss_limit_hit(self.daily_pnl, self.max_loss_per_day)
                     # Square off remaining positions
                     active_trades = self.tracker.get_active_trades()
@@ -1474,36 +1744,33 @@ class LiveTrader:
                         self.daily_pnl += final_pnl
                         self.tracker.close_trade(trade['trade_id'], ltp, "DAILY_LOSS_LIMIT", total_pnl)
                     break
-                
-                # Wait for market open
-                if now.time() < self.start_time:
-                    if (now - last_heartbeat).total_seconds() >= heartbeat_interval:
-                        self.logger.info(f"[WAITING] Market not yet open. Trading starts at {self.start_time}")
-                        last_heartbeat = now
-                    time.sleep(60)
-                    continue
-                
-                # Process on candle close
+
+                # Process Candle Logic
                 if self._poll_candle_close():
                     self._update_option_universe()
                     self._process_strategy_logic()
                 
-                # Monitor pending entries for fills
+                # Monitor active positions and pending entries
                 self._monitor_pending_entries()
-                
-                # Monitor active trades
                 self._monitor_active_trades()
                 
-                # Sleep briefly
+                consecutive_poll_failures = 0
                 time.sleep(1)
-            
+
             except Exception as e:
-                self.logger.error(f"Error in main loop: {e}", exc_info=True)
-                time.sleep(5)  # Brief pause before retrying
+                consecutive_poll_failures += 1
+                self.logger.error(f"Main loop error [{consecutive_poll_failures}/10]: {e}", exc_info=True)
+                
+                if consecutive_poll_failures >= 10:
+                    now = datetime.now()
+                    if last_outage_alert_time is None or (now - last_outage_alert_time).total_seconds() > 300:
+                        self.telegram._send("🚨 <b>NET OUTAGE</b> detected.")
+                        last_outage_alert_time = now
+                
+                time.sleep(5)
+                continue
         
-        self.logger.info("=" * 60)
-        self.logger.info(f" TRADING SESSION ENDED | Daily P&L: ₹{self.daily_pnl:.2f}")
-        self.logger.info("=" * 60)
+        self.logger.info(f"TRADING SESSION ENDED | Daily P&L: ₹{self.daily_pnl:.2f}")
         
         # Telegram: daily summary
         closed_trades = self.tracker.get_closed_trades_today() if hasattr(self.tracker, 'get_closed_trades_today') else []

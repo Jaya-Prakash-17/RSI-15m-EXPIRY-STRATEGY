@@ -24,10 +24,9 @@ NSE_HOLIDAYS = {
     2026: [
         '2026-01-26',  # Republic Day
         '2026-03-03',  # Holi
-        '2026-03-20',  # Id-Ul-Fitr
+        '2026-03-26',  # Ram Navami
         '2026-03-31',  # Mahavir Jayanti
         '2026-04-03',  # Good Friday
-        '2026-04-06',  # Ram Navami
         '2026-04-14',  # Dr. Ambedkar Jayanti
         '2026-05-01',  # Maharashtra Day
         '2026-05-27',  # Bakri Id

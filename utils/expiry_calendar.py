@@ -30,6 +30,13 @@ import calendar
 import logging
 from datetime import date, datetime, timedelta
 
+# ──────────────────────────────────────────────────────────────────────────────
+# MAINTENANCE REQUIRED: Verify this calendar monthly against NSE/Groww data.
+# Update LAST_VERIFIED after each verification.
+# NSE circular source: https://nseindia.com/regulations/circulars
+# ──────────────────────────────────────────────────────────────────────────────
+CALENDAR_LAST_VERIFIED = "2026-03-01"  # Update this date after each verification
+
 logger = logging.getLogger("ExpiryCalendar")
 
 # ─── Change-date constants (from official circulars) ───────────────────────

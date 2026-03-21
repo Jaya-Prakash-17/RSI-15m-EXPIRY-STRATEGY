@@ -2,8 +2,10 @@
 import json
 import os
 import logging
+import tempfile
+import shutil
 from datetime import datetime
-from threading import Lock
+from threading import RLock
 
 class TradeTracker:
     """
@@ -14,7 +16,7 @@ class TradeTracker:
     def __init__(self, filepath="data/bot_trades.json"):
         self.logger = logging.getLogger("TradeTracker")
         self.filepath = filepath
-        self.lock = Lock()
+        self.lock = RLock()
         self._ensure_file_exists()
     
     def _ensure_file_exists(self):
@@ -34,32 +36,66 @@ class TradeTracker:
             self.logger.info(f"Created new trade tracking file: {self.filepath}")
     
     def _load_data(self):
-        """Load trade data from file."""
+        """Load trade data from file. Handles corruption and missing file gracefully."""
+        if not os.path.exists(self.filepath):
+            return {"active_trades": [], "closed_trades": [], "metadata": {}}
+        
         try:
             with open(self.filepath, 'r') as f:
-                return json.load(f)
+                content = f.read()
+            if not content.strip():
+                # Empty file — treat as no data
+                self.logger.warning(f"{os.path.basename(self.filepath)} is empty. Starting with fresh state.")
+                return {"active_trades": [], "closed_trades": [], "metadata": {}}
+            return json.loads(content)
+        
+        except json.JSONDecodeError as e:
+            # File is corrupted — CRITICAL: trader must check broker manually
+            self.logger.critical(
+                f"🚨 {os.path.basename(self.filepath)} is CORRUPTED (JSONDecodeError: {e}). "
+                f"Cannot determine if positions are open. "
+                f"CHECK GROWW APP IMMEDIATELY before resuming bot."
+            )
+            # Save the corrupted file for forensics
+            backup_path = self.filepath + f".corrupted_{datetime.now().strftime('%H%M%S')}"
+            try:
+                shutil.copy(self.filepath, backup_path)
+                self.logger.critical(f"Corrupted file backed up to: {backup_path}")
+            except Exception:
+                pass
+            # Return empty state — bot will start but with no known positions
+            # (trader must verify manually)
+            return {"active_trades": [], "closed_trades": [], "metadata": {}}
+        
         except Exception as e:
-            self.logger.error(f"Error loading trade data: {e}")
-            return {"active_trades": [], "closed_trades": []}
+            self.logger.error(f"Unexpected error loading trade data: {e}")
+            return {"active_trades": [], "closed_trades": [], "metadata": {}}
     
     def _save_data(self, data):
-        """Atomically save trade data to file."""
+        """Atomically save trade data to file using tempfile."""
         data["metadata"] = {
             "last_updated": datetime.now().isoformat(),
             "version": "1.0"
         }
         
-        temp_file = self.filepath + ".tmp"
+        dir_name = os.path.dirname(os.path.abspath(self.filepath))
+        temp_path = None
         try:
-            with open(temp_file, 'w') as f:
-                json.dump(data, f, indent=2)
+            with tempfile.NamedTemporaryFile(
+                mode='w', dir=dir_name, delete=False, suffix='.tmp'
+            ) as tf:
+                json.dump(data, tf, indent=2, default=str)
+                temp_path = tf.name
             
-            # Atomic rename
-            os.replace(temp_file, self.filepath)
+            # Atomic replace (overwrites if exists)
+            os.replace(temp_path, self.filepath)
         except Exception as e:
-            self.logger.error(f"Error saving trade data: {e}")
-            if os.path.exists(temp_file):
-                os.remove(temp_file)
+            self.logger.error(f"Error saving trade data to {self.filepath}: {e}")
+            if temp_path and os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except Exception:
+                    pass
             raise
     
     def add_active_trade(self, trade):
@@ -88,11 +124,30 @@ class TradeTracker:
             
     def has_active_trade_for_index(self, index_name):
         """Check if there is already an active trade for a specific underlying index."""
-        active_trades = self.get_active_trades()
-        for trade in active_trades:
-            if trade.get("underlying") == index_name:
-                return True
-        return False
+        with self.lock:
+            active_trades = self.get_active_trades()
+            for trade in active_trades:
+                if trade.get("underlying") == index_name:
+                    return True
+            return False
+    
+    def get_active_trades_for_index(self, underlying: str) -> list:
+        """
+        Returns active trades filtered to a specific underlying.
+        Used for per-index trade guards so NIFTY does not block BANKNIFTY.
+        
+        Args:
+            underlying: 'NIFTY', 'BANKNIFTY', or 'SENSEX'
+        """
+        with self.lock:
+            data = self._load_data()
+            return [t for t in data.get("active_trades", [])
+                    if t.get("underlying") == underlying]
+
+    def get_pending_for_index(self, pending_entries: dict, underlying: str) -> dict:
+        """Filter pending_entries dict to a specific underlying."""
+        return {sym: p for sym, p in pending_entries.items()
+                if p.get('underlying') == underlying}
     
     def update_trade(self, trade_id, updates):
         """Update an existing trade."""
@@ -232,52 +287,47 @@ class TradeTracker:
     # --- Pending Entries Persistence (MEDIUM FIX) ---
     
     def save_pending_entries(self, pending_entries):
-        """Persist pending entries to JSON so they survive crashes.
-        
-        Args:
-            pending_entries: dict of {symbol: pending_entry_data}
-        """
-        filepath = self.filepath.replace("bot_trades", "pending_entries")
-        try:
-            # Convert datetime objects to strings for JSON serialization
-            serializable = {}
-            for symbol, entry in pending_entries.items():
-                entry_copy = {}
-                for k, v in entry.items():
-                    if hasattr(v, 'isoformat'):
-                        entry_copy[k] = v.isoformat()
-                    elif hasattr(v, 'strftime'):
-                        entry_copy[k] = v.strftime('%Y-%m-%d')
-                    else:
-                        entry_copy[k] = v
-                serializable[symbol] = entry_copy
-            
-            with open(filepath, 'w') as f:
-                json.dump(serializable, f, indent=2, default=str)
-        except Exception as e:
-            self.logger.error(f"Error saving pending entries: {e}")
+        """Persist pending entries to JSON so they survive crashes."""
+        with self.lock:
+            filepath = self.filepath.replace("bot_trades", "pending_entries")
+            try:
+                # Convert datetime objects to strings for JSON serialization
+                serializable = {}
+                for symbol, entry in pending_entries.items():
+                    entry_copy = {}
+                    for k, v in entry.items():
+                        if hasattr(v, 'isoformat'):
+                            entry_copy[k] = v.isoformat()
+                        elif hasattr(v, 'strftime'):
+                            entry_copy[k] = v.strftime('%Y-%m-%d')
+                        else:
+                            entry_copy[k] = v
+                    serializable[symbol] = entry_copy
+                
+                with open(filepath, 'w') as f:
+                    json.dump(serializable, f, indent=2, default=str)
+            except Exception as e:
+                self.logger.error(f"Error saving pending entries: {e}")
 
     def load_pending_entries(self):
-        """Load pending entries from JSON (for crash recovery).
-        
-        Returns:
-            dict of {symbol: pending_entry_data} or empty dict
-        """
-        filepath = self.filepath.replace("bot_trades", "pending_entries")
-        try:
-            if os.path.exists(filepath):
-                with open(filepath, 'r') as f:
-                    return json.load(f)
-        except Exception as e:
-            self.logger.error(f"Error loading pending entries: {e}")
-        return {}
+        """Load pending entries from JSON (for crash recovery)."""
+        with self.lock:
+            filepath = self.filepath.replace("bot_trades", "pending_entries")
+            try:
+                if os.path.exists(filepath):
+                    with open(filepath, 'r') as f:
+                        return json.load(f)
+            except Exception as e:
+                self.logger.error(f"Error loading pending entries: {e}")
+            return {}
 
     def clear_pending_entries(self):
-        """Clear pending entries file (called when entries are processed)."""
-        filepath = self.filepath.replace("bot_trades", "pending_entries")
-        try:
-            if os.path.exists(filepath):
-                with open(filepath, 'w') as f:
-                    json.dump({}, f)
-        except Exception as e:
-            self.logger.error(f"Error clearing pending entries: {e}")
+        """Clear pending entries file."""
+        with self.lock:
+            filepath = self.filepath.replace("bot_trades", "pending_entries")
+            try:
+                if os.path.exists(filepath):
+                    with open(filepath, 'w') as f:
+                        json.dump({}, f)
+            except Exception as e:
+                self.logger.error(f"Error clearing pending entries: {e}")

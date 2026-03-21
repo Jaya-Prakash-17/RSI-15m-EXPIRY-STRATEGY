@@ -10,11 +10,11 @@ class HistoricalDownloader:
     # Maximum candles per API request (conservative estimate for 15min TF)
     # 15min: ~26 candles/day × 30 days = ~780 candles, set chunk to 30 days
     MAX_DAYS_PER_CHUNK = {
-        1: 7,       # 1 min: 375 candles/day, ~7 days max
-        5: 15,      # 5 min: 75 candles/day, ~15 days max
-        15: 30,     # 15 min: 25 candles/day, ~30 days max
-        30: 60,     # 30 min: 12 candles/day, ~60 days max
-        60: 90,     # 1 hour: 6 candles/day, ~90 days max
+        1: 7,
+        5: 15,
+        15: 90,    # Per Groww docs: 15-min = 90 days max per request
+        30: 90,    # Per Groww docs: 30-min = 90 days max per request
+        60: 180,   # Per Groww docs: 1-hour = 180 days max per request
     }
     
     def __init__(self, config):

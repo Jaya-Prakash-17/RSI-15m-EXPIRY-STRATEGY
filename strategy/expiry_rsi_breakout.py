@@ -11,13 +11,34 @@ class ExpiryRSIBreakout:
         self.rsi_threshold = config['strategy']['rsi']['threshold']
         self.alert_validity = config['strategy']['alert_validity']
         self.alert_negation = config['strategy'].get('alert_negation', True)  # Default to True
-        self.rsi_warmup = self.rsi_period * config['strategy']['rsi'].get('warmup_periods', 3)
+        self.rsi_warmup = config['strategy']['rsi'].get('warmup_periods', 100)
+        self.min_candles_for_signal = config['strategy']['rsi'].get(
+            'min_candles_for_signal', self.rsi_period * 3
+        )
+        
+        self.logger.info(
+            f"RSI({self.rsi_period}) warmup: {self.rsi_warmup} candles "
+            f"({self.rsi_warmup * 15} minutes ≈ {self.rsi_warmup * 15 / 375:.1f} trading days) | "
+            f"Min signal candles: {self.min_candles_for_signal}"
+        )
         
         # Key: symbol, Value: {alert_candle: dict, age: int, alert_time: datetime, last_processed_time: datetime}
         self.state = {}
         
+        # Risk management: SL Floor
+        self.min_sl_pct = config['strategy'].get('min_sl_pct', 0.08)
+        
+        # Time-of-day filters
+        from datetime import datetime
+        self.signal_start_time = datetime.strptime(
+            config['strategy'].get('signal_window_start', '09:30'), "%H:%M"
+        ).time()
+        self.signal_end_time = datetime.strptime(
+            config['strategy'].get('signal_window_end', '15:00'), "%H:%M"
+        ).time()
+        
         # Debug logging for RSI validation
-        self.rsi_debug = True  # Set to False after validation
+        self.rsi_debug = config['strategy'].get('rsi_debug', False)
 
     def calculate_wilder_rsi(self, prices, return_components=False):
         """
@@ -232,78 +253,111 @@ class ExpiryRSIBreakout:
         # Update processed time
         state['last_processed_time'] = current_time
 
-        # 1. Check for Entry on existing alert (from PREVIOUS candles)
+        # 1. Check for Entry (existing code)
         if state['alert'] is not None:
             alert_candle = state['alert']
             
-            # NOTE: NEGATION is based on WINDOW EXPIRY only (not RSI)
-            # If price fails to cross alert_high within alert_validity candles, 
-            # the alert expires (handled in age increment logic above)
-            # RSI is NOT checked after alert is generated - only price matters
-            
             # Entry condition: Price breaks high of alert candle
-            # Strict check: High of CURRENT candle > High of ALERT candle
-            # And current candle is strictly AFTER alert candle
             if current_time > state['alert_time'] and current_candle['high'] > alert_candle['high']:
-                 # We have a breakout
-                 alert_range = alert_candle['high'] - alert_candle['low']
-                 
-                 signal = {
+                # ... breakout logic ...
+                alert_range = alert_candle['high'] - alert_candle['low']
+                
+                # Apply SL Floor
+                raw_sl = alert_candle['low'] - 1
+                min_sl_dist = alert_candle['high'] * self.min_sl_pct
+                actual_sl_dist = alert_candle['high'] - raw_sl
+                effective_sl = raw_sl
+                if actual_sl_dist < min_sl_dist:
+                    effective_sl = round(alert_candle['high'] - min_sl_dist, 2)
+                    self.logger.debug(f"[{symbol}] ENTRY SL floor applied: {raw_sl} -> {effective_sl}")
+
+                return {
                     'action': 'ENTRY',
-                    'price': alert_candle['high'], # The trigger price (Stop Buy)
-                    'sl': alert_candle['low'] - 1,
+                    'price': alert_candle['high'],
+                    'sl': effective_sl,
                     'targets': [
-                        alert_candle['high'] + alert_range,      # TP1
-                        alert_candle['high'] + 2 * alert_range,  # TP2
-                        alert_candle['high'] + 3 * alert_range   # TP3
+                        alert_candle['high'] + alert_range,
+                        alert_candle['high'] + 2 * alert_range,
+                        alert_candle['high'] + 3 * alert_range
                     ],
                     'alert_candle': alert_candle,
                     'alert_time': state['alert_time'],
-                    # Exit management info
                     'alert_range': alert_range,
+                    'rsi': current_rsi if current_rsi is not None else 0.0,
                     'exit_mode': self.config['strategy'].get('exit_mode', 'multi_lot'),
                     'lots_per_trade': self.config['strategy'].get('lots_per_trade', 3)
                 }
-                 # Do NOT consume alert here. Engine must call consume_alert.
-                 return signal
+
+        # 1b. Check for Alert Negation by Price
+        if state['alert'] is not None and self.alert_negation:
+            alert_candle = state['alert']
+            if current_candle['close'] < alert_candle['low']:
+                self.logger.info(
+                    f"[{symbol}] Alert NEGATED: close=\u20b9{current_candle['close']:.2f} "
+                    f"< alert_low=\u20b9{alert_candle['low']:.2f}"
+                )
+                state['alert'] = None
+                state['age'] = 0
+                state['alert_time'] = None
+                return {'action': 'NEGATED', 'symbol': symbol}
 
         # 2. Check for new Alert
+        # Time-of-day filter (new alerts only)
+        if state['alert'] is None:
+            candle_time = current_time.time() if hasattr(current_time, 'time') else current_time
+            if candle_time < self.signal_start_time:
+                self.logger.debug(f"[{symbol}] Pre-signal window ({candle_time} < {self.signal_start_time}). Skip.")
+                return None
+            if candle_time > self.signal_end_time:
+                self.logger.debug(f"[{symbol}] Post-signal window ({candle_time} > {self.signal_end_time}). Skip.")
+                return None
+
         # Only if we don't have an active alert.
         if state['alert'] is None and is_tradable:
-            # TradingView requirement: Must be a GREEN candle (close > open)
+            # Minimum candle quality guard
+            if len(price_history) < self.min_candles_for_signal:
+                self.logger.debug(
+                    f"[{symbol}] Insufficient history: {len(price_history)} < {self.min_candles_for_signal}"
+                )
+                return None
+                
             is_green_candle = current_candle['close'] > current_candle['open']
-            
-            # Cross above 60 logic: prev < 60 and curr >= 60
-            # CRITICAL: Alert only on GREEN candles (matching TradingView)
             if is_green_candle and prev_rsi is not None and prev_rsi < self.rsi_threshold and current_rsi >= self.rsi_threshold:
-                # Store immutable copy of minimal data needed
                 alert_candle = {
                     'high': current_candle['high'],
                     'low': current_candle['low'],
                     'datetime': current_candle['datetime']
                 }
+                
+                # Apply SL Floor to ALERT signal too
+                raw_sl = alert_candle['low'] - 1
+                min_sl_dist = alert_candle['high'] * self.min_sl_pct
+                if (alert_candle['high'] - raw_sl) < min_sl_dist:
+                    effective_sl = round(alert_candle['high'] - min_sl_dist, 2)
+                else:
+                    effective_sl = raw_sl
+
                 state['alert'] = alert_candle
                 state['age'] = 0
                 state['alert_time'] = current_time
-                self.logger.info(f"ALERT: RSI Breakout for {symbol} at {current_time} (RSI: {current_rsi:.2f}, GREEN candle)")
+                self.logger.info(f"ALERT: RSI Breakout for {symbol} at {current_time} (RSI: {current_rsi:.2f})")
                 
-                # Return ALERT signal so live trader can place pending entry order
                 alert_range = alert_candle['high'] - alert_candle['low']
-                signal = {
-                    'action': 'ALERT',  # New action type for pending entry
-                    'price': alert_candle['high'],  # Trigger price for SL-M BUY
-                    'sl': alert_candle['low'] - 1,
+                return {
+                    'action': 'ALERT',
+                    'price': alert_candle['high'],
+                    'sl': effective_sl,
                     'targets': [
-                        alert_candle['high'] + alert_range,      # TP1
-                        alert_candle['high'] + 2 * alert_range,  # TP2
-                        alert_candle['high'] + 3 * alert_range   # TP3
+                        alert_candle['high'] + alert_range,
+                        alert_candle['high'] + 2 * alert_range,
+                        alert_candle['high'] + 3 * alert_range
                     ],
                     'alert_candle': alert_candle,
                     'alert_time': state['alert_time'],
                     'alert_range': alert_range,
+                    'rsi': current_rsi if current_rsi is not None else 0.0,
                     'exit_mode': self.config['strategy'].get('exit_mode', 'multi_lot'),
                     'lots_per_trade': self.config['strategy'].get('lots_per_trade', 3)
                 }
-                return signal
         
         return signal

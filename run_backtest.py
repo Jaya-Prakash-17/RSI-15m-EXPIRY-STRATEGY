@@ -11,7 +11,7 @@ from reporting.performance import PerformanceReporter
 def setup_logging(log_file="backtest.log"):
     # Configure root logger
     logging.basicConfig(
-        level=logging.INFO,
+        level=logging.DEBUG,
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         handlers=[
             logging.FileHandler(log_file, mode='w'), # Overwrite mode

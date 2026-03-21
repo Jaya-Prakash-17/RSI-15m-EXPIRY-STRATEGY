@@ -69,7 +69,7 @@ class OrderManager:
     def check_order_fill(self, order_id, timeout=30):
         """
         Polls order status until filled or timeout.
-        Returns fill_result dict with filled_qty and avg_price, or None if failed.
+        Returns fill_result dict with filled_qty and fill_price, or None if failed.
         Automatically cancels order on timeout.
         """
         start = time.time()
@@ -82,11 +82,11 @@ class OrderManager:
             
             s = status.get('status')
             filled_qty = int(status.get('filled_quantity', 0))
-            avg_price = float(status.get('avg_price', 0) or 0)
+            fill_price = float(status.get('fill_price', 0) or 0)
             
             if is_order_filled(s):
-                self.logger.info(f"Order {order_id} FILLED: Qty={filled_qty}, Price=₹{avg_price}")
-                return avg_price  # Returning just price for backward compatibility
+                self.logger.info(f"Order {order_id} FILLED: Qty={filled_qty}, Price=₹{fill_price}")
+                return fill_price  # Returning just price for backward compatibility
             
             elif s == 'PARTIALLY_FILLED':
                 # For options, partial fills are rare, but handle it
@@ -114,9 +114,9 @@ class OrderManager:
             time.sleep(2)
             final_status = self.client.get_order_status(order_id)
             if final_status and is_order_filled(final_status.get('status', '')):
-                avg_price = float(final_status.get('avg_price', 0) or 0)
-                self.logger.info(f"Order {order_id} filled during final check: ₹{avg_price}")
-                return avg_price
+                fill_price = float(final_status.get('fill_price', 0) or 0)
+                self.logger.info(f"Order {order_id} filled during final check: ₹{fill_price}")
+                return fill_price
         except Exception as e:
             self.logger.error(f"Error during timeout handling: {e}")
         

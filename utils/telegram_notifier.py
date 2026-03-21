@@ -35,6 +35,7 @@ USAGE in live_trader.py:
 import os
 import requests
 import logging
+import time
 from datetime import datetime
 
 
@@ -46,8 +47,8 @@ class TelegramNotifier:
 
     def __init__(self):
         self.token = os.getenv("TELEGRAM_BOT_TOKEN")
-        chat_id_env = os.getenv("TELEGRAM_CHAT_ID", "")
-        self.chat_ids = [c.strip() for c in chat_id_env.split(',') if c.strip()]
+        raw_ids = os.getenv("TELEGRAM_CHAT_ID", "")
+        self.chat_ids = [cid.strip() for cid in raw_ids.split(",") if cid.strip()]
         self.logger = logging.getLogger("TelegramNotifier")
 
         self.enabled = bool(self.token and self.chat_ids)
@@ -64,7 +65,7 @@ class TelegramNotifier:
     # ─────────────────────────────────────────────
 
     def _send(self, message: str):
-        """Send a message. Silent fail — will never crash the bot."""
+        """Send a message. Handles 429 rate limiting with a single retry."""
         if not self.enabled:
             return
             
@@ -80,6 +81,25 @@ class TelegramNotifier:
                     },
                     timeout=5,
                 )
+                
+                if resp.status_code == 429:
+                    # Rate limited — wait and retry once
+                    retry_after = int(resp.json().get('parameters', {}).get('retry_after', 5))
+                    self.logger.warning(
+                        f"Telegram rate limited for {chat_id}. "
+                        f"Waiting {retry_after}s before retry."
+                    )
+                    time.sleep(retry_after)
+                    resp = requests.post(
+                        url,
+                        json={
+                            "chat_id": chat_id,
+                            "text": message,
+                            "parse_mode": "HTML",
+                        },
+                        timeout=5,
+                    )
+                
                 if not resp.ok:
                     self.logger.error(f"Telegram error {resp.status_code} for chat {chat_id}: {resp.text[:200]}")
             except requests.exceptions.Timeout:
@@ -383,4 +403,4 @@ class TelegramNotifier:
             f"<i>Setup complete. Happy trading! 🚀</i>"
         )
         self._send(msg)
-        self.logger.info("Test message sent to Telegram")
+        self.logger.info(f"Test message sent to {len(self.chat_ids)} Telegram chat(s)")

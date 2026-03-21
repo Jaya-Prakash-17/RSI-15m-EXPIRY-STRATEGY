@@ -70,25 +70,15 @@ class IntradayEngine:
                 continue
             
             if trade_only_on_expiry:
-                # For backtesting: Calculate if current date is an expiry day
-                # API only returns future expiries, so we need to calculate historical ones
-                for idx, details in self.config['indices'].items():
-                    # Skip if index is disabled (Saturday/Sunday expiry)
-                    if details['expiry_day'] not in valid_days:
-                        continue
-                    
-                    # Calculate if this date is an expiry for this index
+                for idx in self.config['indices'].keys():
                     is_expiry = self._is_expiry_day(idx, current_date)
-                    
                     if is_expiry:
                         self.logger.info(f"EXPIRY DAY: {current_date.date()} is expiry for {idx}")
                         indices_to_trade.append(idx)
                         should_trade = True
             else:
-                # Trade all days - but only include indices with valid expiry days configured
-                for idx, details in self.config['indices'].items():
-                    if details['expiry_day'] in valid_days:
-                        indices_to_trade.append(idx)
+                for idx in self.config['indices'].keys():
+                    indices_to_trade.append(idx)
                 should_trade = len(indices_to_trade) > 0
             
             if should_trade and indices_to_trade:
@@ -245,7 +235,8 @@ class IntradayEngine:
                             'symbol': symbol,
                             'signal': signal,
                             'dist': dist,
-                            'volume': row['volume']
+                            'volume': row['volume'],
+                            'entry_candle_open': row.get('open', signal['price'])
                         })
                     except (ValueError, IndexError) as e:
                         self.logger.warning(f"Symbol parse failed: {symbol} — {e}")
@@ -263,10 +254,20 @@ class IntradayEngine:
         signal = candidate['signal']
         # Issue 8: Rounding
         underlying = 'NIFTY'
-        if 'BANKNIFTY' in symbol: underlying = 'BANKNIFTY'
-        if 'SENSEX' in symbol: underlying = 'SENSEX'
+        alert_high = signal['price']  # Intended trigger price
+        entry_candle_open = candidate.get('entry_candle_open', alert_high)
         
-        price = self._round_to_tick(signal['price'], underlying)
+        if entry_candle_open > alert_high:
+            # Gap-up: SL-M fills at open price
+            actual_fill = entry_candle_open
+            self.logger.info(
+                f"Gap-fill simulation: trigger=\u20b9{alert_high}, open=\u20b9{entry_candle_open}, "
+                f"fill=\u20b9{actual_fill}"
+            )
+        else:
+            actual_fill = alert_high  # Normal fill at trigger
+            
+        price = self._round_to_tick(actual_fill, underlying)
         sl = self._round_to_tick(signal['sl'], underlying)
         targets = [self._round_to_tick(tgt, underlying) for tgt in signal['targets']]
         

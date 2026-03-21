@@ -20,6 +20,7 @@ class GrowwClient:
         self.api_key = api_key or os.getenv("GROWW_API_KEY")
         self.api_secret = api_secret or os.getenv("GROWW_API_SECRET")
         self.client = None
+        self._instrument_cache = {}  # symbol -> instrument dict. Static per session.
         
         # NO MOCK MODE - Fail fast if requirements not met
         if not HAS_GROWW_SDK:
@@ -68,6 +69,36 @@ class GrowwClient:
             
             self.logger.error(error_msg)
             raise ConnectionError(error_msg)
+
+
+    def _safe_call(self, api_func, *args, **kwargs):
+        """
+        Wrapper for all Groww API calls.
+        On 401 Unauthorized or token-related error, re-authenticates and retries once.
+        On any other error, raises normally.
+        """
+        try:
+            return api_func(*args, **kwargs)
+        except Exception as e:
+            error_str = str(e).lower()
+            is_auth_error = ('401' in error_str or 
+                            'unauthorized' in error_str or 
+                            'token' in error_str or
+                            'expired' in error_str)
+            if is_auth_error:
+                self.logger.warning(
+                    f"Auth error detected ({type(e).__name__}). "
+                    f"Re-authenticating and retrying..."
+                )
+                try:
+                    self._authenticate()
+                    self.logger.info("Re-authentication successful. Retrying API call.")
+                    return api_func(*args, **kwargs)
+                except Exception as re_auth_err:
+                    self.logger.critical(f"Re-authentication FAILED: {re_auth_err}")
+                    self.logger.critical("All API calls will fail. Manual intervention needed.")
+                    raise ConnectionError(f"Re-auth failed: {re_auth_err}") from re_auth_err
+            raise  # Re-raise non-auth errors unchanged
 
 
     def get_historical_candles(self, symbol, interval, start_date, end_date):
@@ -121,6 +152,16 @@ class GrowwClient:
                     candle_interval=sdk_interval
                 )
                 
+                # DEBUG: Log response metadata
+                if resp:
+                    candles_count = len(resp.get('candles', []))
+                    if candles_count == 0:
+                        self.logger.warning(f"RAW API Response for {symbol} (EMPTY): {resp}")
+                    else:
+                        self.logger.debug(f"API Response for {symbol}: {candles_count} candles returned.")
+                else:
+                    self.logger.warning(f"API Response for {symbol} is None.")
+                
                 if resp and 'candles' in resp and len(resp['candles']) > 0:
                         data = []
                         for candle in resp['candles']:
@@ -164,7 +205,8 @@ class GrowwClient:
         try:
             if not self.client: self._authenticate()
             segment = GrowwAPI.SEGMENT_FNO
-            resp = self.client.get_order_status(
+            resp = self._safe_call(
+                self.client.get_order_status,
                 groww_order_id=order_id,
                 segment=segment
             )
@@ -172,7 +214,7 @@ class GrowwClient:
                 "status": resp.get("order_status"),
                 "filled_quantity": resp.get("filled_quantity", 0),
                 "groww_order_id": resp.get("groww_order_id"),
-                "avg_price": resp.get("average_fill_price", 0) 
+                "fill_price": float(resp.get("average_fill_price") or 0)
             }
         except Exception as e:
             self.logger.error(f"Error fetching order status {order_id}: {e}")
@@ -200,7 +242,16 @@ class GrowwClient:
             else:
                 # Option LTP - resolve to compact format via instruments
                 if not self.client: self._authenticate()
-                instr = self.client.get_instrument_by_groww_symbol(symbol)
+                
+                # BUG-008: Use instrument cache to avoid excessive API calls
+                if symbol not in self._instrument_cache:
+                    self.logger.debug(f"Cache miss — fetching instrument for {symbol}")
+                    instr = self._safe_call(self.client.get_instrument_by_groww_symbol, symbol)
+                    if instr:
+                        self._instrument_cache[symbol] = instr
+                
+                instr = self._instrument_cache.get(symbol)
+                
                 if not instr:
                     self.logger.error(f"Could not resolve instrument for option symbol {symbol}")
                     return None
@@ -209,7 +260,8 @@ class GrowwClient:
                 segment = GrowwAPI.SEGMENT_FNO
 
             if not self.client: self._authenticate()
-            resp = self.client.get_ltp(
+            resp = self._safe_call(
+                self.client.get_ltp,
                 segment=segment,
                 exchange_trading_symbols=key
             )
@@ -254,7 +306,8 @@ class GrowwClient:
                 exchange = GrowwAPI.EXCHANGE_NSE
             
             if not self.client: self._authenticate()
-            resp = self.client.place_order(
+            resp = self._safe_call(
+                self.client.place_order,
                 trading_symbol=trading_symbol,
                 quantity=qty,
                 validity=GrowwAPI.VALIDITY_DAY,
@@ -282,6 +335,11 @@ class GrowwClient:
         except Exception as e:
             self.logger.error(f"Failed to fetch balance: {e}")
             return None
+
+    def clear_instrument_cache(self):
+        """Clear instrument cache. Call at session start or during testing."""
+        self._instrument_cache.clear()
+        self.logger.info("Instrument cache cleared")
 
     def modify_order(self, order_id, qty=None, order_type=None, price=None, trigger_price=None):
         """
@@ -399,33 +457,42 @@ class GrowwClient:
             self.logger.error(f"Failed to get expiries: {e}")
             return []
 
-    def get_option_chain_details(self, underlying, expiry_date):
+    def get_option_chain_details(self, underlying: str, expiry_date) -> dict:
         """
-        Fetch full option chain to map groww_symbol -> trading_symbol.
+        Build a (strike, option_type) -> groww_symbol mapping using get_contracts().
+        get_contracts() is the official documented Groww SDK method.
+        Returns: dict like {(22500.0, 'CE'): 'NSE-NIFTY-07Jan26-22500-CE', ...}
         """
         try:
-            # Use BSE for SENSEX, NSE for others
             exchange = GrowwAPI.EXCHANGE_BSE if underlying == "SENSEX" else GrowwAPI.EXCHANGE_NSE
-            
-            if not self.client: self._authenticate()
-            resp = self.client.get_option_chain(
+            if not self.client:
+                self._authenticate()
+            resp = self.client.get_contracts(
                 exchange=exchange,
-                underlying=underlying,
+                underlying_symbol=underlying,
                 expiry_date=expiry_date.strftime("%Y-%m-%d")
             )
-            
-            self.logger.debug(f"Option chain response keys for {underlying}: {list(resp.keys()) if resp else 'None'}")
-            
+            contracts = resp.get('contracts', [])
+            if not contracts:
+                self.logger.warning(f"No contracts from API for {underlying} {expiry_date}")
+                return {}
+
             mapping = {}
-            if resp and 'strikes' in resp:
-                for strike_price, data in resp['strikes'].items():
-                    for type_ in ['CE', 'PE']:
-                        if type_ in data:
-                            item = data[type_]
-                            ts = item.get('trading_symbol')
-                            if ts:
-                                mapping[(float(strike_price), type_)] = ts
+            for contract in contracts:
+                # Format: NSE-NIFTY-07Jan26-22500-CE  or  BSE-SENSEX-08Jan26-80000-PE
+                parts = contract.split('-')
+                if len(parts) >= 5:
+                    try:
+                        strike = float(parts[-2])
+                        opt_type = parts[-1]  # 'CE' or 'PE'
+                        mapping[(strike, opt_type)] = contract
+                    except (ValueError, IndexError):
+                        self.logger.debug(f"Could not parse contract: {contract}")
+                        continue
+
+            self.logger.info(f"Option chain for {underlying} {expiry_date}: {len(mapping)} contracts")
             return mapping
+
         except Exception as e:
-            self.logger.error(f"Failed to fetch option chain: {e}")
+            self.logger.error(f"Failed to fetch option chain for {underlying}: {e}")
             return {}
