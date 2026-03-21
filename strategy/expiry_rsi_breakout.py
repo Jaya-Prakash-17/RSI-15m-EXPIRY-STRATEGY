@@ -39,6 +39,13 @@ class ExpiryRSIBreakout:
         
         # Debug logging for RSI validation
         self.rsi_debug = config['strategy'].get('rsi_debug', False)
+        
+        # Risk management: SAFE_SL Mode
+        self.safe_sl_mode = config['strategy'].get('safe_sl_mode', False)
+        self.safe_sl_max_loss = config['strategy'].get('safe_sl_max_loss', 5000)
+        
+        if self.safe_sl_mode:
+            self.logger.info(f"🛡️ SAFE_SL Mode Enabled | Max Loss Floor: ₹{self.safe_sl_max_loss}")
 
     def calculate_wilder_rsi(self, prices, return_components=False):
         """
@@ -170,6 +177,40 @@ class ExpiryRSIBreakout:
         return self.calculate_wilder_rsi(prices)
 
 
+    def _calculate_effective_sl(self, symbol, entry_price, alert_low):
+        """Calculates SL based on Alert Range, SL Floor, and SAFE_SL mode."""
+        # 1. Base distance (High - Low + ₹1 buffer)
+        raw_dist = entry_price - alert_low + 1.0
+        
+        # 2. Apply SAFE_SL cap if enabled
+        # Total distance should not exceed distance required for 5k loss
+        if self.safe_sl_mode:
+            try:
+                parts = symbol.split('-')
+                underlying = parts[1] if len(parts) > 1 else 'NIFTY'
+                
+                lots = self.config['strategy'].get('lots_per_trade', 3)
+                lot_size = self.config['indices'].get(underlying, {}).get('lot_size', 50)
+                qty = lots * lot_size
+                
+                if qty > 0:
+                    max_allowed_dist = self.safe_sl_max_loss / qty
+                    if raw_dist > max_allowed_dist:
+                        self.logger.info(f"🛡️ [{symbol}] SAFE_SL applied: cap dist {raw_dist:.2f} -> {max_allowed_dist:.2f}")
+                        raw_dist = max_allowed_dist
+            except Exception as e:
+                self.logger.error(f"Error in SAFE_SL calculation for {symbol}: {e}")
+
+        # 3. Apply SL Floor (minimum distance)
+        # We handle this AFTER SAFE_SL because the Floor is a safety minimum.
+        min_sl_dist = entry_price * self.min_sl_pct
+        effective_dist = max(raw_dist, min_sl_dist)
+        
+        if effective_dist > raw_dist:
+            self.logger.debug(f"[{symbol}] SL floor applied: {raw_dist:.2f} -> {effective_dist:.2f}")
+            
+        return round(entry_price - effective_dist, 2)
+
     def consume_alert(self, symbol):
         """Manually consumes the alert for a symbol (e.g. after entry)."""
         if symbol in self.state:
@@ -262,14 +303,8 @@ class ExpiryRSIBreakout:
                 # ... breakout logic ...
                 alert_range = alert_candle['high'] - alert_candle['low']
                 
-                # Apply SL Floor
-                raw_sl = alert_candle['low'] - 1
-                min_sl_dist = alert_candle['high'] * self.min_sl_pct
-                actual_sl_dist = alert_candle['high'] - raw_sl
-                effective_sl = raw_sl
-                if actual_sl_dist < min_sl_dist:
-                    effective_sl = round(alert_candle['high'] - min_sl_dist, 2)
-                    self.logger.debug(f"[{symbol}] ENTRY SL floor applied: {raw_sl} -> {effective_sl}")
+                # Calculate Effective SL (Base, Base + SAFE_SL, and Floor)
+                effective_sl = self._calculate_effective_sl(symbol, alert_candle['high'], alert_candle['low'])
 
                 return {
                     'action': 'ENTRY',
@@ -329,13 +364,8 @@ class ExpiryRSIBreakout:
                     'datetime': current_candle['datetime']
                 }
                 
-                # Apply SL Floor to ALERT signal too
-                raw_sl = alert_candle['low'] - 1
-                min_sl_dist = alert_candle['high'] * self.min_sl_pct
-                if (alert_candle['high'] - raw_sl) < min_sl_dist:
-                    effective_sl = round(alert_candle['high'] - min_sl_dist, 2)
-                else:
-                    effective_sl = raw_sl
+                # Calculate Effective SL (Base, Base + SAFE_SL, and Floor)
+                effective_sl = self._calculate_effective_sl(symbol, alert_candle['high'], alert_candle['low'])
 
                 state['alert'] = alert_candle
                 state['age'] = 0
