@@ -49,3 +49,10 @@ trading:
     auto_square_off: '15:25'
     end: '15:00'
     start: '10:15'
+charges:
+  brokerage_per_trade: 20 # Flat ₹20 per trade (each leg)
+  stt: 0.0005            # 0.05% on sell side for options
+  exchange_txn_fee: 0.00053 # 0.053% NSE charges (approx)
+  gst: 0.18              # 18% on brokerage + txn fees
+  sebi_charges: 0.0001   # 0.0001% (approx ₹10 per Cr)
+  stamp_duty: 0.00003    # 0.003% on buy side (Options)

@@ -11,15 +11,21 @@ class PerformanceReporter:
         self.logger = logging.getLogger("Performance")
         self.config = config or {}
         
-        # Trading charges (typical Indian broker charges)
-        self.charges = {
-            'brokerage_per_trade': 20,  # Flat ₹20 per trade
-            'stt': 0.0005,  # 0.05% on sell side for options
-            'exchange_txn_fee': 0.00053,  # 0.053% NSE charges
-            'gst': 0.18,  # 18% on brokerage + txn fees
-            'sebi_charges': 0.0001,  # 0.01% SEBI charges
-            'stamp_duty': 0.00003  # 0.003% on buy side
+        # Default charges if not in config
+        defaults = {
+            'brokerage_per_trade': 20, 
+            'stt': 0.0005, 
+            'exchange_txn_fee': 0.00053, 
+            'gst': 0.18, 
+            'sebi_charges': 0.0001, 
+            'stamp_duty': 0.00003
         }
+        
+        # Override with values from config.yaml
+        self.charges = defaults.copy()
+        if 'charges' in self.config:
+            self.logger.info("Using custom trading charges from config.yaml")
+            self.charges.update(self.config['charges'])
         
         # Reports directory
         self.reports_dir = "reports"
