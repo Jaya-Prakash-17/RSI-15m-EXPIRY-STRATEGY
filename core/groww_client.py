@@ -328,7 +328,7 @@ class GrowwClient:
     def get_balance(self):
         try:
             if not self.client: self._authenticate()
-            resp = self.client.get_available_margin_details()
+            resp = self._safe_call(self.client.get_available_margin_details)
             if 'fno_margin_details' in resp:
                 return float(resp['fno_margin_details'].get('option_buy_balance_available', 0.0))
             return float(resp.get('clear_cash', 0.0))
@@ -383,7 +383,7 @@ class GrowwClient:
                 modify_params['trigger_price'] = trigger_price
             
             if not self.client: self._authenticate()
-            resp = self.client.modify_order(**modify_params)
+            resp = self._safe_call(self.client.modify_order, **modify_params)
             
             if resp and 'groww_order_id' in resp:
                 self.logger.info(f"Order {order_id} modified successfully")
@@ -410,7 +410,8 @@ class GrowwClient:
         try:
             seg = segment or GrowwAPI.SEGMENT_FNO
             if not self.client: self._authenticate()
-            resp = self.client.cancel_order(
+            resp = self._safe_call(
+                self.client.cancel_order,
                 groww_order_id=order_id,
                 segment=seg
             )
@@ -432,7 +433,8 @@ class GrowwClient:
             exchange = GrowwAPI.EXCHANGE_BSE if underlying == "SENSEX" else GrowwAPI.EXCHANGE_NSE
             
             if not self.client: self._authenticate()
-            resp = self.client.get_contracts(
+            resp = self._safe_call(
+                self.client.get_contracts,
                 exchange=exchange,
                 underlying_symbol=underlying,
                 expiry_date=expiry_date.strftime("%Y-%m-%d")
@@ -448,7 +450,8 @@ class GrowwClient:
             exchange = GrowwAPI.EXCHANGE_BSE if underlying == "SENSEX" else GrowwAPI.EXCHANGE_NSE
             
             if not self.client: self._authenticate()
-            resp = self.client.get_expiries(
+            resp = self._safe_call(
+                self.client.get_expiries,
                 exchange=exchange,
                 underlying_symbol=underlying
             )
@@ -467,7 +470,8 @@ class GrowwClient:
             exchange = GrowwAPI.EXCHANGE_BSE if underlying == "SENSEX" else GrowwAPI.EXCHANGE_NSE
             if not self.client:
                 self._authenticate()
-            resp = self.client.get_contracts(
+            resp = self._safe_call(
+                self.client.get_contracts,
                 exchange=exchange,
                 underlying_symbol=underlying,
                 expiry_date=expiry_date.strftime("%Y-%m-%d")

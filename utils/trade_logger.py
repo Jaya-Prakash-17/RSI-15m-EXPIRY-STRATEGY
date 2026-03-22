@@ -70,11 +70,13 @@ class TradeLogger:
             }
             self._write_row(row)
     
-    def log_exit(self, trade, daily_pnl=0, capital=0, *legacy_args):
+    def log_exit(self, trade, daily_pnl=0, capital=0):
         """Log trade exit.
-
-        Supports both `(trade, daily_pnl, capital)` and the older
-        `(trade, exit_price, reason, daily_pnl[, capital])` call style.
+        
+        Args:
+            trade: Trade dict with exit_price, exit_time, reason, pnl fields
+            daily_pnl: Running daily P&L total
+            capital: Available capital after this trade (0 if not tracked)
         """
         with self.lock:
             exit_price = trade.get('exit_price', 0)
@@ -82,16 +84,6 @@ class TradeLogger:
             reason = trade.get('reason', 'UNKNOWN')
             pnl = trade.get('pnl', 0)
 
-            if isinstance(capital, str):
-                exit_price = daily_pnl
-                reason = capital
-                daily_pnl = legacy_args[0] if legacy_args else 0
-                capital = legacy_args[1] if len(legacy_args) > 1 else 0
-
-                remaining_qty = trade.get('remaining_qty', trade.get('qty', 0))
-                partial_pnl = trade.get('partial_pnl', 0)
-                pnl = (exit_price - trade.get('entry_price', 0)) * remaining_qty + partial_pnl
-                exit_time = datetime.now().isoformat()
 
             row = {
                 'timestamp': datetime.now().isoformat(),

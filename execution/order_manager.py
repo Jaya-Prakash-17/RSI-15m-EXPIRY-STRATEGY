@@ -25,11 +25,24 @@ class OrderManager:
             self.logger.warning("*** PAPER TRADING MODE ENABLED - No real orders will be placed ***") 
 
     def _resolve_lot_size(self, symbol, trading_symbol=None):
-        """Infer lot size from the configured underlying names."""
+        """
+        Resolve lot size from symbol. Checks in specificity order to avoid
+        substring collision ('NIFTY' is a substring of 'BANKNIFTY').
+        """
         symbol_text = f"{symbol or ''} {trading_symbol or ''}"
-        for underlying, details in self.config.get('indices', {}).items():
-            if underlying in symbol_text:
-                return details.get('lot_size', 1)
+
+        # Check in order from most specific to least specific.
+        # BANKNIFTY must come before NIFTY to avoid substring false match.
+        check_order = ['BANKNIFTY', 'MIDCPNIFTY', 'SENSEX', 'NIFTY']
+
+        for underlying in check_order:
+            details = self.config.get('indices', {}).get(underlying, {})
+            if details and underlying in symbol_text:
+                lot_size = details.get('lot_size', 1)
+                self.logger.debug(f"Resolved lot_size={lot_size} for {underlying} from symbol")
+                return lot_size
+
+        self.logger.warning(f"Could not resolve lot_size for symbol: {symbol}. Defaulting to 1.")
         return 1
 
     def place_entry_order(self, symbol, qty, price, trading_symbol, order_type="SL-M"):
@@ -69,8 +82,12 @@ class OrderManager:
     def check_order_fill(self, order_id, timeout=30):
         """
         Polls order status until filled or timeout.
-        Returns fill_result dict with filled_qty and fill_price, or None if failed.
-        Automatically cancels order on timeout.
+
+        Returns:
+            float: The fill price if the order was filled.
+            None:  If the order was cancelled, rejected, or timed out.
+
+        Note: Automatically cancels the order on timeout to prevent orphaned fills.
         """
         start = time.time()
         while time.time() - start < timeout:
@@ -201,7 +218,10 @@ class OrderManager:
                         'order_id': None
                     })
                     continue
-                self.logger.info(f"Setting up partial exit TP{tp_level}: {qty} units at ₹{target_price}")
+                lots_count = qty // lot_size if lot_size > 0 else qty
+                self.logger.info(
+                    f"Setting up partial exit TP{tp_level}: {qty} units ({lots_count} lot(s)) at ₹{target_price}"
+                )
                 
                 # CRITICAL FIX #2: Actually place broker target orders (not just tracking)
                 order_id = None
@@ -228,7 +248,10 @@ class OrderManager:
             tp_level = target_idx + 1
             exit_qty = lots * lot_size
             
-            self.logger.info(f"Setting up single-lot exit at TP{tp_level}: {exit_qty} units at ₹{target_price}")
+            self.logger.info(
+                f"Setting up single-lot exit at TP{tp_level}: {exit_qty} units "
+                f"({exit_qty // lot_size if lot_size > 0 else exit_qty} lot(s)) at ₹{target_price}"
+            )
             
             # Place broker order in live mode
             order_id = None

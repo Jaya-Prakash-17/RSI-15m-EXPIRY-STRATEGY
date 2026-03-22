@@ -31,7 +31,8 @@ NSE_HOLIDAYS = {
         '2026-05-01',  # Maharashtra Day
         '2026-05-27',  # Bakri Id
         '2026-08-15',  # Independence Day
-        '2026-08-16',  # Ganesh Chaturthi (Sunday)
+        # '2026-08-16' removed — Aug 16 2026 is a Sunday (already non-trading)
+        # Ganesh Chaturthi falls on Sunday; no weekday market closure in 2026
         '2026-10-02',  # Gandhi Jayanti
         '2026-10-10',  # Dussehra
         '2026-10-20',  # Diwali (Laxmi Pujan)
@@ -106,3 +107,12 @@ def is_trading_day(date):
     
     # Holiday check
     return not is_nse_holiday(date)
+
+def validate_holiday_list():
+    """Verify no holidays fall on weekends (they would be redundant)."""
+    from datetime import date, datetime
+    for year, holidays in NSE_HOLIDAYS.items():
+        for h in holidays:
+            d = datetime.strptime(h, '%Y-%m-%d').date()
+            if d.weekday() >= 5:
+                print(f"WARNING: {h} is a weekend ({d.strftime('%A')}) in NSE_HOLIDAYS[{year}]")

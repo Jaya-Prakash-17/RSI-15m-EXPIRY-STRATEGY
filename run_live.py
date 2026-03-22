@@ -103,32 +103,96 @@ def validate_environment():
     return True
 
 def validate_config(config):
-    """Validate configuration file."""
+    """Validate configuration file for structural and safety-critical values."""
     logger = logging.getLogger("LiveRunner")
-    
-    required_keys = [
-        'trading', 'strategy', 'capital', 'risk', 'indices', 'data'
-    ]
-    
+
+    # ── Section presence ──────────────────────────────────────────────────────
+    required_keys = ['trading', 'strategy', 'capital', 'risk', 'indices', 'data']
     for key in required_keys:
         if key not in config:
-            logger.critical(f"CRITICAL: Missing required config section: {key}")
+            logger.critical(f"CRITICAL: Missing required config section: '{key}'")
             return False
-    
-    # Validate trading window
+
     if 'window' not in config['trading']:
         logger.critical("CRITICAL: Missing trading.window in config")
         return False
-    
-    # Validate strategy params
-    if config['strategy']['rsi']['period'] <= 0:
-        logger.critical("CRITICAL: RSI period must be positive")
+
+    # ── RSI / alert basics ────────────────────────────────────────────────────
+    if config['strategy'].get('rsi', {}).get('period', 0) <= 0:
+        logger.critical("CRITICAL: strategy.rsi.period must be > 0")
         return False
-    
-    if config['strategy']['alert_validity'] <= 0:
-        logger.critical("CRITICAL: Alert validity must be positive")
+
+    if config['strategy'].get('alert_validity', 0) <= 0:
+        logger.critical("CRITICAL: strategy.alert_validity must be > 0")
         return False
-    
+
+    # ── Risk limits ───────────────────────────────────────────────────────────
+    if config['risk'].get('max_loss_per_day', 0) <= 0:
+        logger.critical("CRITICAL: risk.max_loss_per_day must be > 0")
+        return False
+
+    # ── Strategy parameters ───────────────────────────────────────────────────
+    if config['strategy'].get('lots_per_trade', 0) <= 0:
+        logger.critical("CRITICAL: strategy.lots_per_trade must be > 0")
+        return False
+
+    if config['strategy'].get('single_lot_exit_target', 0) not in {1, 2, 3}:
+        logger.critical("CRITICAL: strategy.single_lot_exit_target must be 1, 2, or 3")
+        return False
+
+    if config['strategy'].get('exit_mode') not in {'single_lot', 'multi_lot'}:
+        logger.critical("CRITICAL: strategy.exit_mode must be 'single_lot' or 'multi_lot'")
+        return False
+
+    # ── Trading window order and Groww MIS cutoff ─────────────────────────────
+    try:
+        win = config['trading']['window']
+        start  = datetime.strptime(win['start'],            "%H:%M")
+        end    = datetime.strptime(win['end'],              "%H:%M")
+        sq_off = datetime.strptime(win['auto_square_off'],  "%H:%M")
+
+        if not (start < end <= sq_off):
+            logger.critical(
+                "CRITICAL: Trading window order invalid. "
+                "Must satisfy: start < end <= auto_square_off"
+            )
+            return False
+
+        sq_off_limit = datetime.strptime("15:20", "%H:%M")  # Groww MIS hard cutoff
+        if sq_off > sq_off_limit:
+            logger.critical(
+                f"CRITICAL: auto_square_off ({win['auto_square_off']}) "
+                f"is after Groww's 15:20 MIS cutoff. Set to 15:15 or earlier."
+            )
+            return False
+    except (KeyError, ValueError) as e:
+        logger.critical(f"CRITICAL: Invalid time format in trading.window: {e}")
+        return False
+
+    # ── Lot sizes ─────────────────────────────────────────────────────────────
+    for idx, details in config.get('indices', {}).items():
+        if details.get('lot_size', 0) <= 0:
+            logger.critical(f"CRITICAL: indices.{idx}.lot_size must be > 0")
+            return False
+
+    # ── paper_trading must be a boolean ──────────────────────────────────────
+    paper = config['trading'].get('paper_trading')
+    if not isinstance(paper, bool):
+        logger.critical(
+            f"CRITICAL: trading.paper_trading must be true/false (boolean), "
+            f"got: {type(paper).__name__}"
+        )
+        return False
+
+    # ── RSI warmup sanity (warning only, not a hard failure) ─────────────────
+    warmup = config['strategy'].get('rsi', {}).get('warmup_periods', 0)
+    period = config['strategy'].get('rsi', {}).get('period', 0)
+    if warmup < period * 2:
+        logger.warning(
+            f"WARNING: rsi.warmup_periods ({warmup}) is less than "
+            f"2× rsi.period ({period}). RSI values may be unstable at session start."
+        )
+
     logger.info("✓ Configuration validation passed")
     return True
 
@@ -204,7 +268,23 @@ def main():
     except Exception as e:
         logger.critical(f"Failed to initialize Live Trader: {e}")
         sys.exit(1)
-    
+
+    # API Health Check — verify Groww connection before entering the trading loop.
+    # Paper trading mode also requires a live connection for LTP polling, so we
+    # always check, regardless of paper_trading flag (SEC-002).
+    logger.info("Verifying Groww API connection...")
+    try:
+        balance = trader_instance.client.get_balance()
+        if balance is None:
+            logger.critical("CRITICAL: Groww API returned None balance. Check credentials.")
+            logger.critical("Ensure GROWW_API_KEY is valid and not expired (tokens expire daily).")
+            sys.exit(1)
+        logger.info(f"✅ Groww API connected. Available margin: ₹{balance:,.0f}")
+    except Exception as e:
+        logger.critical(f"CRITICAL: Cannot connect to Groww API: {e}")
+        logger.critical("Check GROWW_API_KEY in .env file. Exiting.")
+        sys.exit(1)
+
    # Final confirmation
     logger.warning("=" * 60)
     logger.warning(" ⚠️  LIVE TRADING MODE - REAL MONEY AT RISK")

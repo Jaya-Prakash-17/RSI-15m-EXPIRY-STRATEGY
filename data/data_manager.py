@@ -82,12 +82,19 @@ class DataManager:
         if filepath in self.data_cache: return self.data_cache[filepath]
         try:
             df = pd.read_csv(filepath)
+            if df.empty:
+                self.logger.warning(f"CSV file is empty: {filepath}")
+                return pd.DataFrame()  # Not cached — retry on next call
             df['datetime'] = pd.to_datetime(df['datetime'])
             self.data_cache[filepath] = df
             return df
+        except pd.errors.EmptyDataError:
+            self.logger.warning(f"Empty CSV file: {filepath}. Returning empty DataFrame.")
+            return pd.DataFrame()  # Not cached — retry on next call
         except Exception as e:
-            self.logger.error(f"Error reading {filepath}: {e}")
-            raise
+            self.logger.error(f"Error reading {filepath}: {e}. Returning empty DataFrame.")
+            # DO NOT re-raise — callers handle empty DataFrames gracefully
+            return pd.DataFrame()  # Not cached — retry on next call
 
     def _filter_date_range(self, df, start, end):
         mask = (df['datetime'] >= start) & (df['datetime'] <= end)

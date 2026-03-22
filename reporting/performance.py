@@ -102,18 +102,33 @@ class PerformanceReporter:
         
         # Risk-adjusted metrics
         std_pnl = pnl.std() if len(pnl) > 1 else 0
-        
+
         # Sharpe Ratio (annualized)
-        # For weekly expiry strategy (~52 trades/year), use sqrt(52)
-        n_annual = 52
+        # n_annual = estimated number of trades per year at the observed trading frequency.
+        # Used to scale the per-trade Sharpe to an annualized figure via sqrt(n_annual).
+        if len(trades_df) >= 2 and 'entry_time' in trades_df.columns:
+            try:
+                first_trade = pd.to_datetime(trades_df['entry_time'].iloc[0])
+                last_trade = pd.to_datetime(trades_df['entry_time'].iloc[-1])
+                date_span_days = max((last_trade - first_trade).days, 1)
+                # Approximate trading days in the span (252 trading days per calendar year)
+                trading_days_in_span = date_span_days * (252 / 365)
+                trades_per_year = total_trades * (252 / max(trading_days_in_span, 1))
+                # Cap at reasonable bounds: no fewer than 10, no more than 500 trades/year
+                n_annual = max(min(trades_per_year, 500), 10)
+            except Exception:
+                n_annual = 52  # fallback: weekly expiry strategy
+        else:
+            n_annual = 52  # fallback for small samples
+
         annualization_factor = np.sqrt(n_annual)
-        
+
         if std_pnl > 0:
             sharpe_ratio = (avg_pnl / std_pnl) * annualization_factor
         else:
             sharpe_ratio = 0
-        
-        # Sortino Ratio (using downside deviation)
+
+        # Sortino Ratio (using downside deviation — same annualization_factor)
         negative_returns = pnl[pnl < 0]
         downside_std = negative_returns.std() if len(negative_returns) > 1 else 0
         if downside_std > 0:
@@ -215,13 +230,27 @@ class PerformanceReporter:
             return None
 
         # Calculate trading charges for each trade
-        charges_list = []
+        # Read exit config once, outside the loop
+        exit_mode = self.config.get('strategy', {}).get('exit_mode', 'single_lot')
+        lots_per_trade = self.config.get('strategy', {}).get('lots_per_trade', 1)
+
         for idx, trade in trades_df.iterrows():
             charges = self.calculate_charges(
-                trade['entry_price'], 
-                trade['exit_price'], 
+                trade['entry_price'],
+                trade['exit_price'],
                 trade['qty']
             )
+
+            # Multi-lot trades have extra exit legs: TP1 and TP2 are separate orders
+            # from the final exit, each incurring ₹20 brokerage.
+            # single_lot: 1 entry + 1 exit = ₹40 (covered by calculate_charges)
+            # multi_lot:  1 entry + TP1 + TP2 + TP3 = ₹80 (2 extra legs added here)
+            if exit_mode == 'multi_lot' and lots_per_trade >= 3:
+                extra_exits = 2  # TP1 and TP2 are separate from the final TP3 exit
+                extra_brokerage = self.charges['brokerage_per_trade'] * extra_exits
+                charges['brokerage'] += extra_brokerage
+                charges['total'] += extra_brokerage
+
             charges_list.append(charges)
         
         # Add charges to dataframe

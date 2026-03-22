@@ -47,6 +47,37 @@ class ExpiryRSIBreakout:
         if self.safe_sl_mode:
             self.logger.info(f"🛡️ SAFE_SL Mode Enabled | Max Loss Floor: ₹{self.safe_sl_max_loss}")
 
+    def export_state(self) -> dict:
+        """Export strategy state for persistence."""
+        return {
+            symbol: {
+                k: v.isoformat() if hasattr(v, 'isoformat') else v
+                for k, v in state.items()
+            }
+            for symbol, state in self.state.items()
+            if state.get('alert') is not None  # Only persist active alerts
+        }
+
+    def import_state(self, state_dict: dict):
+        """Restore strategy state from persistence."""
+        from datetime import datetime
+        for symbol, state in state_dict.items():
+            restored = dict(state)
+            # Restore datetime objects
+            if 'alert_time' in restored and isinstance(restored['alert_time'], str):
+                try:
+                    restored['alert_time'] = datetime.fromisoformat(restored['alert_time'])
+                except (ValueError, TypeError):
+                    restored['alert_time'] = None
+            if 'last_processed_time' in restored and isinstance(restored['last_processed_time'], str):
+                try:
+                    restored['last_processed_time'] = datetime.fromisoformat(restored['last_processed_time'])
+                except (ValueError, TypeError):
+                    restored['last_processed_time'] = None
+            self.state[symbol] = restored
+            self.logger.info(f"Restored strategy state for {symbol}: alert_age={state.get('age', 0)}")
+
+
     def calculate_wilder_rsi(self, prices, return_components=False):
         """
         Broker-grade Wilder's RSI calculation matching Groww's RSI.
@@ -269,30 +300,25 @@ class ExpiryRSIBreakout:
         prev_rsi = state['prev_rsi']
 
         # Age Increment Logic
-        # Increment only if we have moved to a NEW candle strictly after the alert
-        # And we haven't processed this time yet
+        # Increment on every NEW candle strictly after the alert — regardless of
+        # trading window. This prevents alerts from freezing overnight and surviving
+        # into the next session (AUDIT-015).
         expired_symbol = None  # Track if alert expired this cycle
         if state['alert'] is not None:
              if state['last_processed_time'] is not None and current_time > state['last_processed_time']:
                  # Check if we are strictly after alert_time
                  if current_time > state['alert_time']:
-                     # Check if allowed to age (tradable window)
-                     if is_tradable:
-                        state['age'] += 1
-                        # CHANGED: Allow age to reach validity (inclusive) or check strictly > if needed
-                        # If alert_validity is 2 candles.
-                        # Age 0: Alert Candle.
-                        # Age 1: Candle T+1 (Valid).
-                        # Age 2: Candle T+2 (Valid).
-                        # Age 3: Candle T+3 (Expired).
-                        # So expiry check should be: if age > validity
-                        if state['age'] > self.alert_validity:
-                            self.logger.info(f"Alert expired for {symbol} at {current_time} (Age: {state['age']})")
-                            expired_symbol = symbol
-                            state['alert'] = None
-                            state['age'] = 0
-                            state['alert_time'] = None
-                     # Else: freeze age (do nothing)
+                     state['age'] += 1   # Always increment — do NOT gate on is_tradable
+                     # Age 0: Alert Candle.
+                     # Age 1: Candle T+1 (Valid).
+                     # Age 2: Candle T+2 (Valid).
+                     # Age 3: Candle T+3 (Expired, if alert_validity=2).
+                     if state['age'] > self.alert_validity:
+                         self.logger.info(f"Alert expired for {symbol} at {current_time} (Age: {state['age']})")
+                         expired_symbol = symbol
+                         state['alert'] = None
+                         state['age'] = 0
+                         state['alert_time'] = None
         
         # Return EXPIRED signal if alert just expired
         if expired_symbol:
