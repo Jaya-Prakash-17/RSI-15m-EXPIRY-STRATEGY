@@ -11,7 +11,12 @@ import json
 import os
 import sys
 from datetime import datetime, date
+import yaml
 from dotenv import load_dotenv
+
+def _load_config(filepath='config.yaml'):
+    with open(filepath, 'r') as f:
+        return yaml.safe_load(f)
 
 load_dotenv()
 
@@ -86,14 +91,12 @@ def main():
         # Suppress warnings temporarily loading notifier if config might be broken outside main run
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            # Create a simple config mockup if required by TelegramNotifier or just load normally
-            from core.config_loader import load_config
             try:
-                config = load_config('config.yaml')
-            except Exception:
+                config = _load_config('config.yaml')
+            except FileNotFoundError:
                 config = {'trading': {'paper_trading': True}}
                 
-            notifier = TelegramNotifier(config)
+            notifier = TelegramNotifier()
             
             msg = (
                 f"📊 <b>Daily Reconciliation</b>\n"

@@ -201,7 +201,8 @@ class IntradayEngine:
             candidates = []
             
             for symbol, df in option_data.items():
-                row = self._get_latest_candle(df, t)
+                # t is the NEW spot candle timestamp — subtract 1s to get the JUST-CLOSED candle
+                row = self._get_latest_candle(df, t - timedelta(seconds=1))
                 if row is None: continue
                 
                 # Issue 5: Duplicate Candle Check
@@ -274,7 +275,14 @@ class IntradayEngine:
         # BUG-004 FIX: Use config for lot size instead of hardcoded values
         # Historical lot sizes (NIFTY 75→65, BANKNIFTY 35→30 in Sep 2025)
         # are documented in git history. Config always has current values.
-        lot_size = self.config['indices'][underlying]['lot_size']
+        lot_size = self.config['indices'].get(underlying, {}).get('lot_size')
+        if not lot_size:
+            self.logger.warning(
+                f"No lot_size configured for {underlying} in config.yaml indices section. "
+                f"Skipping trade for {symbol}."
+            )
+            self.capital += cost  # refund any capital already deducted
+            return None
         
         # Get lots_per_trade from config (for multi-lot mode)
         lots_per_trade = self.config['strategy'].get('lots_per_trade', 1)
@@ -355,7 +363,9 @@ class IntradayEngine:
             # Get lot size for this underlying
             underlying = trade.get('underlying', 'NIFTY')
             # BUG-004 FIX: Use config for lot size instead of hardcoded values
-            lot_size = self.config['indices'][underlying]['lot_size']
+            lot_size = self.config['indices'].get(underlying, {}).get('lot_size', 1)
+            if lot_size == 1 and underlying != 'UNKNOWN':
+                self.logger.warning(f"lot_size for {underlying} defaulting to 1 — check config.yaml")
             
             # Check TP1 (exit 1 lot)
             if trade['tp_hits'] == 0 and row['high'] >= trade['targets'][0]:

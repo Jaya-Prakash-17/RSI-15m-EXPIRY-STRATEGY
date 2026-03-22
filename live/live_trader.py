@@ -53,6 +53,7 @@ class LiveTrader:
         self.underlying = None
         
         self.last_candle_time = None
+        self.prev_closed_candle_time = None
         self.last_processed_candle_time = {}
         
         # Pending entry orders (SL-M BUY orders waiting for fill)
@@ -401,8 +402,12 @@ class LiveTrader:
                 return False
             
             if latest_candle_time > self.last_candle_time:
-                self.logger.info(f"New Candle Closed: {latest_candle_time}")
+                self.prev_closed_candle_time = self.last_candle_time  # save closed time
                 self.last_candle_time = latest_candle_time
+                self.logger.info(
+                    f"Candle closed: {self.prev_closed_candle_time} | "
+                    f"New forming: {self.last_candle_time}"
+                )
                 return True
         except Exception as e:
             self.logger.error(f"Error polling candle: {e}")
@@ -508,8 +513,22 @@ class LiveTrader:
                     df = self.dm.get_derivative_candles(
                         underlying, symbol, year, warmup_start, now, refresh=True
                     )
-                    last_row = self._get_latest_candle(df, now)
+                    if self.prev_closed_candle_time:
+                        closed_candle_cutoff = self.prev_closed_candle_time + timedelta(seconds=30)
+                    elif self.last_candle_time:
+                        closed_candle_cutoff = self.last_candle_time - timedelta(seconds=1)
+                    else:
+                        closed_candle_cutoff = now - timedelta(minutes=15)
+                    last_row = self._get_latest_candle(df, closed_candle_cutoff)
                     if last_row is None: continue
+                    
+                    self.logger.debug(
+                        f"[{symbol}] RSI check on CLOSED candle: "
+                        f"{last_row['datetime'].strftime('%H:%M')} "
+                        f"H={last_row['high']:.2f} L={last_row['low']:.2f} "
+                        f"range={last_row['high']-last_row['low']:.2f} "
+                        f"({len(df[df['datetime'] <= last_row['datetime']])} candles in history)"
+                    )
                     
                     self.tracked_options[underlying][symbol] = df
                     
@@ -520,14 +539,8 @@ class LiveTrader:
                     if last_processed and current_candle_time <= last_processed:
                         continue
                     
-                    # MEDIUM FIX: Verify option candle has advanced past spot candle detection
-                    # Option candles from API can lag spot by 1-3 minutes.
-                    # If option candle time < spot candle time, we'd run RSI on stale data.
-                    if self.last_candle_time and current_candle_time < self.last_candle_time:
-                        self.logger.debug(f"Skipping {symbol}: option candle ({current_candle_time}) behind spot ({self.last_candle_time})")
-                        continue
-                    
                     self.last_processed_candle_time[symbol] = current_candle_time
+
                     
                     # Get price history with warmup
                     history_closes = df[df['datetime'] <= current_candle_time]['close']
@@ -1336,9 +1349,24 @@ class LiveTrader:
             qty_filled = exit_order_info.get('quantity', 0)
 
         if qty_filled == 0:
+            tid = order_status.get('order_id', 'UNKNOWN')
             self.logger.error(
                 f"Cannot determine qty_filled for TP{tp_level} on trade {trade_id}. "
-                f"Skipping partial exit processing."
+                f"Nulling target order {tid} to prevent reprocessing. Verify P&L in Groww app."
+            )
+            # Null out this target order so monitoring loop skips it next cycle
+            target_ids = trade.get('target_order_ids', [])
+            idx = tp_level - 1
+            if 0 <= idx < len(target_ids):
+                target_ids[idx] = None
+                self.tracker.update_trade(trade_id, {'target_order_ids': target_ids})
+            
+            # Also send Telegram alert for manual review
+            self.telegram._send(
+                f"⚠️ <b>TP{tp_level} fill qty unknown</b>\n"
+                f"Trade: <code>{trade.get('symbol', trade_id)}</code>\n"
+                f"Order {tid} shows COMPLETE but qty unknown.\n"
+                f"P&L may be inaccurate. Check Groww app."
             )
             return
 
@@ -1638,8 +1666,8 @@ class LiveTrader:
         # Candle-close detection (1-second) is unaffected.
         # Groww has API rate limits; 5s is sufficient for a 15-min candle strategy.
         ORDER_POLL_INTERVAL = self.config.get('trading', {}).get('order_poll_interval_seconds', 5)
-        last_order_poll = datetime.min
-        
+        # Forces monitoring to run on the first loop iteration, then every ORDER_POLL_INTERVAL seconds
+        last_order_poll = datetime.now() - timedelta(seconds=ORDER_POLL_INTERVAL + 1)        
         import json
         session_start_time = datetime.now()
 
@@ -1765,20 +1793,23 @@ class LiveTrader:
                                     self.logger.info(f"SQ_OFF filled at \u20b9{actual_fill} via our order")
                             except: pass
                         
-                        # Tier 2: Check for MIS auto-square fill
-                        if not actual_fill:
-                            self.logger.info("Checking for MIS auto-square fills in order book...")
+                        # --- TIER 2: Retry our exit order after longer wait (market orders take 2-10s) ---
+                        if not actual_fill and exit_order_id:
                             try:
-                                day_orders = self.client.client.get_order_list(segment='FNO')
-                                for order in reversed(day_orders.get('orders', [])):
-                                    if (order.get('trading_symbol') == trade.get('trading_symbol')
-                                        and order.get('transaction_type', '').upper() == 'SELL'
-                                        and is_order_filled(order.get('order_status', ''))):
-                                        actual_fill = float(order.get('average_fill_price') or 0)
-                                        if actual_fill > 0:
-                                            self.logger.info(f"Found auto-square fill: \u20b9{actual_fill}")
-                                            break
-                            except: pass
+                                time.sleep(5)   # additional wait for settlement
+                                retry_status = self.client.get_order_status(exit_order_id)
+                                if retry_status and is_order_filled(retry_status.get('status', '')):
+                                    actual_fill = retry_status.get('fill_price')
+                                    if actual_fill:
+                                        self.logger.info(f"SQ_OFF filled at ₹{actual_fill} (Tier 2 retry)")
+                                elif retry_status:
+                                    self.logger.warning(
+                                        f"SQ_OFF order {exit_order_id} status after retry: "
+                                        f"{retry_status.get('status')} — position may have been "
+                                        f"auto-squared by Groww MIS at 3:20 PM"
+                                    )
+                            except Exception as e:
+                                self.logger.warning(f"Tier 2 retry failed: {e}")
                         
                         # Tier 3: Fallback to LTP
                         if not actual_fill:
@@ -1840,20 +1871,23 @@ class LiveTrader:
                                     self.logger.info(f"DAILY_LOSS_LIMIT filled at ₹{actual_fill} via our order")
                             except: pass
 
-                        # Tier 2: Check for MIS auto-square fill in order book
-                        if not actual_fill:
-                            self.logger.info("Checking for MIS auto-square fills in order book...")
+                        # --- TIER 2: Retry our exit order after longer wait (market orders take 2-10s) ---
+                        if not actual_fill and exit_order_id:
                             try:
-                                day_orders = self.client.client.get_order_list(segment='FNO')
-                                for order in reversed(day_orders.get('orders', [])):
-                                    if (order.get('trading_symbol') == trade.get('trading_symbol')
-                                        and order.get('transaction_type', '').upper() == 'SELL'
-                                        and is_order_filled(order.get('order_status', ''))):
-                                        actual_fill = float(order.get('average_fill_price') or 0)
-                                        if actual_fill > 0:
-                                            self.logger.info(f"Found auto-square fill: ₹{actual_fill}")
-                                            break
-                            except: pass
+                                time.sleep(5)   # additional wait for settlement
+                                retry_status = self.client.get_order_status(exit_order_id)
+                                if retry_status and is_order_filled(retry_status.get('status', '')):
+                                    actual_fill = retry_status.get('fill_price')
+                                    if actual_fill:
+                                        self.logger.info(f"SQ_OFF filled at ₹{actual_fill} (Tier 2 retry)")
+                                elif retry_status:
+                                    self.logger.warning(
+                                        f"SQ_OFF order {exit_order_id} status after retry: "
+                                        f"{retry_status.get('status')} — position may have been "
+                                        f"auto-squared by Groww MIS at 3:20 PM"
+                                    )
+                            except Exception as e:
+                                self.logger.warning(f"Tier 2 retry failed: {e}")
 
                         # Tier 3: Fallback to LTP
                         if not actual_fill:

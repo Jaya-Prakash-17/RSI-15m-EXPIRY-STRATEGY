@@ -8,7 +8,12 @@ Data management layer — downloading, caching, and serving market data.
 |---|---|
 | `data_manager.py` | **Central data hub.** Serves spot and derivative candle data to both backtest and live engines. Handles caching (in-memory + CSV), symbol building, expiry lookups, and trading symbol resolution. Abstracts away the difference between historical (file-based) and live (API-based) data sources. |
 | `historical_downloader.py` | **Bulk data downloader.** Downloads historical spot and derivative candle data from the Groww API and saves to CSV files in `data/spot/` and `data/derivatives/`. Used for populating backtest data. |
-| `bot_trades.json` | **Trade state persistence.** JSON file used by `TradeTracker` to persist active trade state across bot restarts. Automatically managed — do not edit manually. |
+## Runtime State Files (not committed)
+| File | Description |
+|---|---|
+| `bot_trades.json` | Active/closed trade state. Managed by TradeTracker. Do not edit manually. |
+| `strategy_state.json` | RSI alert state across sessions. Auto-managed. Do not edit. |
+| `pending_entries.json` | Pending broker order IDs for crash recovery. Auto-managed. |
 
 ## Directory Structure
 
