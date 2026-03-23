@@ -255,6 +255,8 @@ class IntradayEngine:
         signal = candidate['signal']
         # Issue 8: Rounding
         underlying = 'NIFTY'
+        if 'BANKNIFTY' in symbol: underlying = 'BANKNIFTY'
+        elif 'SENSEX' in symbol: underlying = 'SENSEX'
         alert_high = signal['price']  # Intended trigger price
         entry_candle_open = candidate.get('entry_candle_open', alert_high)
         

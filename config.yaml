@@ -1,16 +1,16 @@
 backtest:
-  start_date: '2026-01-01'
-  end_date: '2026-03-20'
+  start_date: '2025-01-01'
+  end_date: '2025-12-31'
 capital:
   initial: 100000
 data:
   download_retry_count: 3
   storage_path: data
 indices:
-  # BANKNIFTY:'
-  #   expiry_day: Tuesday  # Monthly last Tuesday (from Sep 2025)
-  #   lot_size: 30
-  #   tick_size: 0.05'
+  BANKNIFTY:
+    expiry_day: Tuesday  # Monthly last Tuesday (from Sep 2025)
+    lot_size: 30
+    tick_size: 0.05
   NIFTY:
     expiry_day: Tuesday  # Current expiry day (code handles historical Thursday → Tuesday change)
     lot_size: 65
@@ -47,8 +47,8 @@ trading:
   trade_log_file: "logs/PAPER_TRADES_LOG.csv"  # Separate file for trade audit trail
   order_poll_interval_seconds: 5  # How often to poll order status (seconds). Default 5 = ~21,600 calls/day vs 108,000 at 1s.
   window:
-    auto_square_off: '15:25'
-    end: '15:00'
+    auto_square_off: '15:15'
+    end: '13:45'
     start: '10:15'
 charges:
   brokerage_per_trade: 20 # Flat ₹20 per trade (each leg)

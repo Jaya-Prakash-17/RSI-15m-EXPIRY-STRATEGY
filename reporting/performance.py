@@ -234,6 +234,7 @@ class PerformanceReporter:
         exit_mode = self.config.get('strategy', {}).get('exit_mode', 'single_lot')
         lots_per_trade = self.config.get('strategy', {}).get('lots_per_trade', 1)
 
+        charges_list = []
         for idx, trade in trades_df.iterrows():
             charges = self.calculate_charges(
                 trade['entry_price'],

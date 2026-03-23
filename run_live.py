@@ -27,25 +27,41 @@ def acquire_single_instance_lock():
         # Create directory if it doesn't exist (handle non-standard systems)
         os.makedirs(os.path.dirname(LOCK_FILE), exist_ok=True)
         _lock_fd = open(LOCK_FILE, 'w')
-        fcntl.flock(_lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        
+        if fcntl:
+            fcntl.flock(_lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        else:
+            import msvcrt
+            msvcrt.locking(_lock_fd.fileno(), msvcrt.LK_NBLCK, 1)
+            
         _lock_fd.write(f"{os.getpid()}\n")
         _lock_fd.flush()
-        # Lock is released automatically when process exits (file closed by OS)
-        atexit.register(lambda: os.unlink(LOCK_FILE) if os.path.exists(LOCK_FILE) else None)
+
+        def release_lock():
+            global _lock_fd
+            if _lock_fd:
+                try:
+                    if fcntl: fcntl.flock(_lock_fd, fcntl.LOCK_UN)
+                    else:
+                        import msvcrt
+                        _lock_fd.seek(0)
+                        msvcrt.locking(_lock_fd.fileno(), msvcrt.LK_UNLCK, 1)
+                    _lock_fd.close()
+                except Exception: pass
+            if os.path.exists(LOCK_FILE):
+                try: os.unlink(LOCK_FILE)
+                except Exception: pass
+        
+        atexit.register(release_lock)
         return _lock_fd
     except (IOError, OSError) as e:
-        # Lock already held by another process or fcntl not available
+        # Lock already held by another process or lock not available
         try:
             with open(LOCK_FILE) as f:
                 existing_pid = f.read().strip()
         except Exception:
             existing_pid = "unknown"
-        
-        # Check if fcntl itself is the issue (Windows/No-Fcntl)
-        if isinstance(e, ModuleNotFoundError) or "fcntl" in str(e):
-             print("\n⚠️  WARNING: Single instance lock (fcntl) not available on this platform. Continuing...")
-             return None
-             
+            
         print(
             f"\n❌ ERROR: Another instance of the RSI bot is already running (PID: {existing_pid}).\n"
             f"   If you are sure no other instance is running, delete the lock file:\n"

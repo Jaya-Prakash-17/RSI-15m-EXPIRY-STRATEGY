@@ -32,11 +32,13 @@ class DataManager:
             if not existing_df.empty and 'datetime' in existing_df.columns:
                 existing_df['datetime'] = pd.to_datetime(existing_df['datetime'])
                 file_max_date = existing_df['datetime'].max().date()
+                file_min_date = existing_df['datetime'].min().date()
                 requested_end = end_date.date() if hasattr(end_date, 'date') else end_date
+                requested_start = start_date.date() if hasattr(start_date, 'date') else start_date
                 
-                # If file doesn't have data up to requested end, re-download
-                if file_max_date < requested_end:
-                    self.logger.info(f"Spot data for {symbol} needs update (file ends {file_max_date}, need {requested_end})")
+                # If file doesn't cover requested start or end dates, re-download
+                if file_max_date < requested_end or file_min_date > requested_start:
+                    self.logger.info(f"Spot data for {symbol} needs update (file: {file_min_date} to {file_max_date}, need {requested_start} to {requested_end})")
                     need_download = True
         
         if need_download:
@@ -62,10 +64,13 @@ class DataManager:
             if not existing_df.empty and 'datetime' in existing_df.columns:
                 existing_df['datetime'] = pd.to_datetime(existing_df['datetime'])
                 file_max_date = existing_df['datetime'].max().date()
+                file_min_date = existing_df['datetime'].min().date()
                 requested_end = end_date.date() if hasattr(end_date, 'date') else end_date
+                requested_start = start_date.date() if hasattr(start_date, 'date') else start_date
                 
-                if file_max_date < requested_end:
-                    self.logger.info(f"Derivative {contract_name} needs update (file ends {file_max_date}, need {requested_end})")
+                # If file doesn't cover requested start or end dates, re-download
+                if file_max_date < requested_end or file_min_date > requested_start:
+                    self.logger.info(f"Derivative {contract_name} needs update (file: {file_min_date} to {file_max_date}, need {requested_start} to {requested_end})")
                     need_download = True
         
         if need_download:
