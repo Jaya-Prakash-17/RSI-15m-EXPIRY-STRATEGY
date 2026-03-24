@@ -1,0 +1,15 @@
+# requirements-dev.txt — P-14
+# Development & testing dependencies
+# Install with: pip install -r requirements-dev.txt
+
+-r requirements.txt
+
+# ─── Testing ─────────────────────────────────────────────────
+pytest>=7.0            # Test framework
+pytest-cov>=4.0        # Code coverage reporting
+
+# ─── Type Checking ───────────────────────────────────────────
+mypy>=1.0              # Static type checking (works with P-16 type hints)
+
+# ─── Optional: Charting ──────────────────────────────────────
+# matplotlib>=3.7      # Uncomment for chart_visualizer.py

@@ -1,0 +1,34 @@
+[Unit]
+Description=RSI-15m Expiry Breakout Trading Bot
+Documentation=https://github.com/Jaya-Prakash-17/RSI-15m-EXPIRY-STRATEGY
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# ── REPLACE THESE PLACEHOLDERS ────────────────────────────────
+User=PLACEHOLDER_USERNAME              # e.g., ubuntu or jpnandargi
+WorkingDirectory=/PLACEHOLDER/PROJECT_DIR  # e.g., /home/ubuntu/EXPIRY_RSI_15M_STRATEGY
+ExecStart=/PLACEHOLDER/VENV/bin/python run_live.py
+# If no virtualenv: ExecStart=python3 run_live.py
+
+# ── Restart Policy ────────────────────────────────────────────
+# on-failure: Only restart on crash (exit code != 0)
+# NOT on manual stop (sudo systemctl stop rsi-bot)
+Restart=on-failure
+RestartSec=30
+
+# ── Environment ───────────────────────────────────────────────
+EnvironmentFile=/PLACEHOLDER/PROJECT_DIR/.env   # loads GROWW_API_KEY etc.
+
+# ── Logging ───────────────────────────────────────────────────
+# Logs via systemd journal. View with: journalctl -u rsi-bot -f
+StandardOutput=journal
+StandardError=journal
+
+# ── Graceful Shutdown ─────────────────────────────────────────
+# SIGTERM triggers existing signal_handler() in run_live.py → squares off open positions
+KillSignal=SIGTERM
+TimeoutStopSec=120    # Give bot 2 minutes to square off before force kill
+
+[Install]
+WantedBy=multi-user.target

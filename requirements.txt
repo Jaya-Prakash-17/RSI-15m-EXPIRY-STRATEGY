@@ -1,0 +1,23 @@
+# requirements.txt — P-14
+# Core runtime dependencies for the RSI-15m Expiry Breakout Bot
+# Install with: pip install -r requirements.txt
+
+# ─── Broker SDK ──────────────────────────────────────────────
+growwapi>=1.0          # Groww broker API SDK (placed orders, LTP, order status)
+
+# ─── Data Processing ─────────────────────────────────────────
+pandas>=2.0            # DataFrame operations — candle data, trade records
+numpy>=1.24            # Numerical calculations — RSI, PnL math
+
+# ─── Configuration ───────────────────────────────────────────
+pyyaml>=6.0            # YAML config file loading (config.yaml)
+python-dotenv>=1.0     # .env file loading for API keys
+
+# ─── Networking ──────────────────────────────────────────────
+requests>=2.28         # Telegram bot notifications (utils/telegram_notifier.py)
+pytz>=2023.3           # IST timezone handling in live_trader.py
+
+# ─── Note: platform-specific locking ─────────────────────────
+# fcntl  — stdlib on Linux/Mac (single-instance lock), NOT available on Windows
+# msvcrt — stdlib on Windows (single-instance lock), NOT available on Linux/Mac
+# Both are handled automatically in run_live.py — no pip install needed
