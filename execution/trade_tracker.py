@@ -17,6 +17,7 @@ class TradeTracker:
         self.logger = logging.getLogger("TradeTracker")
         self.filepath = filepath
         self.lock = RLock()
+        self._cache: dict | None = None   # P-07: write-through in-memory cache
         self._ensure_file_exists()
     
     def _ensure_file_exists(self):
@@ -36,47 +37,50 @@ class TradeTracker:
             self.logger.info(f"Created new trade tracking file: {self.filepath}")
     
     def _load_data(self):
-        """Load trade data from file. Handles corruption and missing file gracefully."""
-        if not os.path.exists(self.filepath):
-            return {"active_trades": [], "closed_trades": [], "metadata": {}}
-        
-        try:
-            with open(self.filepath, 'r') as f:
-                content = f.read()
-            if not content.strip():
-                # Empty file — treat as no data
-                self.logger.warning(f"{os.path.basename(self.filepath)} is empty. Starting with fresh state.")
-                return {"active_trades": [], "closed_trades": [], "metadata": {}}
-            return json.loads(content)
-        
-        except json.JSONDecodeError as e:
-            # File is corrupted — CRITICAL: trader must check broker manually
-            self.logger.critical(
-                f"🚨 {os.path.basename(self.filepath)} is CORRUPTED (JSONDecodeError: {e}). "
-                f"Cannot determine if positions are open. "
-                f"CHECK GROWW APP IMMEDIATELY before resuming bot."
-            )
-            # Save the corrupted file for forensics
-            backup_path = self.filepath + f".corrupted_{datetime.now().strftime('%H%M%S')}"
+        """P-07: Load trade data. Serves from in-memory cache (O(1)); reads disk only on first call."""
+        with self.lock:
+            if self._cache is not None:
+                return self._cache   # memory hit — zero disk I/O
+
+            # First call or after explicit cache invalidation — read disk
+            if not os.path.exists(self.filepath):
+                self._cache = {"active_trades": [], "closed_trades": [], "metadata": {}}
+                return self._cache
+
             try:
-                shutil.copy(self.filepath, backup_path)
-                self.logger.critical(f"Corrupted file backed up to: {backup_path}")
-            except Exception:
-                pass
-            # Return empty state — bot will start but with no known positions
-            # (trader must verify manually)
-            return {"active_trades": [], "closed_trades": [], "metadata": {}}
-        
-        except Exception as e:
-            self.logger.error(f"Unexpected error loading trade data: {e}")
-            return {"active_trades": [], "closed_trades": [], "metadata": {}}
+                with open(self.filepath, 'r') as f:
+                    content = f.read()
+                if not content.strip():
+                    self.logger.warning(f"{os.path.basename(self.filepath)} is empty. Starting fresh.")
+                    self._cache = {"active_trades": [], "closed_trades": [], "metadata": {}}
+                else:
+                    self._cache = json.loads(content)
+            except json.JSONDecodeError as e:
+                self.logger.critical(
+                    f"🚨 {os.path.basename(self.filepath)} is CORRUPTED (JSONDecodeError: {e}). "
+                    f"Cannot determine if positions are open. "
+                    f"CHECK GROWW APP IMMEDIATELY before resuming bot."
+                )
+                backup_path = self.filepath + f".corrupted_{datetime.now().strftime('%H%M%S')}"
+                try:
+                    shutil.copy(self.filepath, backup_path)
+                    self.logger.critical(f"Corrupted file backed up to: {backup_path}")
+                except Exception:
+                    pass
+                self._cache = {"active_trades": [], "closed_trades": [], "metadata": {}}
+            except Exception as e:
+                self.logger.error(f"Unexpected error loading trade data: {e}")
+                self._cache = {"active_trades": [], "closed_trades": [], "metadata": {}}
+
+            return self._cache
     
     def _save_data(self, data):
-        """Atomically save trade data to file using tempfile."""
+        """P-07: Atomically save trade data. Updates cache first (write-through), then disk."""
         data["metadata"] = {
             "last_updated": datetime.now().isoformat(),
             "version": "1.0"
         }
+        self._cache = data  # write-through: cache always reflects latest state
         
         dir_name = os.path.dirname(os.path.abspath(self.filepath))
         temp_path = None
@@ -121,6 +125,16 @@ class TradeTracker:
         with self.lock:
             data = self._load_data()
             return data.get("active_trades", [])
+
+    def invalidate_cache(self) -> None:
+        """P-07: Force next read from disk (call if file was modified externally)."""
+        with self.lock:
+            self._cache = None
+
+    @staticmethod
+    def get_remaining_qty(trade: dict) -> int:
+        """P-17: Get remaining quantity for a trade — single canonical helper.\n        Avoids repeated trade.get('remaining_qty', trade['qty']) pattern."""
+        return int(trade.get('remaining_qty', trade.get('qty', 0)))
             
     def has_active_trade_for_index(self, index_name):
         """Check if there is already an active trade for a specific underlying index."""

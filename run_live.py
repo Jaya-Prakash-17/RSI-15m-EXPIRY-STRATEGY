@@ -200,17 +200,64 @@ def validate_config(config):
         )
         return False
 
-    # ── RSI warmup sanity (warning only, not a hard failure) ─────────────────
+    # ── P-26: RSI threshold valid range (0 < x < 100) ────────────────────────
+    rsi_threshold = config['strategy'].get('rsi', {}).get('threshold', 60)
+    if not (0 < rsi_threshold < 100):
+        logger.critical(f"CRITICAL: rsi.threshold must be 0-100, got {rsi_threshold}")
+        return False
+
+    # ── P-26: min_sl_pct realistic range (1% – 50%) ──────────────────────────
+    min_sl_pct = config['strategy'].get('min_sl_pct', 0.08)
+    if not (0.01 <= min_sl_pct <= 0.50):
+        logger.critical(
+            f"CRITICAL: min_sl_pct must be 0.01-0.50 (1%-50%), got {min_sl_pct:.2%}"
+        )
+        return False
+
+    # ── P-26: warmup_periods > rsi_period (hard fail) ────────────────────────
     warmup = config['strategy'].get('rsi', {}).get('warmup_periods', 0)
     period = config['strategy'].get('rsi', {}).get('period', 0)
-    if warmup < period * 2:
+    if warmup < period + 1:
+        logger.critical(
+            f"CRITICAL: rsi.warmup_periods ({warmup}) must be > rsi.period ({period}). "
+            f"Minimum: {period + 1}"
+        )
+        return False
+
+    min_candles = config['strategy'].get('rsi', {}).get('min_candles_for_signal', period * 3)
+    if min_candles < period * 2:
         logger.warning(
-            f"WARNING: rsi.warmup_periods ({warmup}) is less than "
-            f"2× rsi.period ({period}). RSI values may be unstable at session start."
+            f"WARNING: min_candles_for_signal ({min_candles}) < 2×period ({period*2}). "
+            f"RSI signals may be unreliable."
         )
 
     logger.info("✓ Configuration validation passed")
     return True
+
+def validate_system_clock(logger) -> bool:
+    """P-13: Validate server clock is within 60s of actual IST using worldtimeapi.org."""
+    import urllib.request, json as _json
+    try:
+        url = "http://worldtimeapi.org/api/timezone/Asia/Kolkata"
+        req = urllib.request.Request(url, headers={'User-Agent': 'RSI-Bot/1.0'})
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = _json.loads(resp.read())
+        api_time = datetime.fromisoformat(data['datetime'][:19])
+        local_time = datetime.now()
+        drift = abs((api_time - local_time).total_seconds())
+        if drift > 60:
+            logger.critical(
+                f"CLOCK DRIFT: {drift:.0f}s off IST. "
+                f"Local={local_time.strftime('%H:%M:%S')} "
+                f"IST={api_time.strftime('%H:%M:%S')}. "
+                f"Fix: sudo ntpdate pool.ntp.org"
+            )
+            return False
+        logger.info(f"\u2713 Clock validated (drift: {drift:.1f}s)")
+        return True
+    except Exception as e:
+        logger.warning(f"Clock validation unavailable: {e}. Continuing.")
+        return True   # Don't block startup if API is unreachable
 
 def signal_handler(sig, frame):
     """Handle Ctrl+C gracefully."""
@@ -275,7 +322,12 @@ def main():
     if not validate_config(config):
         logger.critical("Configuration validation failed. Exiting.")
         sys.exit(1)
-    
+
+    # P-13: Validate system clock is within 60s of IST
+    if not validate_system_clock(logger):
+        logger.critical("System clock drift detected. Fix before trading. Exiting.")
+        sys.exit(1)
+
     # Initialize LiveTrader
     try:
         logger.info("Initializing Live Trader...")

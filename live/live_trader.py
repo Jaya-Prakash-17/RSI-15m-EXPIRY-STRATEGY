@@ -23,6 +23,15 @@ MARKET_CLOSE_IST = datetime_time(15, 30)  # 3:30 PM IST
 # e.g., touch /tmp/rsi_bot_kill
 KILL_SWITCH_FILE = '/tmp/rsi_bot_kill'
 
+# ─── P-18: Named constants (no more magic numbers in loops) ──
+MAIN_LOOP_SLEEP_SECONDS    = 1   # Main while-True polling cadence
+POST_ORDER_FILL_WAIT_SECONDS = 3  # Wait after placing order before checking fill
+SQOFF_RETRY_WAIT_SECONDS   = 5   # Tier-2 retry wait after SQ_OFF order
+GAP_FILL_ABORT_PCT         = 0.04  # Abort trade if fill > trigger × (1 + this)
+GAP_FILL_RECALC_PCT        = 0.02  # Recalculate SL/targets if fill > this
+PAPER_GAP_THRESHOLD_PCT    = 0.02  # Gap simulation threshold in paper mode
+LTP_CACHE_TTL_SECONDS      = 1     # Re-use LTP if fetched within last second
+
 class LiveTrader:
     def __init__(self, config):
         self.logger = logging.getLogger("LiveTrader")
@@ -72,6 +81,17 @@ class LiveTrader:
         # Strategy filters
         self.enable_direction_filter = config['strategy'].get('direction_filter_enabled', False)
         self.max_loss_per_day = config['risk']['max_loss_per_day']
+
+        # P-08: Incremental candle cache — full download once, append-only after
+        self._candle_cache: dict = {}   # symbol → pd.DataFrame
+
+        # P-20: LTP TTL cache — avoids redundant API calls within 1s window
+        self._ltp_cache: dict = {}      # symbol → (price, timestamp)
+
+        # P-05: Market halt detection state
+        self._market_halted: bool = False
+        self._halt_detected_at = None
+        self._halt_alert_sent: bool = False
         
         # Trading window
         self.start_time = datetime.strptime(config['trading']['window']['start'], "%H:%M").time()
@@ -133,6 +153,10 @@ class LiveTrader:
         """Initialize trading for the day."""
         from utils.expiry_calendar import run_startup_assertions
         
+        # P-08 / P-20: Clear memory caches from previous days to prevent leaks
+        self._candle_cache.clear()
+        self._ltp_cache.clear()
+
         try:
             run_startup_assertions()
             self.logger.info("✅ Expiry calendar assertions passed")
@@ -299,10 +323,78 @@ class LiveTrader:
             self.logger.error(f"Error during position reconciliation: {e}")
 
     def _get_latest_candle(self, df, t):
-        """Get the latest candle at or before time t."""
-        matches = df[df['datetime'] <= t]
-        if matches.empty: return None
-        return matches.iloc[-1]
+        """P-19: Get the latest candle at or before time t. O(log n) via searchsorted."""
+        if df is None or df.empty:
+            return None
+        idx = df['datetime'].searchsorted(pd.Timestamp(t), side='right') - 1
+        return None if idx < 0 else df.iloc[idx]
+
+    def _get_ltp_cached(self, symbol: str):
+        """P-20: Return LTP from 1-second TTL cache, or fetch fresh from broker."""
+        now = datetime.now()
+        cached = self._ltp_cache.get(symbol)
+        if cached:
+            price, ts = cached
+            if (now - ts).total_seconds() < LTP_CACHE_TTL_SECONDS:
+                return price
+        price = self.client.get_ltp(symbol)
+        if price is not None:
+            self._ltp_cache[symbol] = (price, now)
+        return price
+
+    def _get_option_candles_incremental(
+        self, underlying: str, symbol: str, year: int,
+        warmup_start, now
+    ):
+        """P-08: Full download on first call; incremental (new candles only) thereafter."""
+        if symbol not in self._candle_cache or self._candle_cache[symbol].empty:
+            df = self.dm.get_derivative_candles(
+                underlying, symbol, year, warmup_start, now, refresh=True
+            )
+            self._candle_cache[symbol] = df
+            return df
+
+        cached = self._candle_cache[symbol]
+        last_known = cached['datetime'].max()
+
+        new_df = self.dm.get_derivative_candles(
+            underlying, symbol, year, last_known, now, refresh=True
+        )
+
+        if not new_df.empty:
+            combined = pd.concat([cached, new_df]).drop_duplicates(subset=['datetime'])
+            combined = combined.sort_values('datetime').reset_index(drop=True)
+            # Trim to warmup window to prevent unbounded memory growth
+            cutoff = now - timedelta(minutes=self.strategy.rsi_warmup * 15 + 30)
+            combined = combined[combined['datetime'] >= cutoff].reset_index(drop=True)
+            self._candle_cache[symbol] = combined
+
+        return self._candle_cache[symbol]
+
+    def _is_market_open(self) -> bool:
+        """P-05: Proxy check using NIFTY LTP. Returns False if market appears halted."""
+        try:
+            ltp = self.client.get_ltp('NIFTY')
+            return ltp is not None and ltp > 0
+        except Exception:
+            return False
+
+    def _check_correlation_limit(self, opt_type: str, underlying: str) -> bool:
+        """P-09: Returns True if trade allowed, False if would over-concentrate direction."""
+        max_same_dir = self.config['strategy'].get('max_correlated_positions', 1)
+        active = self.tracker.get_active_trades()
+        same_direction = sum(
+            1 for t in active
+            if t.get('opt_type') == opt_type
+            and t.get('underlying') != underlying
+        )
+        if same_direction >= max_same_dir:
+            self.logger.info(
+                f"[{underlying}] Skipping {opt_type}: already {same_direction} "
+                f"{opt_type} on other index (correlation limit={max_same_dir})."
+            )
+            return False
+        return True
 
     def _get_warmup_start_time(self):
         """Calculate start time for RSI warmup period."""
@@ -423,12 +515,12 @@ class LiveTrader:
     def _get_unrealized_pnl(self) -> float:
         """
         Calculates the total unrealized P&L of all currently open trades.
-        Uses current LTP from broker. Returns 0.0 if no open trades or LTP unavailable.
+        Uses LTP TTL cache (P-20) to avoid redundant API calls within same second.
         """
         total_unrealized = 0.0
         active_trades = self.tracker.get_active_trades()
         for trade in active_trades:
-            ltp = self.client.get_ltp(trade.get('symbol', ''))
+            ltp = self._get_ltp_cached(trade.get('symbol', ''))  # P-20 cached
             if ltp and ltp > 0:
                 remaining_qty = trade.get('remaining_qty', trade.get('qty', 0))
                 entry_price = float(trade.get('entry_price', 0))
@@ -510,8 +602,9 @@ class LiveTrader:
             for symbol in list(self.tracked_options[underlying].keys()):
                 try:
                     year = now.year
-                    df = self.dm.get_derivative_candles(
-                        underlying, symbol, year, warmup_start, now, refresh=True
+                    # P-08: incremental fetch (full download first time, append-only after)
+                    df = self._get_option_candles_incremental(
+                        underlying, symbol, year, warmup_start, now
                     )
                     if self.prev_closed_candle_time:
                         closed_candle_cutoff = self.prev_closed_candle_time + timedelta(seconds=30)
@@ -1909,6 +2002,30 @@ class LiveTrader:
 
                     self.logger.info(f"🛑 Emergency shutdown. Daily P&L: ₹{self.daily_pnl:.2f}")
                     break
+
+                # P-05: Market halt detection — NSE circuit breaker guard
+                # Pause order management if NIFTY LTP unavailable (circuit breaker)
+                if not self._is_market_open():
+                    if not self._market_halted:
+                        self._market_halted = True
+                        self._halt_detected_at = now
+                        self.logger.warning("Market may be halted (NSE circuit breaker?). Pausing order management.")
+                        if not self._halt_alert_sent:
+                            self.telegram._send(
+                                "⚠️ <b>Market Halt Detected</b>\n"
+                                "NIFTY LTP unavailable. Possible circuit breaker.\n"
+                                "Order management paused. Will auto-resume."
+                            )
+                            self._halt_alert_sent = True
+                    time.sleep(30)
+                    continue
+                else:
+                    if self._market_halted:
+                        mins = (now - self._halt_detected_at).seconds // 60
+                        self.logger.info(f"Market resumed after ~{mins}m halt.")
+                        self.telegram._send(f"✅ Market resumed after ~{mins}m. Resuming order management.")
+                    self._market_halted = False
+                    self._halt_alert_sent = False
 
                 # Process Candle Logic
                 if self._poll_candle_close():

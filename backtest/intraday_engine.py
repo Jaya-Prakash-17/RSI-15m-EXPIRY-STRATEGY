@@ -4,6 +4,7 @@ import logging
 import numpy as np
 from datetime import datetime, time, timedelta
 from utils.nse_calendar import is_trading_day
+from utils.symbol_parser import detect_underlying   # P-17: shared underlying detection
 
 class IntradayEngine:
     def __init__(self, data_manager, config):
@@ -26,10 +27,11 @@ class IntradayEngine:
         self.last_processed_candle_time = {} 
 
     def _get_latest_candle(self, df, t):
-        matches = df[df['datetime'] <= t]
-        if matches.empty:
+        """P-19: Get the latest candle at or before time t. O(log n) via searchsorted."""
+        if df is None or df.empty:
             return None
-        return matches.iloc[-1]
+        idx = df['datetime'].searchsorted(pd.Timestamp(t), side='right') - 1
+        return None if idx < 0 else df.iloc[idx]
 
     def _round_to_tick(self, price, underlying):
         tick_size = self.config['indices'][underlying]['tick_size']
@@ -253,10 +255,10 @@ class IntradayEngine:
     def _enter_trade(self, candidate, time):
         symbol = candidate['symbol']
         signal = candidate['signal']
-        # Issue 8: Rounding
-        underlying = 'NIFTY'
-        if 'BANKNIFTY' in symbol: underlying = 'BANKNIFTY'
-        elif 'SENSEX' in symbol: underlying = 'SENSEX'
+        # P-17: use shared symbol parser (checks BANKNIFTY before NIFTY to avoid substring collision)
+        underlying = detect_underlying(symbol)
+        if underlying == 'UNKNOWN':
+            underlying = 'NIFTY'   # safe fallback
         alert_high = signal['price']  # Intended trigger price
         entry_candle_open = candidate.get('entry_candle_open', alert_high)
         

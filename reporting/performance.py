@@ -257,11 +257,30 @@ class PerformanceReporter:
         # Add charges to dataframe
         trades_df['charges'] = [c['total'] for c in charges_list]
         trades_df['pnl_gross'] = trades_df['pnl']
-        trades_df['pnl_net'] = trades_df['pnl'] - trades_df['charges']
-        
+
+        # P-28: Apply configurable slippage buffer per trade
+        slip_cfg = self.config.get('reporting', {})
+        slip_amount = float(slip_cfg.get('slippage_buffer_per_trade', 0))
+        slip_enabled = slip_cfg.get('slippage_buffer_enabled', False)
+
+        if slip_enabled and slip_amount > 0:
+            trades_df['slippage'] = slip_amount
+            trades_df['pnl_net'] = (trades_df['pnl_gross']
+                                   - trades_df['charges']
+                                   - trades_df['slippage'])
+            self.logger.info(
+                f"Slippage buffer applied: ₹{slip_amount}/trade × "
+                f"{len(trades_df)} trades = ₹{trades_df['slippage'].sum():.2f} total"
+            )
+        else:
+            trades_df['slippage'] = 0.0
+            trades_df['pnl_net'] = trades_df['pnl_gross'] - trades_df['charges']
+
         # Calculate all statistics
         stats = self.calculate_advanced_stats(trades_df)
         total_charges = trades_df['charges'].sum()
+        total_slippage = trades_df['slippage'].sum()
+
         
         # Print comprehensive console report
         print("\n" + "="*70)
@@ -295,6 +314,8 @@ class PerformanceReporter:
         print("-"*70)
         print(f"  Gross P&L:       ₹{trades_df['pnl_gross'].sum():,.2f}")
         print(f"  Total Charges:   ₹{total_charges:,.2f}")
+        if total_slippage > 0:
+            print(f"  Slippage Buffer: ₹{total_slippage:,.2f}  (₹{slip_amount:.0f}/trade)")
         print(f"  Net P&L:         ₹{stats['total_pnl']:,.2f}")
         print(f"  Avg P&L/Trade:   ₹{stats['avg_pnl_per_trade']:,.2f}")
         print(f"  Avg Win:         ₹{stats['avg_win']:,.2f}")
