@@ -1,18 +1,18 @@
 # live/live_trader.py
 import logging
-import time
-import sys
-import math
-import pandas as pd
-from datetime import datetime, timedelta, time as datetime_time
+import traceback
 import pytz
+import json
+from datetime import datetime, time as datetime_time, timedelta
 from data.data_manager import DataManager
 from execution.order_manager import OrderManager, is_order_filled
 from execution.trade_tracker import TradeTracker
 from strategy.expiry_rsi_breakout import ExpiryRSIBreakout
 from core.groww_client import GrowwClient
-from utils.trade_logger import TradeLogger, BacktestTradeLogger
-from utils.telegram_notifier import TelegramNotifier
+from reporting.trade_logger import TradeLogger
+from reporting.telegram_notifier import TelegramNotifier
+from utils.symbol_parser import detect_underlying
+from core.exceptions import InsufficientMarginError
 from utils.expiry_calendar import get_expiry_for_date
 
 IST = pytz.timezone('Asia/Kolkata')
@@ -58,6 +58,7 @@ class LiveTrader:
         # State management
         self.tracked_options = {}
         self.spot_symbol = None
+        self._halt_alert_sent: bool = False
         self.expiry_date = None
         self.underlying = None
         
@@ -865,35 +866,40 @@ class LiveTrader:
         self.logger.info(f"📌 PLACING PENDING ENTRY ORDER for {symbol} ({underlying}) at ₹{trigger_price}")
         
         # Place SL-M BUY order (pending until price hits trigger)
-        resp = self.om.place_entry_order(symbol, qty, trigger_price, trading_symbol, order_type="SL-M")
-        
-        if resp and "groww_order_id" in resp:
-            order_id = resp["groww_order_id"]
-            self.logger.info(f"✅ Pending Entry Order Placed: {order_id} @ ₹{trigger_price}")
+        try:
+            resp = self.om.place_entry_order(symbol, qty, trigger_price, trading_symbol, order_type="SL-M")
             
-            # Store pending entry details
-            self.pending_entries[symbol] = {
-                'order_id': order_id,
-                'trigger_price': trigger_price,
-                'qty': qty,
-                'trading_symbol': trading_symbol,
-                'original_symbol': symbol,
-                'signal': signal,
-                'alert_candle': signal.get('alert_candle'),
-                'underlying': underlying,
-                'expiry_date': expiry_date,
-                'strike': candidate['strike'],
-                'opt_type': candidate['opt_type'],
-                'placed_at': datetime.now()
-            }
-            # Persist to disk for crash recovery
-            self.tracker.save_pending_entries(self.pending_entries)
-            self._save_strategy_state()
-        else:
-            self.logger.error(f"Failed to place pending entry order for {symbol}")
-            # Consume the alert so we don't get orphan ENTRY signals later
+            if resp and "groww_order_id" in resp:
+                order_id = resp["groww_order_id"]
+                self.logger.info(f"✅ Pending Entry Order Placed: {order_id} @ ₹{trigger_price}")
+                
+                # Store pending entry details
+                self.pending_entries[symbol] = {
+                    'order_id': order_id,
+                    'trigger_price': trigger_price,
+                    'qty': qty,
+                    'trading_symbol': trading_symbol,
+                    'original_symbol': symbol,
+                    'signal': signal,
+                    'alert_candle': signal.get('alert_candle'),
+                    'underlying': underlying,
+                    'expiry_date': expiry_date,
+                    'strike': candidate['strike'],
+                    'opt_type': candidate['opt_type'],
+                    'placed_at': datetime.now()
+                }
+                # Persist to disk for crash recovery
+                self.tracker.save_pending_entries(self.pending_entries)
+                self._save_strategy_state()
+            else:
+                self.logger.error(f"Failed to place pending entry order for {symbol}")
+                # Consume the alert so we don't get orphan ENTRY signals later
+                self.strategy.consume_alert(symbol)
+                self.logger.info(f"Alert consumed for {symbol} due to order failure")
+        except InsufficientMarginError as e:
+            self.logger.warning(f"Skipping entry: {e}")
             self.strategy.consume_alert(symbol)
-            self.logger.info(f"Alert consumed for {symbol} due to order failure")
+            return
 
     # _execute_entry() removed (AUDIT-013/014).
     # Superseded by _place_pending_entry() + _activate_trade_from_pending().
@@ -1813,6 +1819,23 @@ class LiveTrader:
                             json.dump(heartbeat_data, hf)
                     except Exception:
                         pass  # Heartbeat write failure is never fatal
+
+                    # Circuit breaker awareness
+                    if not self._is_market_open():
+                        if not self._halt_alert_sent:
+                            self.logger.warning("NIFTY LTP unavailable — possible market halt or circuit breaker")
+                            self.telegram._send(
+                                f"⚠️ <b>Possible Market Halt</b>\n"
+                                f"🕐 {datetime.now().strftime('%H:%M:%S')}\n"
+                                "NIFTY LTP unavailable. Possible NSE circuit breaker.\n"
+                                "Check: nseindia.com | Monitor positions manually.\n"
+                                "Bot continues running normally."
+                            )
+                            self._halt_alert_sent = True
+                    else:
+                        if self._halt_alert_sent:
+                            self.logger.info("NIFTY LTP restored — market appears to have resumed")
+                        self._halt_alert_sent = False
                 
                 # Trading Hours Guard
                 now_ist = datetime.now(IST)

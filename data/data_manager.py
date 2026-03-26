@@ -2,9 +2,10 @@
 import os
 import pandas as pd
 import logging
-from datetime import datetime
-import os  # For file detection in Tier 1
+from datetime import datetime, timedelta
+import pytz
 from data.historical_downloader import HistoricalDownloader
+from core.exceptions import DataError
 
 class DataManager:
     def __init__(self, config):
@@ -94,11 +95,13 @@ class DataManager:
             self.data_cache[filepath] = df
             return df
         except pd.errors.EmptyDataError:
-            self.logger.warning(f"Empty CSV file: {filepath}. Returning empty DataFrame.")
-            return pd.DataFrame()  # Not cached — retry on next call
+            self.logger.warning(f"Empty CSV: {filepath}")
+            return pd.DataFrame()
         except Exception as e:
-            self.logger.error(f"Error reading {filepath}: {e}. Returning empty DataFrame.")
-            # DO NOT re-raise — callers handle empty DataFrames gracefully
+            self.logger.error(f"Error reading {filepath}: {e}")
+            # Keep return pd.DataFrame() — don't raise here 
+            # (raising would crash the bot on a single bad file)
+            # The DataError class is available for future use; log only for now
             return pd.DataFrame()  # Not cached — retry on next call
 
     def _filter_date_range(self, df, start, end):

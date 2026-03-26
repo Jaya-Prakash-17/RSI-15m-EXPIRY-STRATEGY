@@ -1,5 +1,5 @@
 backtest:
-  start_date: '2026-03-24'
+  start_date: '2026-01-01'
   end_date: '2026-03-24'
 capital:
   initial: 100000
@@ -34,7 +34,7 @@ strategy:
   rsi:
     period: 11 # RSI(14) — standard Wilder RSI, matches strategy design
     threshold: 60
-    warmup_periods: 81 # CANDLE COUNT (not multiplied by rsi_period). 100x15min = ~3 trading days
+    warmup_periods: 9 # CANDLE COUNT (not multiplied by rsi_period). 100x15min = ~3 trading days
     min_candles_for_signal: 27   # rsi_period × 3 — minimum before any alert fires
   trade_only_on_expiry: false  # false:trade on every day, true:trade only on expiry day
   rsi_debug: false   # set true only when validating RSI values against Groww chart

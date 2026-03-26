@@ -2,6 +2,7 @@
 import logging
 import time
 from core.groww_client import GrowwClient
+from core.exceptions import InsufficientMarginError
 
 def is_order_filled(status: str) -> bool:
     """
@@ -62,6 +63,15 @@ class OrderManager:
                 'message': 'Paper trade - no real order'
             }
         
+        # Balance check - V6-P-007
+        balance = self.client.get_balance()
+        cost = qty * price
+        if balance is None or balance < cost:
+            self.logger.warning(f"Insufficient margin: available ₹{balance}, required ₹{cost}")
+            raise InsufficientMarginError(
+                f"Balance ₹{balance or 0:.0f} < required ₹{cost:.0f}"
+            )
+
         resp = self.client.place_order(
             symbol=symbol,
             qty=qty,

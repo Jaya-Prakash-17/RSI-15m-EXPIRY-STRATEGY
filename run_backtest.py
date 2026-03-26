@@ -49,6 +49,9 @@ def main():
     # Run Backtest
     trades_df = engine.run(start_date, end_date)
     
+    # NEW: Print diagnostic summary for debugging near-zero trades
+    engine.print_diagnostic_summary()
+    
     # Sanity Checks
     if trades_df.empty:
         logger.warning("Backtest produced ZERO trades. Check data availability or strategy params.")

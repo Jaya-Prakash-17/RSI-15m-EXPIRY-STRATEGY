@@ -52,6 +52,11 @@ class IntradayEngine:
         self.trades = []
         
         trade_only_on_expiry = self.config['strategy'].get('trade_only_on_expiry', True)
+        self.day_diagnostics = []  # V6-P-001: Store daily diagnostics
+        
+        # V6-P-001: Validate data paths once before starting the loop
+        for idx in self.config['indices'].keys():
+            self._validate_data_paths(idx, start_date)
         
         current_date = start_date
         while current_date <= end_date:
@@ -94,13 +99,90 @@ class IntradayEngine:
             self.dm.clear_cache()
             current_date += pd.Timedelta(days=1)
         
+        # V6-P-001: End-of-run diagnostic summary
+        if hasattr(self, 'day_diagnostics') and self.day_diagnostics:
+            days_no_data = sum(1 for d in self.day_diagnostics if d['opt_symbols_loaded'] == 0)
+            days_no_alerts = sum(1 for d in self.day_diagnostics if d['alerts_fired'] == 0 and d['opt_symbols_loaded'] > 0)
+            days_no_entries = sum(1 for d in self.day_diagnostics if d['alerts_fired'] > 0 and d['entries_attempted'] == 0)
+            
+            self.logger.info(
+                f"\n{'='*60}\n"
+                f"BACKTEST DIAGNOSTIC SUMMARY\n"
+                f"{'='*60}\n"
+                f"Days processed:          {len(self.day_diagnostics)}\n"
+                f"Days with NO data:       {days_no_data}  \u2190 if high = symbol/path mismatch\n"
+                f"Days with data, no RSI:  {days_no_alerts}  \u2190 if high = RSI never crosses 60\n"
+                f"Days with alert, no entry: {days_no_entries}  \u2190 if high = validity window issue\n"
+                f"Total trades:            {len(self.trades)}\n"
+                f"Final Capital:           {self.capital}\n"
+                f"{'='*60}"
+            )
+
         return self.generate_report()
 
-    def process_expiry_day(self, underlying, date):
-        # Calculate RSI warmup period
-        strategy = self.strategy_cls(self.config)
-        warmup_candles = strategy.rsi_warmup
+    def _validate_data_paths(self, underlying: str, sample_date) -> None:
+        """
+        Check if a sample symbol can actually be found on disk.
+        Logs a clear WARNING if build_option_symbol output doesn't match any files.
+        """
+        from datetime import timedelta
+        import glob
+        import os
         
+        try:
+            # Build a sample symbol for a recent date
+            sample_expiry = sample_date.date() if hasattr(sample_date, 'date') else sample_date
+            sample_symbol = self.dm.build_option_symbol(
+                underlying, sample_expiry, 22500, 'CE', use_historical=True
+            )
+            
+            # Check if the file exists
+            year = sample_expiry.year
+            expected_path = os.path.join(
+                self.dm.base_path, 'derivatives', underlying,
+                str(year), f"{sample_symbol}_15m.csv"
+            )
+            
+            # Also check what actually exists in that directory
+            dir_path = os.path.join(self.dm.base_path, 'derivatives', underlying, str(year))
+            if os.path.exists(dir_path):
+                existing = glob.glob(os.path.join(dir_path, "*.csv"))
+                sample_existing = os.path.basename(existing[0]) if existing else "NONE"
+            else:
+                sample_existing = f"DIRECTORY NOT FOUND: {dir_path}"
+            
+            if os.path.exists(expected_path):
+                self.logger.info(f"[PATH CHECK] \u2705 {underlying}: symbol format matches files on disk")
+            else:
+                self.logger.error(
+                    f"[PATH CHECK] \u274c {underlying}: FORMAT MISMATCH\n"
+                    f"  Generated: {sample_symbol}_15m.csv\n"
+                    f"  On disk:   {sample_existing}\n"
+                    f"  Fix: ensure build_option_symbol date format matches downloaded filenames"
+                )
+        except Exception as e:
+            self.logger.warning(f"[PATH CHECK] Could not validate paths for {underlying}: {e}")
+
+    def process_expiry_day(self, underlying, date):
+        # V6-P-001: Diagnostic Tracking Dictionary
+        diag = {
+            'date': date.strftime('%Y-%m-%d'),
+            'underlying': underlying,
+            'opt_symbols_attempted': 0,
+            'opt_symbols_loaded': 0,
+            'opt_symbols_empty': 0,
+            'timestamps_in_window': 0,
+            'rsi_checks': 0,
+            'alerts_fired': 0,
+            'entries_attempted': 0,
+            'trades_opened': 0,
+            'skip_reason': None
+        }
+
+        self.logger.info(f"Processing expiry day: {underlying} on {date.date()}")
+        # Calculate RSI warmup correctly:
+        period = self.config['strategy'].get('rsi', {}).get('period', 14)
+        warmup_candles = self.config['strategy'].get('rsi', {}).get('warmup_periods', period * 2)
         # For stable RSI, fetch at least 100 candles (minimum 10 trading days)
         # This ensures RSI values are more stable and closer to broker values
         warmup_candles = max(warmup_candles, 100)
@@ -108,16 +190,15 @@ class IntradayEngine:
         warmup_minutes = warmup_candles * 15  # 15-min candles
         
         # Start fetching from previous day to ensure warmup data
-        from datetime import timedelta
-        # Add extra days to account for weekends/holidays
-        warmup_days = (warmup_minutes // (60 * 24)) + 10  # At least 10 days back
-        warmup_start = date.replace(hour=0, minute=0) - timedelta(days=warmup_days)
+        warmup_start = date - timedelta(minutes=warmup_minutes, days=3) # Give margin for weekends
         
         self.logger.info(f"Fetching data with {warmup_candles} candle warmup from {warmup_start}")
         
         spot_df = self.dm.get_spot_candles(underlying, warmup_start, date.replace(hour=23, minute=59))
         if spot_df.empty:
             self.logger.warning(f"No spot data for {underlying} on {date.date()}")
+            diag['skip_reason'] = 'no_spot_data'
+            self._log_day_diagnostic(diag)
             return
         
         spot_df = spot_df.sort_values('datetime').reset_index(drop=True)
@@ -127,6 +208,8 @@ class IntradayEngine:
         
         if start_row is None:
             self.logger.warning(f"No spot data available at start time {start_datetime} for {underlying}")
+            diag['skip_reason'] = 'no_spot_data_at_start_time'
+            self._log_day_diagnostic(diag)
             return
             
         universe_ref_price = start_row['open'] 
@@ -142,7 +225,8 @@ class IntradayEngine:
         option_data = {}
         for strike in strikes:
             for opt_type in ['CE', 'PE']:
-                symbol = self.dm.build_option_symbol(underlying, date, strike, opt_type, use_historical=True)  # Use historical expiry for backtests
+                symbol = self.dm.build_option_symbol(underlying, date.date(), strike, opt_type, use_historical=True)  # Use historical expiry for backtests
+                diag['opt_symbols_attempted'] += 1
                 try:
                     # Fetch with warmup period
                     df = self.dm.get_derivative_candles(
@@ -151,11 +235,17 @@ class IntradayEngine:
                     if not df.empty:
                         df = df.sort_values('datetime').reset_index(drop=True)
                         option_data[symbol] = df
+                        diag['opt_symbols_loaded'] += 1
+                    else:
+                        diag['opt_symbols_empty'] += 1
                 except Exception as e:
+                    diag['opt_symbols_empty'] += 1
                     # Silently skip missing options (some strikes may not exist)
                     pass
         
         if not option_data:
+            diag['skip_reason'] = 'no_option_data_loaded'
+            self._log_day_diagnostic(diag)
             self.logger.warning("No option data loaded.")
             return
 
@@ -165,6 +255,7 @@ class IntradayEngine:
         # This prevents signals from warmup days appearing in backtest results
         backtest_date = date.date()
         timestamps = [t for t in timestamps if t.date() == backtest_date and self.start_time <= t.time()] 
+        diag['timestamps_in_window'] = len(timestamps) 
         
         active_trade = None 
         has_traded_today = False
@@ -224,11 +315,15 @@ class IntradayEngine:
                     self.logger.info(f"DEBUG: {symbol} at {t} - history_closes: {len(history_closes)} rows")
                 
                 signal = strategy.check_signal(symbol, row, history_closes)
+                diag['rsi_checks'] += 1
                 
                 # Debug signal result
                 if debug_count < max_debug and signal:
                     self.logger.info(f"DEBUG: {symbol} signal: {signal.get('action', 'None')}")
                 
+                if signal and signal['action'] == 'ALERT':
+                    diag['alerts_fired'] += 1
+
                 if signal and signal['action'] == 'ENTRY':
                     parts = symbol.split('-')
                     try:
@@ -247,10 +342,29 @@ class IntradayEngine:
             if candidates:
                 candidates.sort(key=lambda x: (x['dist'], -x['volume']))
                 best = candidates[0]
+                diag['entries_attempted'] += 1
                 active_trade = self._enter_trade(best, t)
                 if active_trade:
+                    diag['trades_opened'] = 1
                     has_traded_today = True
                     strategy.consume_alert(active_trade['symbol'])
+
+        self._log_day_diagnostic(diag)
+        if hasattr(self, 'day_diagnostics'):
+            self.day_diagnostics.append(diag)
+
+    def _log_day_diagnostic(self, diag):
+        self.logger.info(
+            f"[DIAG] {diag['date']} {diag['underlying']} | "
+            f"{'TRADE' if diag['trades_opened'] else 'NO TRADE'} | "
+            f"data={diag['opt_symbols_loaded']}/{diag['opt_symbols_attempted']} "
+            f"({diag['opt_symbols_empty']} empty) | "
+            f"ts={diag['timestamps_in_window']} | "
+            f"rsi_checks={diag['rsi_checks']} | "
+            f"alerts={diag['alerts_fired']} | "
+            f"entries={diag['entries_attempted']}"
+            + (f" | SKIP: {diag['skip_reason']}" if diag['skip_reason'] else "")
+        )
 
     def _enter_trade(self, candidate, time):
         symbol = candidate['symbol']
@@ -279,13 +393,14 @@ class IntradayEngine:
         # BUG-004 FIX: Use config for lot size instead of hardcoded values
         # Historical lot sizes (NIFTY 75→65, BANKNIFTY 35→30 in Sep 2025)
         # are documented in git history. Config always has current values.
+        # V6-P-003: Defensive nested dict .get()
         lot_size = self.config['indices'].get(underlying, {}).get('lot_size')
         if not lot_size:
             self.logger.warning(
                 f"No lot_size configured for {underlying} in config.yaml indices section. "
                 f"Skipping trade for {symbol}."
             )
-            self.capital += cost  # refund any capital already deducted
+            # No capital was deducted yet, so no refund needed (unlike instruction). Just abort.
             return None
         
         # Get lots_per_trade from config (for multi-lot mode)
@@ -309,7 +424,8 @@ class IntradayEngine:
             'status': 'OPEN',
             'pnl': 0,
             'cost': cost,
-            'underlying': underlying
+            'underlying': underlying,
+            'running_capital': self.capital # Track capital at entry
         }
         self.logger.info(f"ENTRY: {symbol} at {price} | Qty: {total_qty} ({lots_per_trade} lots) | Cost: {cost} | Cap: {self.capital}")
         return trade
@@ -347,7 +463,7 @@ class IntradayEngine:
         sl_triggered = row['low'] <= trade['sl']
         
         if sl_triggered:
-            exit_price = trade['sl']
+            exit_price = min(row['open'], trade['sl']) # Handle gap down below SL
             pnl = (exit_price - trade['entry_price']) * trade['remaining_qty']
             realized_pnl = pnl + trade['partial_pnl']
             
@@ -359,6 +475,7 @@ class IntradayEngine:
             trade['reason'] = 'SL'
             trade['status'] = 'CLOSED'
             trade['pnl'] = realized_pnl
+            trade['running_capital'] = self.capital
             self.logger.info(f"EXIT SL: {symbol} at {exit_price} | Remaining Qty: {trade['remaining_qty']} | PnL: {realized_pnl}")
             return realized_pnl
         
@@ -368,13 +485,13 @@ class IntradayEngine:
             underlying = trade.get('underlying', 'NIFTY')
             # BUG-004 FIX: Use config for lot size instead of hardcoded values
             lot_size = self.config['indices'].get(underlying, {}).get('lot_size', 1)
-            if lot_size == 1 and underlying != 'UNKNOWN':
-                self.logger.warning(f"lot_size for {underlying} defaulting to 1 — check config.yaml")
+            if lot_size == 1 and underlying not in ('UNKNOWN',):
+                self.logger.warning(f"lot_size for {underlying} defaulted to 1 — check config.yaml")
             
             # Check TP1 (exit 1 lot)
             if trade['tp_hits'] == 0 and row['high'] >= trade['targets'][0]:
                 exit_qty = lot_size  # Exit exactly 1 lot
-                exit_price = trade['targets'][0]
+                exit_price = max(row['open'], trade['targets'][0]) # Handle gap up above TP1
                 pnl = (exit_price - trade['entry_price']) * exit_qty
                 
                 trade['remaining_qty'] -= exit_qty
@@ -393,7 +510,7 @@ class IntradayEngine:
             # Check TP2 (exit 1 lot)
             elif trade['tp_hits'] == 1 and row['high'] >= trade['targets'][1]:
                 exit_qty = lot_size  # Exit exactly 1 lot
-                exit_price = trade['targets'][1]
+                exit_price = max(row['open'], trade['targets'][1]) # Handle gap up above TP2
                 pnl = (exit_price - trade['entry_price']) * exit_qty
                 
                 trade['remaining_qty'] -= exit_qty
@@ -411,7 +528,7 @@ class IntradayEngine:
             # Check TP3 (exit remaining - should be 1 lot)
             elif trade['tp_hits'] == 2 and row['high'] >= trade['targets'][2]:
                 exit_qty = trade['remaining_qty']  # All remaining (should be 1 lot)
-                exit_price = trade['targets'][2]
+                exit_price = max(row['open'], trade['targets'][2]) # Handle gap up above TP3
                 pnl = (exit_price - trade['entry_price']) * exit_qty
                 
                 realized_pnl = pnl + trade['partial_pnl']
@@ -424,6 +541,7 @@ class IntradayEngine:
                 trade['status'] = 'CLOSED'
                 trade['pnl'] = realized_pnl
                 trade['remaining_qty'] = 0
+                trade['running_capital'] = self.capital
                 
                 self.logger.info(f"FINAL EXIT TP3: {symbol} | Qty: {exit_qty} (1 lot) | Price: {exit_price} | Total PnL: {realized_pnl}")
                 return realized_pnl
@@ -448,7 +566,7 @@ class IntradayEngine:
 
             # Final Target Exit Condition
             if row['high'] >= trade['targets'][target_idx]:
-                exit_price = trade['targets'][target_idx]
+                exit_price = max(row['open'], trade['targets'][target_idx]) # Handle gap up above target
                 pnl = (exit_price - trade['entry_price']) * trade['qty']
                 
                 self.capital += exit_price * trade['qty']
@@ -458,6 +576,7 @@ class IntradayEngine:
                 trade['reason'] = f'TP{target_idx+1}'
                 trade['status'] = 'CLOSED'
                 trade['pnl'] = pnl
+                trade['running_capital'] = self.capital
                 
                 self.logger.info(f"EXIT TP{target_idx+1}: {symbol} at {exit_price} | PnL: {pnl}")
                 return pnl
@@ -490,6 +609,7 @@ class IntradayEngine:
         trade['status'] = 'CLOSED'
         trade['pnl'] = pnl
         trade['qty'] = remaining  # Record actual exit quantity
+        trade['running_capital'] = self.capital
         
         self.logger.info(f"EXIT: {symbol} at {exit_price} | Remaining Qty: {remaining} | PnL: {pnl} | Reason: {reason}")
         return pnl

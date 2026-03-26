@@ -2,6 +2,7 @@
 import pandas as pd
 import logging
 from datetime import time
+from core.exceptions import InsufficientDataError
 
 class ExpiryRSIBreakout:
     def __init__(self, config):

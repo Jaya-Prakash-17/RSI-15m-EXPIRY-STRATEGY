@@ -355,116 +355,156 @@ class PerformanceReporter:
         if save_to_file:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             
-            # Save detailed CSV
-            csv_filename = os.path.join(self.reports_dir, f"backtest_{timestamp}.csv")
-            trades_df.to_csv(csv_filename, index=False)
-            self.logger.info(f"Detailed trade log saved to: {csv_filename}")
-            
             # Save summary JSON
             json_filename = os.path.join(self.reports_dir, f"backtest_{timestamp}_summary.json")
             with open(json_filename, 'w') as f:
                 json.dump(report_data, f, indent=2, default=str)
             self.logger.info(f"Summary report saved to: {json_filename}")
             
-            # Save human-readable text report
-            txt_filename = os.path.join(self.reports_dir, f"backtest_{timestamp}_report.txt")
-            self._save_text_report(txt_filename, report_data, stats)
-            self.logger.info(f"Text report saved to: {txt_filename}")
+            # V6-P-004: Generate PNG report
+            img_filename = os.path.join(self.reports_dir, f"backtest_{timestamp}.png")
+            self._generate_report_image(trades_df, stats, img_filename)
+            self.logger.info(f"PNG report saved to: {img_filename}")
             
             print(f"\n📁 Reports saved to '{self.reports_dir}' directory")
-            print(f"   - CSV:  {csv_filename}")
             print(f"   - JSON: {json_filename}")
-            print(f"   - TXT:  {txt_filename}\n")
+            print(f"   - PNG:  {img_filename}\n")
         
         return report_data
 
-    def _save_text_report(self, filename, report_data, stats):
-        """Save comprehensive text report"""
-        with open(filename, 'w', encoding='utf-8') as f:
-            f.write("="*80 + "\n")
-            f.write(" BACKTEST PERFORMANCE REPORT\n")
-            f.write("="*80 + "\n")
-            f.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-            f.write("="*80 + "\n\n")
+    def _generate_report_image(
+        self,
+        trades_df: pd.DataFrame,
+        stats: dict,
+        filepath: str
+    ) -> str:
+        """
+        Generate a single matplotlib PNG with equity curve, P&L bars,
+        monthly breakdown, and stats panel.
+        Saves to filepath and returns the path.
+        """
+        try:
+            import matplotlib
+            matplotlib.use('Agg')
+            import matplotlib.pyplot as plt
+            from matplotlib.figure import Figure
+            from matplotlib.gridspec import GridSpec
+        except ImportError:
+            self.logger.warning("matplotlib not installed. Cannot generate PNG report.")
+            return ""
+
+        fig = Figure(figsize=(14, 9), dpi=150)
+        
+        if trades_df.empty:
+            ax = fig.add_subplot(111)
+            ax.text(0.5, 0.5, "No trades in period", ha='center', va='center', fontsize=20)
+            ax.axis('off')
+            fig.savefig(filepath, bbox_inches='tight')
+            return filepath
             
-            # Config section
-            if self.config:
-                f.write("STRATEGY PARAMETERS\n")
-                f.write("-"*80 + "\n")
-                if 'backtest' in self.config:
-                    bt = self.config['backtest']
-                    f.write(f"Period:            {bt.get('start_date', 'N/A')} to {bt.get('end_date', 'N/A')}\n")
-                if 'strategy' in self.config:
-                    st = self.config['strategy']
-                    f.write(f"RSI Period:        {st.get('rsi', {}).get('period', 'N/A')}\n")
-                    f.write(f"RSI Threshold:     {st.get('rsi', {}).get('threshold', 'N/A')}\n")
-                    f.write(f"Exit Mode:         {st.get('exit_mode', 'N/A')}\n")
-                    f.write(f"Lots/Trade:        {st.get('lots_per_trade', 'N/A')}\n")
-                if 'capital' in self.config:
-                    f.write(f"Initial Capital:   ₹{self.config['capital'].get('initial', 0):,}\n")
-                f.write("\n")
-            
-            # Statistics
-            f.write("PERFORMANCE SUMMARY\n")
-            f.write("-"*80 + "\n")
-            f.write(f"Total Trades:      {stats['total_trades']}\n")
-            f.write(f"Winning Trades:    {stats['winning_trades']}\n")
-            f.write(f"Losing Trades:     {stats['losing_trades']}\n")
-            f.write(f"Win Rate:          {stats['win_rate']}%\n")
-            f.write(f"\n")
-            f.write(f"Net P&L:           ₹{stats['total_pnl']:,.2f}\n")
-            f.write(f"Avg P&L/Trade:     ₹{stats['avg_pnl_per_trade']:,.2f}\n")
-            f.write(f"Avg Win:           ₹{stats['avg_win']:,.2f}\n")
-            f.write(f"Avg Loss:          ₹{stats['avg_loss']:,.2f}\n")
-            f.write(f"Largest Win:       ₹{stats['largest_win']:,.2f}\n")
-            f.write(f"Largest Loss:      ₹{stats['largest_loss']:,.2f}\n")
-            f.write(f"\n")
-            f.write(f"Profit Factor:     {stats['profit_factor']}\n")
-            f.write(f"Risk/Reward:       {stats['risk_reward_ratio']}\n")
-            f.write(f"Expectancy:        ₹{stats['expectancy']:,.2f}\n")
-            f.write(f"Max Drawdown:      ₹{stats['max_drawdown']:,.2f} ({stats['max_drawdown_pct']}%)\n")
-            f.write(f"\n")
-            f.write(f"Sharpe Ratio:      {stats['sharpe_ratio']}\n")
-            f.write(f"Sortino Ratio:     {stats['sortino_ratio']}\n")
-            f.write(f"Calmar Ratio:      {stats['calmar_ratio']}\n")
-            f.write(f"\n")
-            f.write(f"Max Win Streak:    {stats['max_win_streak']}\n")
-            f.write(f"Max Loss Streak:   {stats['max_loss_streak']}\n")
-            f.write(f"Avg Holding Time:  {stats['avg_holding_mins']} mins\n")
-            f.write("\n" + "="*80 + "\n\n")
-            
-            # Trade-by-trade details
-            f.write("TRADE-BY-TRADE DETAILS\n")
-            f.write("="*80 + "\n\n")
-            
-            for idx, trade in enumerate(report_data['trades'], 1):
-                # Calculate lot details
-                qty = trade['qty']
-                underlying = 'NIFTY'
-                if 'BANKNIFTY' in trade['symbol']:
-                    underlying = 'BANKNIFTY'
-                elif 'SENSEX' in trade['symbol']:
-                    underlying = 'SENSEX'
-                
-                # Use config for lot size (no hardcoded values)
-                lot_size = self.config.get('indices', {}).get(underlying, {}).get('lot_size', 50)
-                
-                lots = qty // lot_size if lot_size > 0 else 0
-                
-                f.write(f"Trade #{idx}\n")
-                f.write("-"*80 + "\n")
-                f.write(f"  Symbol:        {trade['symbol']}\n")
-                f.write(f"  Entry Time:    {trade['entry_time']}\n")
-                f.write(f"  Entry Price:   ₹{trade['entry_price']:.2f}\n")
-                f.write(f"  Exit Time:     {trade['exit_time']}\n")
-                f.write(f"  Exit Price:    ₹{trade['exit_price']:.2f}\n")
-                f.write(f"  Quantity:      {qty} ({lots} lots × {lot_size})\n")
-                f.write(f"  Exit Reason:   {trade.get('reason', 'UNKNOWN')}\n")
-                f.write(f"  Gross P&L:     ₹{trade['pnl_gross']:.2f}\n")
-                f.write(f"  Charges:       ₹{trade['charges']:.2f}\n")
-                f.write(f"  Net P&L:       ₹{trade['pnl_net']:.2f}\n")
-                f.write("\n")
-            
-            f.write("="*80 + "\n")
-            f.write("END OF REPORT\n")
-            f.write("="*80 + "\n")
+        gs = GridSpec(2, 2, figure=fig, width_ratios=[1.5, 1], height_ratios=[1, 1])
+        gs.update(wspace=0.1, hspace=0.3)
+        
+        # Colors
+        c_green = '#27a844'
+        c_red = '#dc3545'
+        c_gray = '#6c757d'
+        c_blue = '#0d6efd'
+        
+        # Date strings for title
+        start_dt = pd.to_datetime(self.config.get('backtest', {}).get('start_date', '2026-01-01'))
+        end_dt = pd.to_datetime(self.config.get('backtest', {}).get('end_date', '2026-03-20'))
+        
+        fig.suptitle(f"RSI-15m Backtest — {datetime.now().strftime('%Y-%m-%d')}\n"
+                     f"Period: {start_dt.strftime('%b %d %Y')} – {end_dt.strftime('%b %d %Y')} | {stats['total_trades']} trades", 
+                     fontsize=16, fontweight='bold', y=0.98)
+
+        # 1. Equity Curve
+        ax1 = fig.add_subplot(gs[0, 0])
+        trade_dates = pd.to_datetime(trades_df['exit_time'])
+        equity = trades_df['running_capital']
+        
+        # Create a series with initial capital prepended
+        initial_cap = self.config.get('capital', {}).get('initial', 100000)
+        times = [start_dt] + trade_dates.tolist()
+        eq_vals = [initial_cap] + equity.tolist()
+        
+        ax1.plot(times, eq_vals, color=c_blue, linewidth=2)
+        
+        # Drawdown shaded area
+        running_max = np.maximum.accumulate(eq_vals)
+        ax1.plot(times, running_max, color=c_gray, linestyle='--', alpha=0.5)
+        ax1.fill_between(times, running_max, eq_vals, where=(running_max > eq_vals), color=c_red, alpha=0.2)
+        
+        ax1.set_title("Equity Curve & Drawdowns", fontweight='bold')
+        ax1.grid(True, linestyle=':', alpha=0.6)
+        
+        # 2. P&L Per Trade (Bars)
+        ax2 = fig.add_subplot(gs[1, 0])
+        pnl = trades_df['pnl_net']
+        colors = [c_green if x > 0 else c_red for x in pnl]
+        ax2.bar(range(1, len(pnl)+1), pnl, color=colors, width=0.6)
+        ax2.axhline(0, color='black', linewidth=0.8)
+        ax2.set_title("Net P&L Per Trade", fontweight='bold')
+        ax2.set_xlabel("Trade Number")
+        ax2.grid(True, linestyle=':', alpha=0.6, axis='y')
+        
+        # 3. Monthly P&L
+        ax3 = fig.add_subplot(gs[1, 1])
+        # Group by Year-Month
+        trades_df['month'] = pd.to_datetime(trades_df['exit_time']).dt.to_period('M')
+        monthly = trades_df.groupby('month')['pnl_net'].sum()
+        
+        if not monthly.empty:
+            m_colors = [c_green if x > 0 else c_red for x in monthly]
+            bars = ax3.bar(monthly.index.astype(str), monthly, color=m_colors)
+            ax3.axhline(0, color='black', linewidth=0.8)
+            ax3.set_title("Monthly Net P&L", fontweight='bold')
+            ax3.tick_params(axis='x', rotation=45)
+            # Add value labels
+            for bar in bars:
+                height = bar.get_height()
+                v_align = 'bottom' if height > 0 else 'top'
+                ax3.text(bar.get_x() + bar.get_width()/2., height,
+                        f'₹{int(height):,}', ha='center', va=v_align, 
+                        fontsize=8, fontweight='bold')
+        
+        # 4. Stats Panel
+        ax4 = fig.add_subplot(gs[0, 1])
+        ax4.axis('off')
+        
+        gross = trades_df['pnl_gross'].sum()
+        net = stats['total_pnl']
+        charges = gross - net
+        
+        # Check if slippage buffer was configured
+        slip_cfg = self.config.get('reporting', {}).get('slippage_buffer_enabled', False)
+        slip_amt = self.config.get('reporting', {}).get('slippage_buffer_per_trade', 0) if slip_cfg else 0
+        total_slippage = slip_amt * stats['total_trades']
+        
+        stats_text = (
+            f"RETURNS:\n"
+            f"  Net P&L:      ₹{net:,.2f}\n"
+            f"  Gross P&L:    ₹{gross:,.2f}\n"
+            f"  Charges:      ₹{charges:,.2f}\n"
+            f"  Slippage:     ₹{total_slippage:,.2f}\n"
+            f"  Return %:     {(net / initial_cap * 100):.2f}%\n"
+            f"  Best trade:   ₹{stats['largest_win']:.0f}\n"
+            f"  Worst trade:  ₹{stats['largest_loss']:.0f}\n"
+            f"  Max streak:   W:{stats['max_win_streak']} / L:{stats['max_loss_streak']}\n"
+            f"\nRISK:\n"
+            f"  Win Rate:     {stats['win_rate']}%\n"
+            f"  Profit Factor:{stats['profit_factor']}\n"
+            f"  Expectancy:   ₹{stats['expectancy']:.0f}\n"
+            f"  Sharpe:       {stats['sharpe_ratio']}\n"
+            f"  Sortino:      {stats['sortino_ratio']}\n"
+            f"  Max DD:       ₹{stats['max_drawdown']:,.0f} ({stats['max_drawdown_pct']}%)\n"
+            f"  Avg Hold:     {stats['avg_holding_mins']:.0f} min\n"
+        )
+        
+        ax4.text(0.1, 0.9, stats_text, family='monospace', size=11, 
+                va='top', ha='left', linespacing=1.6,
+                bbox=dict(boxstyle='round', facecolor='#f8f9fa', alpha=1.0, edgecolor='#dee2e6'))
+        
+        fig.savefig(filepath, bbox_inches='tight')
+        return filepath
