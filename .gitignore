@@ -13,10 +13,10 @@ venv/
 logs/
 
 # Strategy/Trade Data
-data/derivatives/
-data/spot/
-*.csv
-*.json
+# data/derivatives/
+# data/spot/
+# *.csv
+# *.json
 !package.json
 !manifest.json
 # Runtime state files — session-local, never commit
