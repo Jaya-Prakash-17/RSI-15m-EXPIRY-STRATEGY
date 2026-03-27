@@ -130,7 +130,7 @@ class GrowwClient:
             if symbol in index_symbols:
                 # It's an index
                 groww_symbol = index_symbols[symbol]
-                exchange = GrowwAPI.EXCHANGE_NSE if "NSE" in groww_symbol else GrowwAPI.EXCHANGE_BSE
+                exchange = GrowwAPI.EXCHANGE_NSE if groww_symbol.startswith("NSE-") else GrowwAPI.EXCHANGE_BSE
                 segment = GrowwAPI.SEGMENT_CASH  # Indices are always CASH segment
             else:
                 # It's an option or other derivative
@@ -142,13 +142,15 @@ class GrowwClient:
             if not self.client: self._authenticate()
             
             try:
-                self.logger.info(f"Fetching candles for {symbol} using symbol: {groww_symbol}, segment: {segment}")
+                processed_start = start_date.strftime("%Y-%m-%d %H:%M:%S")
+                processed_end = end_date.strftime("%Y-%m-%d %H:%M:%S")
+                
                 resp = self.client.get_historical_candles(
                     exchange=exchange,
                     segment=segment,
                     groww_symbol=groww_symbol,
-                    start_time=start_date.strftime("%Y-%m-%d %H:%M:%S"),
-                    end_time=end_date.strftime("%Y-%m-%d %H:%M:%S"),
+                    start_time=processed_start,
+                    end_time=processed_end,
                     candle_interval=sdk_interval
                 )
                 

@@ -1,20 +1,20 @@
 backtest:
   start_date: '2026-01-01'
-  end_date: '2026-03-24'
+  end_date: '2026-03-28'
 capital:
   initial: 100000
 data:
   download_retry_count: 3
   storage_path: data
 indices:
-  BANKNIFTY:
-    expiry_day: Tuesday  # Monthly last Tuesday (from Sep 2025)
-    lot_size: 30
-    tick_size: 0.05
-  NIFTY:
-    expiry_day: Tuesday  # Current expiry day (code handles historical Thursday → Tuesday change)
-    lot_size: 65
-    tick_size: 0.05
+  # BANKNIFTY:
+  #   expiry_day: Tuesday  # Monthly last Tuesday (from Sep 2025)
+  #   lot_size: 30
+  #   tick_size: 0.05
+  # NIFTY:
+  #   expiry_day: Tuesday  # Current expiry day (code handles historical Thursday → Tuesday change)
+  #   lot_size: 65
+  #   tick_size: 0.05
   SENSEX:
     expiry_day: Thursday
     lot_size: 20
@@ -22,9 +22,9 @@ indices:
 risk:
   max_loss_per_day: 5000
 strategy:
-  alert_validity: 1  # Candles allowed for price to break alert_high (after alert candle)
+  alert_validity: 2  # Candles allowed for price to break alert_high (after alert candle)
   exit_mode: single_lot #single_lot or multi_lot
-  lots_per_trade: 3
+  lots_per_trade: 1
   max_lots: 5                     # P-21: hard ceiling regardless of sizing mode
   max_position_pct: 0.25          # P-21: never risk > 25% of capital per trade
   max_correlated_positions: 1     # P-09: max same-direction trades across indices (1=no NIFTY CE + BANKNIFTY CE)
@@ -34,8 +34,8 @@ strategy:
   rsi:
     period: 11 # RSI(14) — standard Wilder RSI, matches strategy design
     threshold: 60
-    warmup_periods: 3 # CANDLE COUNT (not multiplied by rsi_period). 100x15min = ~3 trading days
-    min_candles_for_signal: 27   # rsi_period × 3 — minimum before any alert fires
+    warmup_periods: 12 # CANDLE COUNT (not multiplied by rsi_period). 100x15min = ~3 trading days
+    min_candles_for_signal: 33   # rsi_period × 3 — minimum before any alert fires
   trade_only_on_expiry: false  # false:trade on every day, true:trade only on expiry day
   rsi_debug: false   # set true only when validating RSI values against Groww chart
   safe_sl_mode: true # If true, caps SL distance to max loss limit below

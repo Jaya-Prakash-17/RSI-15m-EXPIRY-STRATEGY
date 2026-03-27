@@ -174,13 +174,24 @@ def validate_config(config):
             )
             return False
 
-        sq_off_limit = datetime.strptime("15:20", "%H:%M")  # Groww MIS hard cutoff
-        if sq_off > sq_off_limit:
+        sq_off_hard_limit = datetime.strptime("15:30", "%H:%M")  # market close
+        sq_off_warn_limit = datetime.strptime("15:20", "%H:%M")  # Groww MIS cutoff
+        
+        if sq_off > sq_off_hard_limit:
             logger.critical(
                 f"CRITICAL: auto_square_off ({win['auto_square_off']}) "
-                f"is after Groww's 15:20 MIS cutoff. Set to 15:15 or earlier."
+                f"is after market close (15:30). This is invalid."
             )
             return False
+        
+        if sq_off > sq_off_warn_limit:
+            logger.warning(
+                f"WARNING: auto_square_off ({win['auto_square_off']}) is after "
+                f"Groww's 15:20 MIS auto-close. Groww will square off positions "
+                f"before the bot does. Bot's square-off serves as a P&L recording "
+                f"step only. Continuing."
+            )
+            # Do NOT return False — this is an accepted risk, not an error
     except (KeyError, ValueError) as e:
         logger.critical(f"CRITICAL: Invalid time format in trading.window: {e}")
         return False
@@ -262,31 +273,14 @@ def validate_system_clock(logger) -> bool:
 def signal_handler(sig, frame):
     """Handle Ctrl+C gracefully."""
     logger = logging.getLogger("LiveRunner")
-    logger.warning("\\n⚠️  Shutdown signal received. Closing positions and exiting...")
+    logger.info("Interrupted by user (Ctrl+C). Shutting down...")
     
-    # Square off all positions
-    if trader_instance:
-        try:
-            active_trades = trader_instance.tracker.get_active_trades()
-            for trade in active_trades:
-                exit_qty = trade.get('remaining_qty', trade['qty'])
-                logger.info(
-                    f"Emergency square-off: {trade['symbol']} | "
-                    f"Qty: {exit_qty} (original: {trade['qty']})"
-                )
-                resp = trader_instance.om.place_exit_order(
-                    trade['symbol'],
-                    exit_qty,               # remaining_qty after partial exits
-                    trade['trading_symbol'],
-                    "EMERGENCY_SHUTDOWN"
-                )
-                if resp and resp.get('groww_order_id'):
-                    logger.info(f"Emergency exit order placed: {resp['groww_order_id']}")
-                else:
-                    logger.critical(f"Emergency exit FAILED for {trade['symbol']} \u2014 CHECK GROWW APP NOW")
-        except Exception as e:
-            logger.error(f"Error during emergency shutdown: {e}")
+    # Notify owner via Telegram
+    global trader_instance
+    if trader_instance and hasattr(trader_instance, 'telegram'):
+        trader_instance.telegram.alert_manual_shutdown()
     
+    logger.info("Alert sent to owner. Trades remain OPEN for manual management. Exiting.")
     sys.exit(0)
 
 def main():
@@ -367,7 +361,10 @@ def main():
         logger.info("Starting trading loop...")
         trader_instance.run()
     except KeyboardInterrupt:
-        logger.info("Interrupted by user")
+        logger.info("Interrupted by user (Ctrl+C). Shutting down...")
+        if hasattr(trader_instance, 'telegram'):
+            trader_instance.telegram.alert_manual_shutdown()
+        logger.info("Alert sent to owner. Trades remain open.")
     except Exception as e:
         logger.critical(f"Fatal error in trading loop: {e}", exc_info=True)
         sys.exit(1)

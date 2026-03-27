@@ -26,17 +26,14 @@ ENTRY        EXPIRED / NEGATED
 
 ## Targets
 
-- **T1** = Entry + 1× alert candle range
-- **T2** = Entry + 2× alert candle range
-- **T3** = Entry + 3× alert candle range
+- **T1 (1x)** = Entry + Alert Candle Range
+- **T2 (2x)** = Entry + 2 × Alert Candle Range (Recommended)
+- **T3 (3x)** = Entry + 3 × Alert Candle Range
 
-## Key Config Dependencies
+## Config Dependencies
 
-| Config Key | Effect |
+| Key | Purpose |
 |---|---|
-| `strategy.rsi.period` | RSI calculation period (default: 14) |
-| `strategy.rsi.threshold` | RSI level that triggers alert (default: 60) |
-| `strategy.rsi.warmup_periods` | Candles needed before RSI is stable (default: 100) |
-| `strategy.alert_validity` | Candles allowed for breakout after alert (default: 1) |
-| `strategy.exit_mode` | `multi_lot` or `single_lot` |
-| `strategy.single_lot_exit_target` | Which target exits in single-lot mode (1=T1, 2=T2, 3=T3) |
+| `strategy.rsi.threshold` | Cross-above level (default: 60) |
+| `strategy.alert_validity` | Max candles to wait for breakout (default: 2) |
+| `strategy.single_lot_exit_target` | Multiplier used for exit in single-lot mode |

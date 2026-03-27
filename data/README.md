@@ -21,13 +21,17 @@ Data management layer — downloading, caching, and serving market data.
 data/
 ├── spot/                    # Spot index candle data (15-min)
 │   ├── NIFTY_15m.csv
-│   └── BANKNIFTY_15m.csv
+│   ├── BANKNIFTY_15m.csv
+│   └── SENSEX_15m.csv
 ├── derivatives/             # Option chain candle data (15-min)
 │   ├── NIFTY/
 │   │   └── 2026/
 │   │       ├── NSE-NIFTY-07Jan26-23500-CE_15m.csv
 │   │       └── ...
-│   └── BANKNIFTY/
+│   ├── BANKNIFTY/
+│   │   └── 2026/
+│   │       └── ...
+│   └── SENSEX/
 │       └── 2026/
 │           └── ...
 ├── data_manager.py

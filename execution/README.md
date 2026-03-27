@@ -6,17 +6,24 @@ Order management and trade state tracking for live trading.
 
 | File | Purpose |
 |---|---|
-| `order_manager.py` | **Order execution layer.** Places entry orders (SL-M BUY), SL orders (SL-M SELL), target orders (LIMIT SELL), and market exit orders via the Groww API. Handles partial exits, SL modification (trailing), and order cancellation. Supports paper trading mode where orders are simulated locally. |
-| `trade_tracker.py` | **Trade state manager.** Tracks active and closed trades with persistence to `data/bot_trades.json`. Manages trade lifecycle: add → update (partial exits, trailing SL) → close. Calculates daily P&L and provides trade queries for monitoring. |
+| `order_manager.py` | **Order execution layer.** Places entry (SL-M), SL (SL-M), and Target (LIMIT) orders. Handles partial exits and trails broker-side SL orders using modification requests. Supports paper trading simulation. |
+| `trade_tracker.py` | **Trade state manager.** Persists state to `data/bot_trades.json`. Tracks P&L, remaining quantity, and active exit orders. |
 
 ## Order Types Used
 
 | Order | Type | When |
 |---|---|---|
-| Entry | SL-M BUY | When alert is generated (triggers on breakout) |
-| Stop Loss | SL-M SELL | Immediately after entry fill |
-| Target | LIMIT SELL | At TP1, TP2, TP3 prices |
-| Exit | MARKET SELL | Square-off or emergency close |
+| Entry | SL-M BUY | Placed on alert (triggers on breakout) |
+| Stop Loss | SL-M SELL | Placed immediately after entry fill |
+| Target | LIMIT SELL | Placed at TP1, TP2, TP3 prices |
+| Management | MODIFY | Used to jump SL price on target hits (trailing) |
+
+## Trailing SL Logic
+
+1. **Entry**: SL = Alert Low - 1.
+2. **TP1 Hit**: Exit 1/3 qty. SL jumps to `Entry Price + Buffer`.
+3. **TP2 Hit**: Exit 1/3 qty. SL jumps to `TP1 Price`.
+4. **TP3 Hit**: Full exit.
 
 ## Trade Lifecycle
 

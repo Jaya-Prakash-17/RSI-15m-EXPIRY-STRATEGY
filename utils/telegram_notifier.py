@@ -49,6 +49,7 @@ class TelegramNotifier:
         self.token = os.getenv("TELEGRAM_BOT_TOKEN")
         raw_ids = os.getenv("TELEGRAM_CHAT_ID", "")
         self.chat_ids = [cid.strip() for cid in raw_ids.split(",") if cid.strip()]
+        self.owner_id = os.getenv("TELEGRAM_OWNER_ID")
         self.logger = logging.getLogger("TelegramNotifier")
 
         self.enabled = bool(self.token and self.chat_ids)
@@ -106,6 +107,27 @@ class TelegramNotifier:
                 self.logger.warning(f"Telegram send timed out (5s) for chat {chat_id} — skipping")
             except Exception as e:
                 self.logger.error(f"Telegram send failed for chat {chat_id}: {e}")
+
+    def _send_to_owner(self, message: str):
+        """Send a message ONLY to the owner chat ID."""
+        if not self.enabled or not self.owner_id:
+            return
+            
+        url = f"https://api.telegram.org/bot{self.token}/sendMessage"
+        try:
+            resp = requests.post(
+                url,
+                json={
+                    "chat_id": self.owner_id,
+                    "text": message,
+                    "parse_mode": "HTML",
+                },
+                timeout=5,
+            )
+            if not resp.ok:
+                self.logger.error(f"Telegram owner alert failed: {resp.text[:200]}")
+        except Exception as e:
+            self.logger.error(f"Telegram owner alert failed: {e}")
 
     @staticmethod
     def _now():
@@ -382,6 +404,17 @@ class TelegramNotifier:
             f"Close any open positions manually."
         )
         self._send(msg)
+    
+    def alert_manual_shutdown(self):
+        """Send when bot is manually shut down (Ctrl+C). Only to owner."""
+        msg = (
+            f"⚠️ <b>BOT MANUALLY SHUT DOWN</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━\n"
+            f"🕐 {self._now()}\n\n"
+            f"Keyboard Interrupt (Ctrl+C) detected.\n"
+            f"Bot has stopped. <b>Trades remain OPEN</b> for manual management."
+        )
+        self._send_to_owner(msg)
 
     def test_connection(self):
         """

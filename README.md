@@ -14,17 +14,15 @@ Intraday Index Options Strategy based on RSI(14) breakout on 15-minute candles, 
 | **RSI Threshold** | 60 (alert on cross above) |
 | **Entry** | Price breaks the high of alert candle (SL-M BUY order) |
 | **Stop Loss** | Alert candle low − 1 point |
-| **T1** | Entry + 1× alert candle range |
-| **T2** | Entry + 2× alert candle range |
-| **T3** | Entry + 3× alert candle range |
+| **Targets (TP)** | T1 (1x), T2 (2x), T3 (3x) alert candle range |
 
-### Expiry Schedule
+### Expiry Schedule (Current)
 
 | Index | Expiry Day | Type |
 |---|---|---|
-| NIFTY | Tuesday (from Sep 2025) | Weekly |
-| BANKNIFTY | Last Tuesday of month (from Sep 2025) | Monthly |
-| SENSEX | Thursday | Weekly |
+| NIFTY | Tuesday (since Sep 2025) | Weekly |
+| BANKNIFTY | Last Tuesday of month (since Sep 2025) | Monthly |
+| SENSEX | Thursday (since Sep 2025) | Weekly |
 
 ### Exit Modes
 
@@ -51,7 +49,7 @@ RSI-15m-EXPIRY-STRATEGY/
 │   └── live_trader.py           # Real-time trading loop with Telegram alerts
 │
 ├── core/                    # Infrastructure
-│   ├── groww_client.py          # Groww broker API client
+│   ├── groww_client.py          # Groww broker API client (BSE/NSE support)
 │   ├── logger.py                # Logging setup
 │   └── retry_decorator.py       # Retry with exponential backoff
 │
@@ -65,18 +63,24 @@ RSI-15m-EXPIRY-STRATEGY/
 │   ├── order_manager.py         # Place/modify/cancel broker orders
 │   └── trade_tracker.py         # Trade state persistence
 │
+├── scripts/                 # Operational scripts
+│   ├── setup_service.sh         # Linux systemd service installer
+│   ├── rsi-bot.service          # systemd unit file template
+│   └── paper_trading_checklist.md # 20-session pre-live SOP
+│
 ├── reporting/               # Backtest reports
 │   └── performance.py           # HTML + JSON report generator
 │
+├── tests/                   # Test suite
+│   └── test_integration.py      # Integration and regression tests
+│
 └── utils/                   # Shared utilities
-    ├── telegram_notifier.py     # Telegram trade alerts (9 message types)
+    ├── telegram_notifier.py     # Telegram alerts (Multi-chat + Owner only)
     ├── trade_logger.py          # CSV trade audit log
-    ├── nse_calendar.py          # NSE holiday calendar
+    ├── nse_calendar.py          # NSE/BSE holiday calendar
     ├── trading_day_checker.py   # API-based trading day verification
     └── chart_visualizer.py      # Candlestick chart generator
 ```
-
-> Each folder has its own `README.md` with detailed file descriptions.
 
 ## Quick Start
 
@@ -88,7 +92,7 @@ git clone https://github.com/Jaya-Prakash-17/RSI-15m-EXPIRY-STRATEGY.git
 cd RSI-15m-EXPIRY-STRATEGY
 
 # Install dependencies
-pip install pandas numpy pyyaml requests python-dotenv
+pip install -r requirements.txt
 
 # Copy environment template and fill in your credentials
 cp .env.example .env
@@ -101,36 +105,18 @@ cp .env.example .env
 python run_backtest.py
 ```
 
-Results are saved to `reports/` (HTML report + JSON summary).
-
 ### 3. Run Live Trading (Paper Mode)
 
 ```bash
-# Paper trading is ON by default (config.yaml: paper_trading: true)
+# Initialize paper trading checklist (scripts/paper_trading_checklist.md)
 python run_live.py
 ```
 
-### 4. Test Telegram Alerts
+## Configuration (config.yaml)
 
-```bash
-python -c "from dotenv import load_dotenv; load_dotenv(); from utils.telegram_notifier import TelegramNotifier; TelegramNotifier().test_connection()"
-```
-
-## Configuration
-
-All parameters are in `config.yaml`. Key sections:
-
-| Section | What it controls |
-|---|---|
-| `strategy.rsi` | RSI period (14), threshold (60), warmup (100 candles) |
-| `strategy.exit_mode` | `multi_lot` (3 lots, partial exits) or `single_lot` |
-| `strategy.trade_only_on_expiry` | `true` = trade only on expiry days |
-| `strategy.single_lot_exit_target` | Which TP exits in single-lot mode (1/2/3) |
-| `trading.paper_trading` | `true` = simulated, `false` = real money |
-| `trading.window` | Trading hours (start, end, auto_square_off) |
-| `risk.max_loss_per_day` | Daily loss limit in ₹ |
-| `capital.initial` | Starting capital for backtest |
-| `indices.{INDEX}.lot_size` | Current lot size (NIFTY: 65, BANKNIFTY: 30) |
+- `trading.window.auto_square_off`: Times after 15:20 (e.g., 15:25) are allowed but trigger a warning (Groww MIS cutoff starts at 15:20).
+- `risk.max_loss_per_day`: Daily loss limit enforced per bot session.
+- `strategy.alert_validity`: Candles allowed for breakout after alert (recommended: 2).
 
 ## Environment Variables (`.env`)
 
@@ -138,25 +124,21 @@ All parameters are in `config.yaml`. Key sections:
 |---|---|---|
 | `GROWW_API_KEY` | Yes | Groww broker API JWT token |
 | `GROWW_API_SECRET` | Yes | Groww broker API secret |
-| `GROWW_MOCK_MODE` | No | Set to `True` for offline testing |
-| `TELEGRAM_BOT_TOKEN` | No | Telegram bot token from @BotFather |
-| `TELEGRAM_CHAT_ID` | No | Your Telegram chat ID |
+| `TELEGRAM_BOT_TOKEN` | Yes | Telegram bot token from @BotFather |
+| `TELEGRAM_CHAT_ID` | Yes | Comma-separated list of IDs for alerts |
+| `TELEGRAM_OWNER_ID` | Yes | Owner-specific ID for shutdown/critical alerts |
 
 ## Telegram Alerts
 
 The live bot sends real-time Telegram notifications for:
-
-| Alert | When |
-|---|---|
-| 🤖 Bot Started | On initialization |
-| 🔔 Trade Setup Alert | RSI breakout detected (full entry/SL/target details) |
-| ⏰ Setup Expired | Validity window passed without trigger |
-| ✅ Trade Entered | Order filled (reference card with risk) |
-| 🎯 Target Hit | TP1/TP2/TP3 reached (profit + new SL) |
-| 🛑 Stop Loss Hit | SL triggered (loss + daily P&L) |
-| 🔔 Square Off | End-of-day forced close |
-| 🚨 Daily Loss Limit | Max loss breached — trading stopped |
-| 📋 Daily Summary | End of session stats |
+- 🤖 **Bot Started**: On initialization.
+- 🔔 **Trade Setup Alert**: RSI breakout detected.
+- ✅ **Trade Entered**: Order filled.
+- 🎯 **Target Hit**: TP1/TP2/TP3 reached.
+- 🛑 **Stop Loss Hit**: SL triggered.
+- 🚦 **Manual Shutdown**: Alert sent ONLY to owner on Ctrl+C.
+- 🚨 **Daily Loss Limit**: Max loss breached.
+- 📋 **Daily Summary**: End of session stats.
 
 ## License
 

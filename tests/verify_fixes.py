@@ -140,11 +140,11 @@ def run_tests():
     try:
         from run_live import validate_config
         # Our dummy_config has auto_square_off='15:25' while end='15:00'.
-        # Since 15:25 is AFTER 15:00, validate_config should return False based on the rules.
+        # Previously blocked, now allowed with warning.
         import logging
         logging.getLogger().setLevel(logging.CRITICAL)  # suppress the expected warning
         is_valid = validate_config(dummy_config)
-        assert_test("Config Validation: Bad auto_square_off caught", is_valid == False)
+        assert_test("Config Validation: 15:25 auto_square_off is warned not blocked", is_valid == True)
     except Exception as e:
         assert_test("Config Validation", False, str(e))
 
