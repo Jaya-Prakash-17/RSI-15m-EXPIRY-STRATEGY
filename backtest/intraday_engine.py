@@ -99,7 +99,10 @@ class IntradayEngine:
             self.dm.clear_cache()
             current_date += pd.Timedelta(days=1)
         
-        # V6-P-001: End-of-run diagnostic summary
+        return self.generate_report()
+
+    def print_diagnostic_summary(self):
+        """V6-P-001: End-of-run diagnostic summary"""
         if hasattr(self, 'day_diagnostics') and self.day_diagnostics:
             days_no_data = sum(1 for d in self.day_diagnostics if d['opt_symbols_loaded'] == 0)
             days_no_alerts = sum(1 for d in self.day_diagnostics if d['alerts_fired'] == 0 and d['opt_symbols_loaded'] > 0)
@@ -110,15 +113,13 @@ class IntradayEngine:
                 f"BACKTEST DIAGNOSTIC SUMMARY\n"
                 f"{'='*60}\n"
                 f"Days processed:          {len(self.day_diagnostics)}\n"
-                f"Days with NO data:       {days_no_data}  \u2190 if high = symbol/path mismatch\n"
-                f"Days with data, no RSI:  {days_no_alerts}  \u2190 if high = RSI never crosses 60\n"
-                f"Days with alert, no entry: {days_no_entries}  \u2190 if high = validity window issue\n"
+                f"Days with NO data:       {days_no_data}  <- (check symbol/path format)\n"
+                f"Days with data, no RSI:  {days_no_alerts}  <- (RSI never crossed target)\n"
+                f"Days with alert, no entry: {days_no_entries}  <- (validity window issue)\n"
                 f"Total trades:            {len(self.trades)}\n"
                 f"Final Capital:           {self.capital}\n"
                 f"{'='*60}"
             )
-
-        return self.generate_report()
 
     def _validate_data_paths(self, underlying: str, sample_date) -> None:
         """

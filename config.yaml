@@ -15,10 +15,10 @@ indices:
     expiry_day: Tuesday  # Current expiry day (code handles historical Thursday → Tuesday change)
     lot_size: 65
     tick_size: 0.05
-  # SENSEX:
-  #   expiry_day: Thursday
-  #   lot_size: 20
-  #   tick_size: 0.05
+  SENSEX:
+    expiry_day: Thursday
+    lot_size: 20
+    tick_size: 0.05
 risk:
   max_loss_per_day: 5000
 strategy:
@@ -34,7 +34,7 @@ strategy:
   rsi:
     period: 11 # RSI(14) — standard Wilder RSI, matches strategy design
     threshold: 60
-    warmup_periods: 9 # CANDLE COUNT (not multiplied by rsi_period). 100x15min = ~3 trading days
+    warmup_periods: 3 # CANDLE COUNT (not multiplied by rsi_period). 100x15min = ~3 trading days
     min_candles_for_signal: 27   # rsi_period × 3 — minimum before any alert fires
   trade_only_on_expiry: false  # false:trade on every day, true:trade only on expiry day
   rsi_debug: false   # set true only when validating RSI values against Groww chart
