@@ -145,7 +145,8 @@ class GrowwClient:
                 processed_start = start_date.strftime("%Y-%m-%d %H:%M:%S")
                 processed_end = end_date.strftime("%Y-%m-%d %H:%M:%S")
                 
-                resp = self.client.get_historical_candles(
+                resp = self._safe_call(
+                    self.client.get_historical_candles,
                     exchange=exchange,
                     segment=segment,
                     groww_symbol=groww_symbol,

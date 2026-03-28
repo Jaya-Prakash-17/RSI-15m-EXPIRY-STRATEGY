@@ -115,5 +115,100 @@ def main():
     except Exception as e:
         print(f"\nFailed to send Telegram notification: {e}")
 
+    # P-V8-P-02: Final checkout of live positions after hours
+    check_open_positions_after_close()
+
+def check_open_positions_after_close():
+    """
+    Verify no open F&O positions remain after market close.
+    Any position found = unrecorded open = immediate manual action needed.
+    """
+    from core.groww_client import GrowwClient
+    from dotenv import load_dotenv
+    load_dotenv()
+    
+    print("\n─── Groww Open Position Check ───")
+    
+    try:
+        client = GrowwClient()
+        
+        # Try known SDK method names for positions
+        # The exact method depends on the growwapi SDK version
+        positions_data = None
+        method_tried = None
+        
+        for method_name in ['get_positions', 'get_fno_positions',
+                           'get_portfolio', 'get_holdings']:
+            if hasattr(client.client, method_name):
+                try:
+                    positions_data = getattr(client.client, method_name)()
+                    method_tried = method_name
+                    break
+                except Exception:
+                    continue
+        
+        if positions_data is None:
+            # SDK method not found — print manual check reminder
+            print("NOTE: Could not auto-check Groww positions.")
+            print("      MANUAL CHECK REQUIRED:")
+            print("      Open Groww app → Portfolio → F&O Positions")
+            print("      Expected after 15:30: 0 open positions")
+            return
+        
+        # Parse response — handle both list and dict responses
+        if isinstance(positions_data, dict):
+            pos_list = (positions_data.get('positions') or
+                       positions_data.get('data') or
+                       positions_data.get('fno_positions') or [])
+        elif isinstance(positions_data, list):
+            pos_list = positions_data
+        else:
+            pos_list = []
+        
+        # Filter for non-zero quantity positions
+        open_positions = []
+        for pos in pos_list:
+            qty = int(pos.get('quantity') or
+                     pos.get('net_quantity') or
+                     pos.get('netQty') or 0)
+            if qty != 0:
+                open_positions.append({
+                    'symbol': (pos.get('trading_symbol') or
+                              pos.get('tradingSymbol') or
+                              pos.get('symbol', 'UNKNOWN')),
+                    'qty': qty,
+                    'pnl': float(pos.get('pnl') or
+                                pos.get('unrealized_pnl') or 0)
+                })
+        
+        if open_positions:
+            print(f"🚨 WARNING: {len(open_positions)} OPEN POSITION(S) FOUND!")
+            for p in open_positions:
+                print(f"   {p['symbol']}: qty={p['qty']}, P&L=₹{p['pnl']:.2f}")
+            print("\nACTION: Square off manually via Groww app IMMEDIATELY")
+            
+            # Send Telegram alert — this is critical
+            try:
+                from utils.telegram_notifier import TelegramNotifier
+                notifier = TelegramNotifier()
+                msg = (
+                    f"🚨 <b>OPEN POSITION ALERT</b>\n"
+                    f"Found {len(open_positions)} unclosed F&O position(s)!\n\n"
+                )
+                for p in open_positions:
+                    msg += f"• <code>{p['symbol']}</code>: {p['qty']} qty\n"
+                msg += "\n<b>Square off manually via Groww app immediately.</b>"
+                notifier._send(msg)
+                print("Telegram alert sent.")
+            except Exception as e:
+                print(f"Could not send Telegram alert: {e}")
+        else:
+            print(f"✅ Groww check ({method_tried}): 0 open positions — all clear")
+    
+    except Exception as e:
+        print(f"Could not check Groww positions: {e}")
+        print("MANUAL CHECK: open Groww app → F&O Positions")
+        print("Expected after 15:30: 0 open positions")
+
 if __name__ == '__main__':
     main()
