@@ -1,6 +1,6 @@
 backtest:
-  start_date: '2026-01-01'
-  end_date: '2026-03-28'
+  start_date: '2025-01-01'
+  end_date: '2025-12-31'
 capital:
   initial: 100000
 data:
@@ -26,22 +26,22 @@ strategy:
   exit_mode: single_lot #single_lot or multi_lot
   lots_per_trade: 1
   max_lots: 5                     # P-21: hard ceiling regardless of sizing mode
-  max_position_pct: 0.25          # P-21: never risk > 25% of capital per trade
-  max_correlated_positions: 1     # P-09: max same-direction trades across indices (1=no NIFTY CE + BANKNIFTY CE)
+  max_position_pct: 0.9         # P-21: never risk > 25% of capital per trade
+  max_correlated_positions: 2    # P-09: max same-direction trades across indices (1=no NIFTY CE + BANKNIFTY CE)
   dynamic_sizing_enabled: false   # P-24: enable after 20+ validated sessions
-  risk_per_trade_pct: 0.015       # P-24: 1.5% of capital per trade when dynamic enabled
+  risk_per_trade_pct: 0.05       # P-24: 1.5% of capital per trade when dynamic enabled
   single_lot_exit_target: 3  # 1=T1, 2=T2, 3=T3 — used in single_lot exit mode
   rsi:
     period: 11 # RSI(11) — standard Wilder RSI, matches strategy design
     threshold: 60
-    warmup_periods: 100 # was 12. Fetches 25hrs back = prior day included
+    warmup_periods: 120 # was 12. Fetches 25hrs back = prior day included
     min_candles_for_signal: 27 # was 33. period×3=33 unreachable; 27 is achievable
   trade_only_on_expiry: false  # false:trade on every day, true:trade only on expiry day
   rsi_debug: false   # set true only when validating RSI values against Groww chart
   safe_sl_mode: true # If true, caps SL distance to max loss limit below
   safe_sl_max_loss: 5000 # Max ₹ loss per trade position (total across all lots)
   min_sl_pct: 0.08   # 8% of trigger price floor for stop loss
-  signal_window_start: '9:55' # No new alerts before this time
+  signal_window_start: '10:00' # No new alerts before this time
   signal_window_end: '13:30'   # No new alerts after this time
   direction_filter_enabled: false # CE only on bullish spot, PE only on bearish spot
   trailing_stop:
