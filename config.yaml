@@ -7,14 +7,14 @@ data:
   download_retry_count: 3
   storage_path: data
 indices:
-  # BANKNIFTY:
-  #   expiry_day: Tuesday  # Monthly last Tuesday (from Sep 2025)
-  #   lot_size: 30
-  #   tick_size: 0.05
-  # NIFTY:
-  #   expiry_day: Tuesday  # Current expiry day (code handles historical Thursday → Tuesday change)
-  #   lot_size: 65
-  #   tick_size: 0.05
+  BANKNIFTY:
+    expiry_day: Tuesday  # Monthly last Tuesday (from Sep 2025)
+    lot_size: 30
+    tick_size: 0.05
+  NIFTY:
+    expiry_day: Tuesday  # Current expiry day (code handles historical Thursday → Tuesday change)
+    lot_size: 65
+    tick_size: 0.05
   SENSEX:
     expiry_day: Thursday
     lot_size: 20
@@ -32,16 +32,16 @@ strategy:
   risk_per_trade_pct: 0.015       # P-24: 1.5% of capital per trade when dynamic enabled
   single_lot_exit_target: 3  # 1=T1, 2=T2, 3=T3 — used in single_lot exit mode
   rsi:
-    period: 11 # RSI(14) — standard Wilder RSI, matches strategy design
+    period: 11 # RSI(11) — standard Wilder RSI, matches strategy design
     threshold: 60
-    warmup_periods: 12 # CANDLE COUNT (not multiplied by rsi_period). 100x15min = ~3 trading days
-    min_candles_for_signal: 33   # rsi_period × 3 — minimum before any alert fires
+    warmup_periods: 100 # was 12. Fetches 25hrs back = prior day included
+    min_candles_for_signal: 27 # was 33. period×3=33 unreachable; 27 is achievable
   trade_only_on_expiry: false  # false:trade on every day, true:trade only on expiry day
   rsi_debug: false   # set true only when validating RSI values against Groww chart
   safe_sl_mode: true # If true, caps SL distance to max loss limit below
   safe_sl_max_loss: 5000 # Max ₹ loss per trade position (total across all lots)
   min_sl_pct: 0.08   # 8% of trigger price floor for stop loss
-  signal_window_start: '10:00' # No new alerts before this time
+  signal_window_start: '9:55' # No new alerts before this time
   signal_window_end: '13:30'   # No new alerts after this time
   direction_filter_enabled: false # CE only on bullish spot, PE only on bearish spot
   trailing_stop:
