@@ -218,9 +218,10 @@ class IntradayEngine:
         strike_step = 50 if underlying == 'NIFTY' else 100
         if underlying == 'SENSEX': strike_step = 100
         
+        strike_range = self.config['strategy'].get('strike_range', 4)  # default ±4
         center_strike = round(universe_ref_price / strike_step) * strike_step
-        min_strike = center_strike - (2 * strike_step)
-        max_strike = center_strike + (2 * strike_step)
+        min_strike = center_strike - (strike_range * strike_step)
+        max_strike = center_strike + (strike_range * strike_step)
         strikes = range(int(min_strike), int(max_strike) + strike_step, strike_step)
         
         option_data = {}

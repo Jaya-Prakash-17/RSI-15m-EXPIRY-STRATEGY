@@ -455,12 +455,10 @@ class LiveTrader:
             if underlying == 'SENSEX': strike_gap = 100
             
             center_strike = round(current_spot / strike_gap) * strike_gap
+            strike_range = self.config['strategy'].get('strike_range', 4)
             strikes = [
-                center_strike - 2*strike_gap,
-                center_strike - strike_gap,
-                center_strike,
-                center_strike + strike_gap,
-                center_strike + 2*strike_gap
+                center_strike + (i * strike_gap)
+                for i in range(-strike_range, strike_range + 1)
             ]
             
             for strike in strikes:
@@ -1016,7 +1014,7 @@ class LiveTrader:
             if 0 <= idx < 3:
                 target_order_ids[idx] = order.get('order_id')
         
-        # Create trade record
+        # Create trade record — include exit_orders from the start (single write)
         trade_record = {
             'symbol': original_symbol,
             'trading_symbol': trading_symbol,
@@ -1031,9 +1029,11 @@ class LiveTrader:
             'entry_order_id': order_id,
             'sl_order_id': sl_order_id,
             'target_order_ids': target_order_ids,
+            'exit_orders': exit_orders,           # ← MOVED HERE
+            'alert_range': signal.get('alert_range', 0),  # ← MOVED HERE
         }
         
-        # Add to tracker
+        # Add to tracker — single atomic write, no follow-up update needed
         trade_id = self.tracker.add_active_trade(trade_record)
         trade_record['trade_id'] = trade_id
         
@@ -1048,15 +1048,8 @@ class LiveTrader:
             'status': 'ACTIVE'
         }
         
-        # Update tracker with exit orders from om.place_partial_exits
-        trade_record['exit_orders'] = exit_orders
-        trade_record['alert_range'] = signal.get('alert_range', 0)
+        # exit_mode for Telegram message
         exit_mode = exit_orders.get('mode', signal.get('exit_mode', 'single_lot'))
-        
-        self.tracker.update_trade(trade_id, {
-            'exit_orders': exit_orders,
-            'alert_range': signal.get('alert_range', 0)
-        })
         
         self.logger.info(f"✅ Trade Created: {trade_id} | {underlying} | Entry: ₹{fill_price} | SL: ₹{sl_price} | Targets: {targets}")
         

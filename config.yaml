@@ -26,7 +26,7 @@ strategy:
   exit_mode: single_lot #single_lot or multi_lot
   lots_per_trade: 3
   max_lots: 3                     # P-21: hard ceiling regardless of sizing mode
-  max_position_pct: 0.9         # P-21: never risk > 25% of capital per trade
+  max_position_pct: 1.0       # P-21: never risk > 25% of capital per trade
   max_correlated_positions: 2    # P-09: max same-direction trades across indices (1=no NIFTY CE + BANKNIFTY CE)
   dynamic_sizing_enabled: false   # P-24: enable after 20+ validated sessions
   risk_per_trade_pct: 0.05       # P-24: 1.5% of capital per trade when dynamic enabled
@@ -44,6 +44,7 @@ strategy:
   signal_window_start: '10:00' # No new alerts before this time
   signal_window_end: '13:30'   # No new alerts after this time
   direction_filter_enabled: false # CE only on bullish spot, PE only on bearish spot
+  strike_range: 4   # ATM ± this many strikes. Default was 2. ±4 catches 200pt NIFTY moves.
   trailing_stop:
     enabled: true
     move_by_alert_range: true
