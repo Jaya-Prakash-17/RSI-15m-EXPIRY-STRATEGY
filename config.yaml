@@ -22,10 +22,10 @@ indices:
 risk:
   max_loss_per_day: 5000
 strategy:
-  alert_validity: 2  # Candles allowed for price to break alert_high (after alert candle)
+  alert_validity: 1  # Candles allowed for price to break alert_high (after alert candle)
   exit_mode: single_lot #single_lot or multi_lot
-  lots_per_trade: 1
-  max_lots: 5                     # P-21: hard ceiling regardless of sizing mode
+  lots_per_trade: 3
+  max_lots: 3                     # P-21: hard ceiling regardless of sizing mode
   max_position_pct: 0.9         # P-21: never risk > 25% of capital per trade
   max_correlated_positions: 2    # P-09: max same-direction trades across indices (1=no NIFTY CE + BANKNIFTY CE)
   dynamic_sizing_enabled: false   # P-24: enable after 20+ validated sessions
@@ -34,7 +34,7 @@ strategy:
   rsi:
     period: 11 # RSI(11) — standard Wilder RSI, matches strategy design
     threshold: 60
-    warmup_periods: 120 # was 12. Fetches 25hrs back = prior day included
+    warmup_periods: 100 # was 12. Fetches 25hrs back = prior day included
     min_candles_for_signal: 27 # was 33. period×3=33 unreachable; 27 is achievable
   trade_only_on_expiry: false  # false:trade on every day, true:trade only on expiry day
   rsi_debug: false   # set true only when validating RSI values against Groww chart
@@ -58,10 +58,10 @@ trading:
 charges:
   brokerage_per_trade: 20 # Flat ₹20 per trade (each leg)
   stt: 0.002            # 0.05% on sell side for options
-  exchange_txn_fee: 0.00053 # 0.053% NSE charges (approx)
+  exchange_txn_fee: 0.0009 # 0.053% NSE charges (approx)
   gst: 0.2             # 18% on brokerage + txn fees
-  sebi_charges: 0.0002   # 0.0001% (approx ₹10 per Cr)
+  sebi_charges: 0.0005   # 0.0001% (approx ₹10 per Cr)
   stamp_duty: 0.00005    # 0.003% on buy side (Options)
 reporting:                 # P-28: slippage buffer configuration
-  slippage_buffer_per_trade: 0    # ₹ flat deduction per trade (200-500 typical for NIFTY options)
-  slippage_buffer_enabled: false  # Set true to apply realistic execution cost estimate
+  slippage_buffer_per_trade: 50    # ₹ flat deduction per trade (200-500 typical for NIFTY options)
+  slippage_buffer_enabled: true  # Set true to apply realistic execution cost estimate
