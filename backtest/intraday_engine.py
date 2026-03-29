@@ -5,6 +5,7 @@ import numpy as np
 from datetime import datetime, time, timedelta
 from utils.nse_calendar import is_trading_day
 from utils.symbol_parser import detect_underlying   # P-17: shared underlying detection
+from utils.historical_lot_sizes import get_historical_lot_size
 
 class IntradayEngine:
     def __init__(self, data_manager, config):
@@ -118,6 +119,7 @@ class IntradayEngine:
                 f"Days with alert, no entry: {days_no_entries}  <- (validity window issue)\n"
                 f"Total trades:            {len(self.trades)}\n"
                 f"Final Capital:           {self.capital}\n"
+                f"SENSEX pre-launch skips: {sum(1 for d in self.day_diagnostics if d['skip_reason'] == 'sensex_not_launched_yet')}\n"
                 f"{'='*60}"
             )
 
@@ -180,7 +182,21 @@ class IntradayEngine:
             'skip_reason': None
         }
 
+        from datetime import date as _date
         self.logger.info(f"Processing expiry day: {underlying} on {date.date()}")
+        
+        # SENSEX weekly options did not exist before May 2023
+        SENSEX_WEEKLY_LAUNCH_DATE = _date(2023, 5, 1)
+        if underlying == 'SENSEX':
+            trade_date = date.date() if hasattr(date, 'date') else date
+            if trade_date < SENSEX_WEEKLY_LAUNCH_DATE:
+                self.logger.info(
+                    f"Skipping SENSEX on {trade_date} — weekly options not yet launched "
+                    f"(launched {SENSEX_WEEKLY_LAUNCH_DATE})"
+                )
+                diag['skip_reason'] = 'sensex_not_launched_yet'
+                self._log_day_diagnostic(diag)
+                return
         # Calculate RSI warmup correctly:
         period = self.config['strategy'].get('rsi', {}).get('period', 14)
         warmup_candles = self.config['strategy'].get('rsi', {}).get('warmup_periods', period * 2)
@@ -336,7 +352,8 @@ class IntradayEngine:
                             'signal': signal,
                             'dist': dist,
                             'volume': row['volume'],
-                            'entry_candle_open': row.get('open', signal['price'])
+                            'entry_candle_open': row.get('open', signal['price']),
+                            'entry_candle_datetime': str(row['datetime'])
                         })
                     except (ValueError, IndexError) as e:
                         self.logger.warning(f"Symbol parse failed: {symbol} — {e}")
@@ -392,17 +409,26 @@ class IntradayEngine:
         sl = self._round_to_tick(signal['sl'], underlying)
         targets = [self._round_to_tick(tgt, underlying) for tgt in signal['targets']]
         
-        # BUG-004 FIX: Use config for lot size instead of hardcoded values
-        # Historical lot sizes (NIFTY 75→65, BANKNIFTY 35→30 in Sep 2025)
-        # are documented in git history. Config always has current values.
-        # V6-P-003: Defensive nested dict .get()
-        lot_size = self.config['indices'].get(underlying, {}).get('lot_size')
-        if not lot_size:
+        # Try historical lot size first (correct for backtesting)
+        date_of_trade = time.date() if hasattr(time, 'date') else time
+        try:
+            lot_size = get_historical_lot_size(underlying, date_of_trade)
+        except ValueError as e:
             self.logger.warning(
-                f"No lot_size configured for {underlying} in config.yaml indices section. "
-                f"Skipping trade for {symbol}."
+                f"Cannot determine lot size for {underlying} on {date_of_trade}: {e}. "
+                f"Skipping trade."
             )
-            # No capital was deducted yet, so no refund needed (unlike instruction). Just abort.
+            return None
+        except Exception as e:
+            # Fallback to config if historical lookup fails unexpectedly
+            lot_size = self.config['indices'].get(underlying, {}).get('lot_size')
+            self.logger.warning(
+                f"Historical lot size lookup failed for {underlying}: {e}. "
+                f"Falling back to config value {lot_size}."
+            )
+            
+        if not lot_size:
+            self.logger.warning(f"No lot_size for {underlying} on {date_of_trade}. Skipping.")
             return None
         
         # Get lots_per_trade from config (for multi-lot mode)
@@ -419,6 +445,7 @@ class IntradayEngine:
         trade = {
             'symbol': symbol,
             'entry_time': time,
+            'entry_candle_datetime': str(candidate.get('entry_candle_datetime', '')),
             'entry_price': price,
             'sl': sl,
             'targets': targets,
@@ -427,9 +454,14 @@ class IntradayEngine:
             'pnl': 0,
             'cost': cost,
             'underlying': underlying,
+            'lot_size': lot_size,  # Store lot size for partial exits
             'running_capital': self.capital # Track capital at entry
         }
-        self.logger.info(f"ENTRY: {symbol} at {price} | Qty: {total_qty} ({lots_per_trade} lots) | Cost: {cost} | Cap: {self.capital}")
+        self.logger.info(
+            f"ENTRY: {symbol} at {price} | Qty: {total_qty} "
+            f"({lots_per_trade} lots × {lot_size} historical lot size on {date_of_trade}) "
+            f"| Cost: {cost} | Cap: {self.capital}"
+        )
         return trade
 
     def _manage_active_trade(self, trade, time, option_data):
@@ -446,6 +478,13 @@ class IntradayEngine:
         df = option_data[symbol]
         row = self._get_latest_candle(df, time)
         if row is None: return 0
+        
+        # Guard: do not check SL/TP on the same candle as entry
+        entry_candle_dt = trade.get('entry_candle_datetime', '')
+        current_candle_dt = str(row['datetime']) if row is not None else ''
+        if entry_candle_dt and current_candle_dt == entry_candle_dt:
+            self.logger.debug(f"[SAME-CANDLE GUARD] Skipped SL check on entry candle {current_candle_dt} for {trade['symbol']}")
+            return 0
         
         realized_pnl = 0
         
@@ -485,10 +524,19 @@ class IntradayEngine:
         if exit_mode == 'multi_lot' and lots_per_trade >= 3:
             # Get lot size for this underlying
             underlying = trade.get('underlying', 'NIFTY')
-            # BUG-004 FIX: Use config for lot size instead of hardcoded values
-            lot_size = self.config['indices'].get(underlying, {}).get('lot_size', 1)
+            
+            # Use lot_size stored in trade or look up historically
+            if trade.get('lot_size'):
+                lot_size = trade['lot_size']
+            else:
+                try:
+                    entry_date = trade['entry_time'].date() if hasattr(trade['entry_time'], 'date') else trade['entry_time']
+                    lot_size = get_historical_lot_size(underlying, entry_date)
+                except Exception:
+                    lot_size = self.config['indices'].get(underlying, {}).get('lot_size', 1)
+            
             if lot_size == 1 and underlying not in ('UNKNOWN',):
-                self.logger.warning(f"lot_size for {underlying} defaulted to 1 — check config.yaml")
+                self.logger.warning(f"lot_size for {underlying} defaulted to 1 — check config.yaml or history")
             
             # Check TP1 (exit 1 lot)
             if trade['tp_hits'] == 0 and row['high'] >= trade['targets'][0]:
