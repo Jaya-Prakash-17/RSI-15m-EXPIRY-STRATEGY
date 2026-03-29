@@ -35,7 +35,8 @@ class IntradayEngine:
         return None if idx < 0 else df.iloc[idx]
 
     def _round_to_tick(self, price, underlying):
-        tick_size = self.config['indices'][underlying]['tick_size']
+        idx_cfg = self.config['indices'].get(underlying, {})
+        tick_size = idx_cfg.get('tick_size', 0.05) if idx_cfg else 0.05
         return round(price / tick_size) * tick_size
 
     def _is_expiry_day(self, underlying: str, date) -> bool:
@@ -100,6 +101,10 @@ class IntradayEngine:
             self.dm.clear_cache()
             current_date += pd.Timedelta(days=1)
         
+        # V10: Post-backtest safe_sl compliance check
+        if self.config['strategy'].get('safe_sl_mode', False):
+            self._verify_safe_sl_compliance(self.trades)
+        
         return self.generate_report()
 
     def print_diagnostic_summary(self):
@@ -155,10 +160,10 @@ class IntradayEngine:
                 sample_existing = f"DIRECTORY NOT FOUND: {dir_path}"
             
             if os.path.exists(expected_path):
-                self.logger.info(f"[PATH CHECK] \u2705 {underlying}: symbol format matches files on disk")
+                self.logger.info(f"[PATH CHECK] OK {underlying}: symbol format matches files on disk")
             else:
                 self.logger.error(
-                    f"[PATH CHECK] \u274c {underlying}: FORMAT MISMATCH\n"
+                    f"[PATH CHECK] ERROR {underlying}: FORMAT MISMATCH\n"
                     f"  Generated: {sample_symbol}_15m.csv\n"
                     f"  On disk:   {sample_existing}\n"
                     f"  Fix: ensure build_option_symbol date format matches downloaded filenames"
@@ -191,7 +196,7 @@ class IntradayEngine:
             trade_date = date.date() if hasattr(date, 'date') else date
             if trade_date < SENSEX_WEEKLY_LAUNCH_DATE:
                 self.logger.info(
-                    f"Skipping SENSEX on {trade_date} — weekly options not yet launched "
+                    f"Skipping SENSEX on {trade_date} - weekly options not yet launched "
                     f"(launched {SENSEX_WEEKLY_LAUNCH_DATE})"
                 )
                 diag['skip_reason'] = 'sensex_not_launched_yet'
@@ -234,7 +239,7 @@ class IntradayEngine:
         strike_step = 50 if underlying == 'NIFTY' else 100
         if underlying == 'SENSEX': strike_step = 100
         
-        strike_range = self.config['strategy'].get('strike_range', 4)  # default ±4
+        strike_range = self.config['strategy'].get('strike_range', 4)  # default +/- 4
         center_strike = round(universe_ref_price / strike_step) * strike_step
         min_strike = center_strike - (strike_range * strike_step)
         max_strike = center_strike + (strike_range * strike_step)
@@ -279,6 +284,12 @@ class IntradayEngine:
         has_traded_today = False
         daily_pnl = 0
         
+        # V10-P-08: Circuit breaker tracking
+        consecutive_losses = 0
+        cooldown_candles_remaining = 0
+        max_consec = self.config.get('risk', {}).get('max_consecutive_losses', 999)
+        cooldown_n = self.config.get('risk', {}).get('consecutive_loss_cooldown', 0)
+        
         # Debug counter
         debug_count = 0
         max_debug = 3
@@ -302,17 +313,41 @@ class IntradayEngine:
                 if active_trade['status'] == 'CLOSED':
                     self.trades.append(active_trade)
                     daily_pnl += trade_pnl_realized
+                    
+                    # V10-P-08: Track consecutive losses for circuit breaker
+                    if trade_pnl_realized < 0:
+                        consecutive_losses += 1
+                        if consecutive_losses >= max_consec:
+                            self.logger.info(
+                                f"[CIRCUIT BREAKER] {consecutive_losses} consecutive losses. "
+                                f"Cooling off for {cooldown_n} candles."
+                            )
+                            cooldown_candles_remaining = cooldown_n
+                            consecutive_losses = 0  # Reset after triggering
+                    else:
+                        consecutive_losses = 0  # Reset on any win
+                    
                     active_trade = None
                 continue 
 
             if has_traded_today: continue 
             if daily_pnl <= -self.max_loss_per_day: break
             if t.time() > self.end_time: continue
+            
+            # V10-P-08: Circuit breaker cooldown
+            if cooldown_candles_remaining > 0:
+                cooldown_candles_remaining -= 1
+                continue  # Skip this candle, no new signals
+            
+            # V10-P-08: Hard stop if consecutive losses hit max with no cooldown
+            if consecutive_losses >= max_consec and cooldown_n == 0:
+                self.logger.info(f"[CIRCUIT BREAKER] {consecutive_losses} losses in a row. No new trades today.")
+                break
 
             candidates = []
             
             for symbol, df in option_data.items():
-                # t is the NEW spot candle timestamp — subtract 1s to get the JUST-CLOSED candle
+                # t is the NEW spot candle timestamp - subtract 1s to get the JUST-CLOSED candle
                 row = self._get_latest_candle(df, t - timedelta(seconds=1))
                 if row is None: continue
                 
@@ -356,7 +391,7 @@ class IntradayEngine:
                             'entry_candle_datetime': str(row['datetime'])
                         })
                     except (ValueError, IndexError) as e:
-                        self.logger.warning(f"Symbol parse failed: {symbol} — {e}")
+                        self.logger.warning(f"Symbol parse failed: {symbol} - {e}")
             
             if candidates:
                 candidates.sort(key=lambda x: (x['dist'], -x['volume']))
@@ -391,7 +426,12 @@ class IntradayEngine:
         # P-17: use shared symbol parser (checks BANKNIFTY before NIFTY to avoid substring collision)
         underlying = detect_underlying(symbol)
         if underlying == 'UNKNOWN':
-            underlying = 'NIFTY'   # safe fallback
+            self.logger.error(
+                f"[CRITICAL] Cannot determine underlying for symbol: {symbol}. "
+                f"Symbol format must contain BANKNIFTY, SENSEX, or NIFTY. "
+                f"Trade SKIPPED to prevent incorrect lot sizing."
+            )
+            return None
         alert_high = signal['price']  # Intended trigger price
         entry_candle_open = candidate.get('entry_candle_open', alert_high)
         
@@ -399,8 +439,8 @@ class IntradayEngine:
             # Gap-up: SL-M fills at open price
             actual_fill = entry_candle_open
             self.logger.info(
-                f"Gap-fill simulation: trigger=\u20b9{alert_high}, open=\u20b9{entry_candle_open}, "
-                f"fill=\u20b9{actual_fill}"
+                f"Gap-fill simulation: trigger=Rs.{alert_high}, open=Rs.{entry_candle_open}, "
+                f"fill=Rs.{actual_fill}"
             )
         else:
             actual_fill = alert_high  # Normal fill at trigger
@@ -434,6 +474,26 @@ class IntradayEngine:
         # Get lots_per_trade from config (for multi-lot mode)
         lots_per_trade = self.config['strategy'].get('lots_per_trade', 1)
         total_qty = lot_size * lots_per_trade
+        
+        # V10: CRITICAL FIX — Re-enforce safe_sl using ACTUAL historical qty
+        # The strategy computed SL using config lot_size (e.g. 65), but the engine
+        # trades historical lot_size (e.g. 75 for NIFTY in 2025). This mismatch
+        # causes loss to exceed safe_sl_max_loss. Recalculate here with real qty.
+        safe_sl_mode = self.config['strategy'].get('safe_sl_mode', False)
+        safe_sl_max_loss = self.config['strategy'].get('safe_sl_max_loss', 5000)
+        if safe_sl_mode and total_qty > 0:
+            sl_dist = price - sl
+            max_allowed_dist = safe_sl_max_loss / total_qty
+            if sl_dist > max_allowed_dist:
+                old_sl = sl
+                sl = self._round_to_tick(price - max_allowed_dist, underlying)
+                self.logger.info(
+                    f"[SAFE_SL RECALC] {symbol}: historical qty={total_qty} "
+                    f"(lot_size={lot_size}) differs from config. "
+                    f"SL adjusted: {old_sl:.2f} -> {sl:.2f} "
+                    f"(max_loss capped at Rs.{safe_sl_max_loss})"
+                )
+        
         cost = price * total_qty
         
         if self.capital < cost:
@@ -459,7 +519,7 @@ class IntradayEngine:
         }
         self.logger.info(
             f"ENTRY: {symbol} at {price} | Qty: {total_qty} "
-            f"({lots_per_trade} lots × {lot_size} historical lot size on {date_of_trade}) "
+            f"({lots_per_trade} lots * {lot_size} historical lot size on {date_of_trade}) "
             f"| Cost: {cost} | Cap: {self.capital}"
         )
         return trade
@@ -504,7 +564,27 @@ class IntradayEngine:
         sl_triggered = row['low'] <= trade['sl']
         
         if sl_triggered:
-            exit_price = min(row['open'], trade['sl']) # Handle gap down below SL
+            # V10: Intraday gap-down fix
+            # Only the 09:15 market-open candle can have real overnight gaps.
+            # All subsequent intraday candles trade continuously — if OHLC shows
+            # open < SL, the SL order was already filled at the SL price as price
+            # fell through it during the interval. Using min(open, sl) on intraday
+            # candles incorrectly worsens losses.
+            candle_time = pd.Timestamp(row['datetime']).time()
+            is_opening_candle = candle_time == pd.Timestamp('09:15').time()
+            
+            if is_opening_candle and row['open'] < trade['sl']:
+                # Overnight gap: price gapped below SL. Fill at open.
+                exit_price = row['open']
+                self.logger.info(
+                    f"OVERNIGHT GAP EXIT: {symbol} | "
+                    f"SL={trade['sl']:.2f} but open={row['open']:.2f} "
+                    f"(gap below SL). Exit at open."
+                )
+            else:
+                # Intraday: SL order fills AT the SL price.
+                exit_price = trade['sl']
+            
             pnl = (exit_price - trade['entry_price']) * trade['remaining_qty']
             realized_pnl = pnl + trade['partial_pnl']
             
@@ -517,12 +597,15 @@ class IntradayEngine:
             trade['status'] = 'CLOSED'
             trade['pnl'] = realized_pnl
             trade['running_capital'] = self.capital
-            self.logger.info(f"EXIT SL: {symbol} at {exit_price} | Remaining Qty: {trade['remaining_qty']} | PnL: {realized_pnl}")
+            self.logger.info(f"EXIT SL: {symbol} at {exit_price:.2f} | Remaining Qty: {trade['remaining_qty']} | PnL: {realized_pnl:.2f}")
             return realized_pnl
         
-        # Multi-lot mode: Check each target in order
+        # V10-P-03: Sequential TP chain — handles single-candle multi-target fills
+        # On expiry days, a single candle can spike from below T1 to above T3.
+        # With limit sell orders at T1, T2, T3, all three fill in that candle.
+        
+        # Multi-lot mode: check each TP level sequentially
         if exit_mode == 'multi_lot' and lots_per_trade >= 3:
-            # Get lot size for this underlying
             underlying = trade.get('underlying', 'NIFTY')
             
             # Use lot_size stored in trade or look up historically
@@ -536,99 +619,83 @@ class IntradayEngine:
                     lot_size = self.config['indices'].get(underlying, {}).get('lot_size', 1)
             
             if lot_size == 1 and underlying not in ('UNKNOWN',):
-                self.logger.warning(f"lot_size for {underlying} defaulted to 1 — check config.yaml or history")
+                self.logger.warning(f"lot_size for {underlying} defaulted to 1 - check config.yaml or history")
             
-            # Check TP1 (exit 1 lot)
-            if trade['tp_hits'] == 0 and row['high'] >= trade['targets'][0]:
-                exit_qty = lot_size  # Exit exactly 1 lot
-                exit_price = max(row['open'], trade['targets'][0]) # Handle gap up above TP1
-                pnl = (exit_price - trade['entry_price']) * exit_qty
+            # Sequential loop through TP levels in one candle
+            for tp_level in range(trade.get('tp_hits', 0), 3):
+                target_price = trade['targets'][tp_level]
                 
-                trade['remaining_qty'] -= exit_qty
-                trade['partial_pnl'] += pnl
-                trade['tp_hits'] = 1
+                if row['high'] < target_price:
+                    break  # price didn't reach this TP, stop
                 
-                # Trail SL by alert_range
-                new_sl = trade['sl'] + trade['alert_range']
-                trade['sl'] = new_sl
-                
-                # Credit this portion
-                self.capital += exit_price * exit_qty
-                
-                self.logger.info(f"PARTIAL EXIT TP1: {symbol} | Qty: {exit_qty} (1 lot) | Price: {exit_price} | PnL: {pnl} | New SL: {new_sl}")
-            
-            # Check TP2 (exit 1 lot)
-            elif trade['tp_hits'] == 1 and row['high'] >= trade['targets'][1]:
-                exit_qty = lot_size  # Exit exactly 1 lot
-                exit_price = max(row['open'], trade['targets'][1]) # Handle gap up above TP2
-                pnl = (exit_price - trade['entry_price']) * exit_qty
-                
-                trade['remaining_qty'] -= exit_qty
-                trade['partial_pnl'] += pnl
-                trade['tp_hits'] = 2
-                
-                # Trail SL by another alert_range
-                new_sl = trade['sl'] + trade['alert_range']
-                trade['sl'] = new_sl
-                
-                self.capital += exit_price * exit_qty
-                
-                self.logger.info(f"PARTIAL EXIT TP2: {symbol} | Qty: {exit_qty} (1 lot) | Price: {exit_price} | PnL: {pnl} | New SL: {new_sl}")
-            
-            # Check TP3 (exit remaining - should be 1 lot)
-            elif trade['tp_hits'] == 2 and row['high'] >= trade['targets'][2]:
-                exit_qty = trade['remaining_qty']  # All remaining (should be 1 lot)
-                exit_price = max(row['open'], trade['targets'][2]) # Handle gap up above TP3
-                pnl = (exit_price - trade['entry_price']) * exit_qty
-                
-                realized_pnl = pnl + trade['partial_pnl']
-                
-                self.capital += exit_price * exit_qty
-                
-                trade['exit_time'] = time
-                trade['exit_price'] = exit_price
-                trade['reason'] = 'TARGET'
-                trade['status'] = 'CLOSED'
-                trade['pnl'] = realized_pnl
-                trade['remaining_qty'] = 0
-                trade['running_capital'] = self.capital
-                
-                self.logger.info(f"FINAL EXIT TP3: {symbol} | Qty: {exit_qty} (1 lot) | Price: {exit_price} | Total PnL: {realized_pnl}")
-                return realized_pnl
+                if tp_level < 2:
+                    # Partial exit (TP1 or TP2)
+                    exit_qty = lot_size
+                    exit_price = max(row['open'], target_price)
+                    pnl = (exit_price - trade['entry_price']) * exit_qty
+                    trade['remaining_qty'] -= exit_qty
+                    trade['partial_pnl'] = trade.get('partial_pnl', 0) + pnl
+                    trade['tp_hits'] = tp_level + 1
+                    # Trail SL
+                    new_sl = trade['sl'] + trade.get('alert_range', 0)
+                    trade['sl'] = new_sl
+                    self.capital += exit_price * exit_qty
+                    self.logger.info(
+                        f"PARTIAL EXIT TP{tp_level+1}: {symbol} | Qty: {exit_qty} | "
+                        f"Price: {exit_price:.2f} | PnL: {pnl:.2f} | New SL: {new_sl:.2f}"
+                    )
+                else:
+                    # TP3: final exit of remaining quantity
+                    exit_qty = trade['remaining_qty']
+                    exit_price = max(row['open'], target_price)
+                    pnl = (exit_price - trade['entry_price']) * exit_qty
+                    realized_pnl = pnl + trade.get('partial_pnl', 0)
+                    self.capital += exit_price * exit_qty
+                    trade['exit_time'] = time
+                    trade['exit_price'] = exit_price
+                    trade['reason'] = 'TARGET'
+                    trade['status'] = 'CLOSED'
+                    trade['pnl'] = realized_pnl
+                    trade['remaining_qty'] = 0
+                    trade['running_capital'] = self.capital
+                    self.logger.info(
+                        f"FINAL EXIT TP3: {symbol} at {exit_price:.2f} | Total PnL: {realized_pnl:.2f}"
+                    )
+                    return realized_pnl
         
         else:
-            # Single lot mode: Exit fully at configured target (default: T2)
+            # Single lot mode: trail SL at intermediate TPs, full exit at configured target
             target_idx = self.config['strategy'].get('single_lot_exit_target', 2) - 1
             
-            # Trail on TP1 hit (to BE)
-            if target_idx >= 1 and trade['tp_hits'] < 1 and row['high'] >= trade['targets'][0]:
-                new_sl = trade['sl'] + trade['alert_range']
-                trade['sl'] = new_sl
-                trade['tp_hits'] = 1
-                self.logger.info(f"SINGLE_LOT TRAIL TP1: {symbol} | New SL: {new_sl} (Break-even)")
+            # Sequential TP trail: process each intermediate TP in order,
+            # even if price passed through multiple in the same candle
+            for tp in range(trade.get('tp_hits', 0), target_idx):
+                if row['high'] >= trade['targets'][tp]:
+                    new_sl = trade['sl'] + trade.get('alert_range', 0)
+                    trade['sl'] = new_sl
+                    trade['tp_hits'] = tp + 1
+                    self.logger.info(
+                        f"SINGLE_LOT TRAIL TP{tp+1}: {symbol} | "
+                        f"price {row['high']:.2f} >= target {trade['targets'][tp]:.2f} | "
+                        f"New SL: {new_sl:.2f}"
+                    )
+                else:
+                    break  # price didn't reach this TP, stop checking
             
-            # Trail on TP2 hit (to TP1 level)
-            if target_idx >= 2 and trade['tp_hits'] < 2 and row['high'] >= trade['targets'][1]:
-                new_sl = trade['sl'] + trade['alert_range']
-                trade['sl'] = new_sl
-                trade['tp_hits'] = 2
-                self.logger.info(f"SINGLE_LOT TRAIL TP2: {symbol} | New SL: {new_sl} (TP1 level)")
-
-            # Final Target Exit Condition
+            # Now check if final configured target was breached
             if row['high'] >= trade['targets'][target_idx]:
-                exit_price = max(row['open'], trade['targets'][target_idx]) # Handle gap up above target
+                exit_price = max(row['open'], trade['targets'][target_idx])
                 pnl = (exit_price - trade['entry_price']) * trade['qty']
-                
                 self.capital += exit_price * trade['qty']
-                
                 trade['exit_time'] = time
                 trade['exit_price'] = exit_price
                 trade['reason'] = f'TP{target_idx+1}'
                 trade['status'] = 'CLOSED'
                 trade['pnl'] = pnl
                 trade['running_capital'] = self.capital
-                
-                self.logger.info(f"EXIT TP{target_idx+1}: {symbol} at {exit_price} | PnL: {pnl}")
+                self.logger.info(
+                    f"EXIT TP{target_idx+1}: {symbol} at {exit_price:.2f} | PnL: {pnl:.2f}"
+                )
                 return pnl
         
         return 0
@@ -663,6 +730,57 @@ class IntradayEngine:
         
         self.logger.info(f"EXIT: {symbol} at {exit_price} | Remaining Qty: {remaining} | PnL: {pnl} | Reason: {reason}")
         return pnl
+
+    def _verify_safe_sl_compliance(self, trades):
+        """V10: Post-backtest check that no trade exceeded safe_sl_max_loss."""
+        safe_sl_max = self.config['strategy'].get('safe_sl_max_loss', float('inf'))
+        safe_sl_mode = self.config['strategy'].get('safe_sl_mode', False)
+        
+        if not safe_sl_mode or safe_sl_max == float('inf'):
+            return
+        
+        breaches = []
+        for trade in trades:
+            gross_loss = trade.get('pnl', 0)
+            if gross_loss < 0 and abs(gross_loss) > safe_sl_max * 1.1:  # 10% tolerance for rounding/gaps
+                breaches.append({
+                    'symbol': trade.get('symbol'),
+                    'entry_time': trade.get('entry_time'),
+                    'entry_price': trade.get('entry_price'),
+                    'sl': trade.get('sl'),
+                    'exit_price': trade.get('exit_price'),
+                    'original_sl': trade.get('original_sl'),
+                    'reason': trade.get('reason'),
+                    'actual_loss': abs(gross_loss),
+                    'limit': safe_sl_max,
+                    'excess': abs(gross_loss) - safe_sl_max
+                })
+        
+        losing_trades = [t for t in trades if t.get('pnl', 0) < 0]
+        
+        if breaches:
+            self.logger.warning(
+                f"\n{'='*60}\n"
+                f"SAFE_SL COMPLIANCE CHECK: {len(breaches)} BREACH(ES) FOUND\n"
+                f"{'='*60}"
+            )
+            for b in breaches:
+                self.logger.warning(
+                    f"  {b['symbol']} @ {b['entry_time']}: "
+                    f"loss=Rs.{b['actual_loss']:.0f} > limit=Rs.{b['limit']} "
+                    f"(excess: Rs.{b['excess']:.0f}) | "
+                    f"entry={b['entry_price']}, sl={b['sl']}, exit={b['exit_price']}, "
+                    f"orig_sl={b['original_sl']}, reason={b['reason']}"
+                )
+            self.logger.warning(
+                f"Total breaches: {len(breaches)} out of {len(losing_trades)} losing trades.\n"
+                f"{'='*60}"
+            )
+        else:
+            self.logger.info(
+                f"SAFE_SL COMPLIANCE: PASSED. All {len(losing_trades)} "
+                f"losing trades respected Rs.{safe_sl_max} limit."
+            )
 
     def generate_report(self):
         return pd.DataFrame(self.trades)

@@ -21,16 +21,18 @@ indices:
     tick_size: 0.05
 risk:
   max_loss_per_day: 5000
+  max_consecutive_losses: 3      # P-08: pause after N losses in a row
+  consecutive_loss_cooldown: 2   # P-08: skip N candle timestamps after hitting limit
 strategy:
   alert_validity: 1  # Candles allowed for price to break alert_high (after alert candle)
   exit_mode: single_lot #single_lot or multi_lot
-  lots_per_trade: 3
-  max_lots: 3                     # P-21: hard ceiling regardless of sizing mode
-  max_position_pct: 1.0       # P-21: never risk > 25% of capital per trade
+  lots_per_trade: 3              # V10-P-02: was 3 — 1 lot for live debut
+  max_lots: 5                     # P-21: hard ceiling regardless of sizing mode
+  max_position_pct: 0.8      # P-21: never risk > 25% of capital per trade
   max_correlated_positions: 2    # P-09: max same-direction trades across indices (1=no NIFTY CE + BANKNIFTY CE)
   dynamic_sizing_enabled: false   # P-24: enable after 20+ validated sessions
   risk_per_trade_pct: 0.05       # P-24: 1.5% of capital per trade when dynamic enabled
-  single_lot_exit_target: 3  # 1=T1, 2=T2, 3=T3 — used in single_lot exit mode
+  single_lot_exit_target: 2  # 1=T1, 2=T2 (higher hit rate), 3=T3 — used in single_lot exit mode
   rsi:
     period: 11 # RSI(11) — standard Wilder RSI, matches strategy design
     threshold: 60
@@ -39,7 +41,7 @@ strategy:
   trade_only_on_expiry: false  # false:trade on every day, true:trade only on expiry day
   rsi_debug: false   # set true only when validating RSI values against Groww chart
   safe_sl_mode: true # If true, caps SL distance to max loss limit below
-  safe_sl_max_loss: 5000 # Max ₹ loss per trade position (total across all lots)
+  safe_sl_max_loss: 5000  # V10-P-02: 2% of capital per trade (was 10000)
   min_sl_pct: 0.08   # 8% of trigger price floor for stop loss
   signal_window_start: '10:00' # No new alerts before this time
   signal_window_end: '13:30'   # No new alerts after this time

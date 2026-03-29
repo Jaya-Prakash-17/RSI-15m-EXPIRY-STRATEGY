@@ -10,11 +10,15 @@ def detect_underlying(symbol: str) -> str:
     Detect underlying index from a Groww option symbol.
     IMPORTANT: Checks BANKNIFTY before NIFTY — 'NIFTY' is a substring of 'BANKNIFTY'.
 
+    WARNING: If this returns 'UNKNOWN', the caller MUST reject/skip the trade.
+    Do NOT use a fallback like `underlying = 'NIFTY'` — this causes silent
+    position sizing errors (e.g., SENSEX lot=20 vs NIFTY lot=65 = 3.25x error).
+
     Examples:
         detect_underlying('NSE-BANKNIFTY-30Mar26-52000-PE') → 'BANKNIFTY'
         detect_underlying('NSE-NIFTY-25Mar26-22500-CE')     → 'NIFTY'
         detect_underlying('BSE-SENSEX-27Mar26-75000-CE')    → 'SENSEX'
-        detect_underlying('UNKNOWN-SYM')                    → 'UNKNOWN'
+        detect_underlying('UNKNOWN-SYM')                    → 'UNKNOWN'  # MUST skip trade
     """
     for u in ('BANKNIFTY', 'SENSEX', 'NIFTY'):
         if u in symbol:

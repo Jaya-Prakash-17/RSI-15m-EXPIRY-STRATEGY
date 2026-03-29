@@ -202,6 +202,23 @@ def validate_config(config):
             logger.critical(f"CRITICAL: indices.{idx}.lot_size must be > 0")
             return False
 
+    # ── P-SIZING: Validate per-trade risk as % of capital ────────────────────
+    safe_sl = config['strategy'].get('safe_sl_max_loss', 0)
+    capital = config['capital'].get('initial', 100000)
+    if safe_sl > 0 and capital > 0:
+        risk_pct = (safe_sl / capital) * 100
+        if risk_pct > 5.0:
+            logger.critical(
+                f"CRITICAL: safe_sl_max_loss Rs.{safe_sl} = {risk_pct:.1f}% of capital. "
+                f"Max recommended: 2-3% per trade. Reduce safe_sl_max_loss."
+            )
+            return False
+        elif risk_pct > 3.0:
+            logger.warning(
+                f"WARNING: safe_sl_max_loss Rs.{safe_sl} = {risk_pct:.1f}% of capital. "
+                f"Consider reducing to <= 2% (Rs.{int(capital*0.02)}) for safer drawdown."
+            )
+
     # ── paper_trading must be a boolean ──────────────────────────────────────
     paper = config['trading'].get('paper_trading')
     if not isinstance(paper, bool):

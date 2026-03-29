@@ -46,7 +46,7 @@ class ExpiryRSIBreakout:
         self.safe_sl_max_loss = config['strategy'].get('safe_sl_max_loss', 5000)
         
         if self.safe_sl_mode:
-            self.logger.info(f"🛡️ SAFE_SL Mode Enabled | Max Loss Floor: ₹{self.safe_sl_max_loss}")
+            self.logger.info(f"SAFE_SL Mode Enabled | Max Loss Floor: Rs.{self.safe_sl_max_loss}")
 
     def export_state(self) -> dict:
         """Export strategy state for persistence."""
@@ -212,42 +212,81 @@ class ExpiryRSIBreakout:
     def _calculate_effective_sl(self, symbol, entry_price, alert_low):
         """
         Calculates SL based on Alert Range, SL Floor, and SAFE_SL mode.
+        
+        Application order (critical for correctness):
+          1. Raw distance: entry_price - alert_low + 1.0
+          2. SL Floor (min_sl_pct): ensures SL has minimum breathing room
+          3. SAFE_SL cap: hard ceiling on loss — ALWAYS wins over floor
+        
         Returns: (effective_sl, is_safe_applied, raw_sl)
         """
-        # 1. Base distance (High - Low + ₹1 buffer)
+        # 1. Base distance (High - Low + Rs.1 buffer)
         raw_dist = entry_price - alert_low + 1.0
         raw_sl = round(entry_price - raw_dist, 2)
         
         is_safe_applied = False
-        dist_after_safe = raw_dist
         
-        # 2. Apply SAFE_SL cap if enabled
+        # 2. Apply SL Floor FIRST (minimum distance for breathing room)
+        min_sl_dist = entry_price * self.min_sl_pct
+        effective_dist = max(raw_dist, min_sl_dist)
+        
+        if effective_dist > raw_dist:
+            self.logger.debug(
+                f"[{symbol}] SL floor applied: raw_dist={raw_dist:.2f} "
+                f"-> floor={effective_dist:.2f} (min_sl_pct={self.min_sl_pct})"
+            )
+        
+        # 3. Apply SAFE_SL cap LAST — this is the hard ceiling, always wins
         if self.safe_sl_mode:
             try:
                 parts = symbol.split('-')
                 underlying = parts[1] if len(parts) > 1 else 'NIFTY'
                 
-                lots = self.config['strategy'].get('lots_per_trade', 3)
+                lots = self.config['strategy'].get('lots_per_trade', 1)
                 lot_size = self.config['indices'].get(underlying, {}).get('lot_size', 50)
                 qty = lots * lot_size
                 
+                self.logger.debug(
+                    f"[SAFE_SL CALC] {symbol}: entry={entry_price}, "
+                    f"alert_low={alert_low}, raw_dist={raw_dist:.2f}, "
+                    f"lots={lots}, lot_size={lot_size}, qty={qty}, "
+                    f"max_allowed_dist={self.safe_sl_max_loss/qty:.2f}"
+                )
+                
                 if qty > 0:
                     max_allowed_dist = self.safe_sl_max_loss / qty
-                    if dist_after_safe > max_allowed_dist:
-                        self.logger.info(f"🛡️ [{symbol}] SAFE_SL applied: cap dist {dist_after_safe:.2f} -> {max_allowed_dist:.2f}")
-                        dist_after_safe = max_allowed_dist
+                    if effective_dist > max_allowed_dist:
+                        self.logger.info(
+                            f"[SAFE_SL APPLIED] {symbol}: dist={effective_dist:.2f} "
+                            f"capped to {max_allowed_dist:.2f} "
+                            f"(safe_sl_max_loss=Rs.{self.safe_sl_max_loss}/qty={qty}). "
+                            f"SL: {entry_price - effective_dist:.2f} -> "
+                            f"{entry_price - max_allowed_dist:.2f}"
+                        )
+                        effective_dist = max_allowed_dist
                         is_safe_applied = True
             except Exception as e:
                 self.logger.error(f"Error in SAFE_SL calculation for {symbol}: {e}")
-
-        # 3. Apply SL Floor (minimum distance)
-        min_sl_dist = entry_price * self.min_sl_pct
-        effective_dist = max(dist_after_safe, min_sl_dist)
         
-        if effective_dist > dist_after_safe:
-            self.logger.debug(f"[{symbol}] SL floor applied: {dist_after_safe:.2f} -> {effective_dist:.2f}")
-            
         effective_sl = round(entry_price - effective_dist, 2)
+        
+        # 4. Post-calculation assertion: verify max loss doesn't exceed limit
+        if self.safe_sl_mode:
+            try:
+                max_loss_check = (entry_price - effective_sl) * qty
+                if max_loss_check > self.safe_sl_max_loss * 1.05:  # 5% tolerance for rounding
+                    self.logger.error(
+                        f"[SAFE_SL ASSERTION FAILED] {symbol}: "
+                        f"effective_sl={effective_sl:.2f} gives max_loss=Rs.{max_loss_check:.0f} "
+                        f"which exceeds safe_sl_max_loss=Rs.{self.safe_sl_max_loss}. "
+                        f"Force-correcting."
+                    )
+                    corrected_dist = self.safe_sl_max_loss / qty
+                    effective_sl = round(entry_price - corrected_dist, 2)
+                    is_safe_applied = True
+            except Exception:
+                pass  # qty may not be defined if safe_sl_mode parsing failed above
+        
         return effective_sl, is_safe_applied, raw_sl
 
     def consume_alert(self, symbol):
@@ -364,8 +403,8 @@ class ExpiryRSIBreakout:
             alert_candle = state['alert']
             if current_candle['close'] < alert_candle['low']:
                 self.logger.info(
-                    f"[{symbol}] Alert NEGATED: close=\u20b9{current_candle['close']:.2f} "
-                    f"< alert_low=\u20b9{alert_candle['low']:.2f}"
+                    f"[{symbol}] Alert NEGATED: close={current_candle['close']:.2f} "
+                    f"< alert_low={alert_candle['low']:.2f}"
                 )
                 state['alert'] = None
                 state['age'] = 0
