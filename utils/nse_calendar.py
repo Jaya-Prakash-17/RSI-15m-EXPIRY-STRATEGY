@@ -1,8 +1,81 @@
-# NSE Holiday Calendar
-# Format: YYYY-MM-DD
-# Source: NSE official holiday calendar
+
+# Holiday data completeness tracking
+HOLIDAY_DATA_VERIFIED_THROUGH = "2024-12-31"  # Update after each annual verification
+HOLIDAY_DATA_SOURCE = "https://www.nseindia.com/resources/exchange-communication-holidays"
 
 NSE_HOLIDAYS = {
+    2020: [
+        '2020-02-21',  # Mahashivratri
+        '2020-03-10',  # Holi
+        '2020-04-02',  # Ram Navami
+        '2020-04-10',  # Good Friday
+        '2020-04-14',  # Dr. Ambedkar Jayanti
+        '2020-05-01',  # Maharashtra Day
+        '2020-10-02',  # Gandhi Jayanti
+        '2020-11-16',  # Gurunanak Jayanti
+        '2020-12-25',  # Christmas
+    ],
+    2021: [
+        '2021-01-26',  # Republic Day
+        '2021-03-11',  # Mahashivratri
+        '2021-03-29',  # Holi
+        '2021-04-02',  # Good Friday
+        '2021-04-14',  # Dr. Ambedkar Jayanti
+        '2021-04-21',  # Ram Navami
+        '2021-05-13',  # Eid ul-Fitr
+        '2021-07-21',  # Bakri Id
+        '2021-10-15',  # Dussehra
+        '2021-11-04',  # Diwali Laxmi Pujan
+        '2021-11-05',  # Diwali Balipratipada
+        '2021-11-19',  # Gurunanak Jayanti
+    ],
+    2022: [
+        '2022-01-26',  # Republic Day
+        '2022-03-01',  # Mahashivratri
+        '2022-03-18',  # Holi
+        '2022-04-14',  # Dr. Ambedkar Jayanti
+        '2022-04-15',  # Good Friday
+        '2022-05-03',  # Eid ul-Fitr
+        '2022-08-09',  # Muharram
+        '2022-08-15',  # Independence Day
+        '2022-10-05',  # Dussehra
+        '2022-10-24',  # Diwali Laxmi Pujan
+        '2022-10-26',  # Diwali Balipratipada
+        '2022-11-08',  # Gurunanak Jayanti
+    ],
+    2023: [
+        '2023-01-26',  # Republic Day
+        '2023-03-07',  # Holi
+        '2023-03-30',  # Ram Navami
+        '2023-04-04',  # Mahavir Jayanti
+        '2023-04-07',  # Good Friday
+        '2023-04-14',  # Dr. Ambedkar Jayanti
+        '2023-05-01',  # Maharashtra Day
+        '2023-06-29',  # Bakri Id
+        '2023-08-15',  # Independence Day
+        '2023-09-19',  # Ganesh Chaturthi
+        '2023-10-02',  # Gandhi Jayanti
+        '2023-10-24',  # Dussehra
+        '2023-11-13',  # Diwali Laxmi Pujan
+        '2023-11-14',  # Diwali Balipratipada
+        '2023-11-27',  # Gurunanak Jayanti
+        '2023-12-25',  # Christmas
+    ],
+    2024: [
+        '2024-01-26',  # Republic Day
+        '2024-03-25',  # Holi
+        '2024-04-11',  # Id-ul-Fitr
+        '2024-04-17',  # Ram Navami
+        '2024-05-01',  # Maharashtra Day
+        '2024-05-23',  # Buddha Purnima
+        '2024-06-17',  # Bakri Id
+        '2024-07-17',  # Muharram
+        '2024-08-15',  # Independence Day
+        '2024-10-02',  # Gandhi Jayanti
+        '2024-11-01',  # Diwali Laxmi Pujan
+        '2024-11-15',  # Gurunanak Jayanti
+        '2024-12-25',  # Christmas
+    ],
     2025: [
         '2025-01-26',  # Republic Day
         '2025-03-14',  # Holi
@@ -31,8 +104,6 @@ NSE_HOLIDAYS = {
         '2026-05-01',  # Maharashtra Day
         '2026-05-27',  # Bakri Id
         '2026-08-15',  # Independence Day
-        # '2026-08-16' removed — Aug 16 2026 is a Sunday (already non-trading)
-        # Ganesh Chaturthi falls on Sunday; no weekday market closure in 2026
         '2026-10-02',  # Gandhi Jayanti
         '2026-10-10',  # Dussehra
         '2026-10-20',  # Diwali (Laxmi Pujan)
@@ -116,3 +187,18 @@ def validate_holiday_list():
             d = datetime.strptime(h, '%Y-%m-%d').date()
             if d.weekday() >= 5:
                 print(f"WARNING: {h} is a weekend ({d.strftime('%A')}) in NSE_HOLIDAYS[{year}]")
+
+def get_trading_days_count(start_date, end_date) -> int:
+    """Count actual trading days between two dates (inclusive).
+    Useful for estimating data download size before hitting API."""
+    from datetime import timedelta
+    count = 0
+    d = start_date
+    while d <= end_date:
+        if is_trading_day(d):
+            count += 1
+        d += timedelta(days=1)
+    return count
+
+if __name__ == '__main__':
+    validate_holiday_list()

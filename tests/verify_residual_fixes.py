@@ -76,6 +76,38 @@ check("POST-008: datetime.min removed",
 check("POST-009: RSI check closed candle log",
       "RSI check on CLOSED candle" in lt or "closed candle" in lt.lower())
 
+# HISTORICAL-001: Historical lot sizes file exists
+try:
+    from utils.historical_lot_sizes import get_historical_lot_size
+    from datetime import date as _d
+    lot_check = (
+        get_historical_lot_size('NIFTY', _d(2023, 1, 1)) == 75 and
+        get_historical_lot_size('BANKNIFTY', _d(2024, 11, 19)) == 25 and
+        get_historical_lot_size('BANKNIFTY', _d(2024, 11, 20)) == 35
+    )
+    check("HISTORICAL-001: Historical lot sizes correct", lot_check)
+except Exception as e:
+    check("HISTORICAL-001: Historical lot sizes", False, str(e))
+
+# HISTORICAL-002: Backtest engine uses historical lot sizes
+check("HISTORICAL-002: intraday_engine imports historical_lot_sizes",
+      "from utils.historical_lot_sizes import get_historical_lot_size" in bt)
+check("HISTORICAL-002: intraday_engine calls get_historical_lot_size",
+      "get_historical_lot_size" in bt)
+
+# HISTORICAL-003: NSE holidays cover 2020
+with open('utils/nse_calendar.py', encoding='utf-8') as f:
+    nc = f.read()
+check("HISTORICAL-003: NSE holidays include 2020",
+      "2020" in nc and ("2020-02-21" in nc or "2020-03-10" in nc))
+check("HISTORICAL-003: NSE holidays include 2024",
+      "2024" in nc and "2024-01-26" in nc)
+
+# HISTORICAL-004: SENSEX guard in backtest engine
+check("HISTORICAL-004: SENSEX pre-launch guard in backtest",
+      "sensex_not_launched_yet" in bt or "SENSEX_WEEKLY_LAUNCH_DATE" in bt or
+      "2023, 5, 1" in bt)
+
 print(f"\n{'='*35}")
 print(f"  {passed} passed  |  {failed} failed")
 print(f"{'='*35}\n")

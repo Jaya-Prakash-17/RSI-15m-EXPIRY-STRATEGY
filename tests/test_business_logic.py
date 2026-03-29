@@ -88,3 +88,62 @@ def test_alert_age_increments_when_not_tradable():
     s.check_signal(symbol, candle, prices, is_tradable=False)
     assert s.state[symbol]['age'] == 1, \
         f"Alert age must be 1 after one candle outside window, got {s.state[symbol]['age']}"
+
+class TestHistoricalLotSizes:
+    def test_nifty_lot_size_pre_2025(self):
+        from utils.historical_lot_sizes import get_historical_lot_size
+        from datetime import date
+        assert get_historical_lot_size('NIFTY', date(2023, 6, 15)) == 75
+        assert get_historical_lot_size('NIFTY', date(2024, 11, 19)) == 75
+
+    def test_nifty_lot_size_post_reform(self):
+        from utils.historical_lot_sizes import get_historical_lot_size
+        from datetime import date
+        assert get_historical_lot_size('NIFTY', date(2025, 9, 1)) == 65
+        assert get_historical_lot_size('NIFTY', date(2026, 3, 1)) == 65
+
+    def test_banknifty_lot_size_three_eras(self):
+        from utils.historical_lot_sizes import get_historical_lot_size
+        from datetime import date
+        assert get_historical_lot_size('BANKNIFTY', date(2023, 1, 26)) == 25   # pre-Nov 2024
+        assert get_historical_lot_size('BANKNIFTY', date(2024, 11, 20)) == 35  # post-Nov 2024
+        assert get_historical_lot_size('BANKNIFTY', date(2025, 9, 1)) == 30   # post-Sep 2025
+
+    def test_banknifty_boundary_exact(self):
+        from utils.historical_lot_sizes import get_historical_lot_size
+        from datetime import date
+        assert get_historical_lot_size('BANKNIFTY', date(2024, 11, 19)) == 25  # day before change
+        assert get_historical_lot_size('BANKNIFTY', date(2024, 11, 20)) == 35  # change day itself
+
+    def test_sensex_lot_size(self):
+        from utils.historical_lot_sizes import get_historical_lot_size
+        from datetime import date
+        assert get_historical_lot_size('SENSEX', date(2023, 5, 1)) == 10
+        assert get_historical_lot_size('SENSEX', date(2024, 11, 19)) == 10
+        assert get_historical_lot_size('SENSEX', date(2024, 11, 20)) == 20
+
+    def test_sensex_before_launch_raises(self):
+        from utils.historical_lot_sizes import get_historical_lot_size
+        from datetime import date
+        import pytest
+        with pytest.raises(ValueError, match='SENSEX options'):
+            get_historical_lot_size('SENSEX', date(2022, 12, 1))
+
+    def test_historical_lot_size_accepts_datetime(self):
+        from utils.historical_lot_sizes import get_historical_lot_size
+        from datetime import datetime
+        result = get_historical_lot_size('NIFTY', datetime(2023, 6, 15, 10, 30, 0))
+        assert result == 75
+
+    def test_backtest_pnl_uses_historical_not_config_lot_size(self):
+        '''Regression: _enter_trade must use historical lot size not config lot size.'''
+        # If this fails, backtest P&L is wrong for pre-Sep-2025 dates
+        from datetime import date
+        from utils.historical_lot_sizes import get_historical_lot_size
+        config_lot = 65  # current config value for NIFTY
+        historical_lot = get_historical_lot_size('NIFTY', date(2023, 6, 15))
+        assert historical_lot == 75
+        assert historical_lot != config_lot, (
+            "Historical lot size must differ from current config for 2023 dates. "
+            "If this test fails, backtest P&L calculations are inflating/deflating all 2023 trades."
+        )

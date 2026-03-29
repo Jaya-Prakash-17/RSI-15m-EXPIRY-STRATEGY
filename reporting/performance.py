@@ -269,8 +269,8 @@ class PerformanceReporter:
                                    - trades_df['charges']
                                    - trades_df['slippage'])
             self.logger.info(
-                f"Slippage buffer applied: ₹{slip_amount}/trade × "
-                f"{len(trades_df)} trades = ₹{trades_df['slippage'].sum():.2f} total"
+                f"Slippage buffer applied: Rs.{slip_amount}/trade x "
+                f"{len(trades_df)} trades = Rs.{trades_df['slippage'].sum():.2f} total"
             )
         else:
             trades_df['slippage'] = 0.0
@@ -284,12 +284,12 @@ class PerformanceReporter:
         
         # Print comprehensive console report
         print("\n" + "="*70)
-        print(" 📊 BACKTEST PERFORMANCE REPORT")
+        print(" BACKTEST PERFORMANCE REPORT")
         print("="*70)
         
         # Config parameters
         if self.config:
-            print("\n📋 STRATEGY PARAMETERS")
+            print("\n STRATEGY PARAMETERS")
             print("-"*70)
             if 'backtest' in self.config:
                 bt = self.config['backtest']
@@ -301,43 +301,43 @@ class PerformanceReporter:
                 print(f"  Exit Mode:       {st.get('exit_mode', 'N/A')}")
                 print(f"  Lots/Trade:      {st.get('lots_per_trade', 'N/A')}")
             if 'capital' in self.config:
-                print(f"  Initial Capital: ₹{self.config['capital'].get('initial', 'N/A'):,}")
+                print(f"  Initial Capital: Rs.{self.config['capital'].get('initial', 'N/A'):,}")
         
-        print("\n📈 TRADE STATISTICS")
+        print("\n TRADE STATISTICS")
         print("-"*70)
         print(f"  Total Trades:    {stats['total_trades']}")
         print(f"  Winning Trades:  {stats['winning_trades']} ({stats['win_rate']}%)")
         print(f"  Losing Trades:   {stats['losing_trades']}")
         print(f"  Win/Loss Streak: {stats['max_win_streak']} / {stats['max_loss_streak']}")
         
-        print("\n💰 PROFIT & LOSS")
+        print("\n PROFIT & LOSS")
         print("-"*70)
-        print(f"  Gross P&L:       ₹{trades_df['pnl_gross'].sum():,.2f}")
-        print(f"  Total Charges:   ₹{total_charges:,.2f}")
+        print(f"  Gross P&L:       Rs.{trades_df['pnl_gross'].sum():,.2f}")
+        print(f"  Total Charges:   Rs.{total_charges:,.2f}")
         if total_slippage > 0:
-            print(f"  Slippage Buffer: ₹{total_slippage:,.2f}  (₹{slip_amount:.0f}/trade)")
-        print(f"  Net P&L:         ₹{stats['total_pnl']:,.2f}")
-        print(f"  Avg P&L/Trade:   ₹{stats['avg_pnl_per_trade']:,.2f}")
-        print(f"  Avg Win:         ₹{stats['avg_win']:,.2f}")
-        print(f"  Avg Loss:        ₹{stats['avg_loss']:,.2f}")
-        print(f"  Largest Win:     ₹{stats['largest_win']:,.2f}")
-        print(f"  Largest Loss:    ₹{stats['largest_loss']:,.2f}")
+            print(f"  Slippage Buffer: Rs.{total_slippage:,.2f}  (Rs.{slip_amount:.0f}/trade)")
+        print(f"  Net P&L:         Rs.{stats['total_pnl']:,.2f}")
+        print(f"  Avg P&L/Trade:   Rs.{stats['avg_pnl_per_trade']:,.2f}")
+        print(f"  Avg Win:         Rs.{stats['avg_win']:,.2f}")
+        print(f"  Avg Loss:        Rs.{stats['avg_loss']:,.2f}")
+        print(f"  Largest Win:     Rs.{stats['largest_win']:,.2f}")
+        print(f"  Largest Loss:    Rs.{stats['largest_loss']:,.2f}")
         
-        print("\n📊 RISK METRICS")
+        print("\n RISK METRICS")
         print("-"*70)
         print(f"  Profit Factor:   {stats['profit_factor']}")
         print(f"  Risk/Reward:     {stats['risk_reward_ratio']}")
-        print(f"  Expectancy:      ₹{stats['expectancy']:,.2f}")
-        print(f"  Max Drawdown:    ₹{stats['max_drawdown']:,.2f} ({stats['max_drawdown_pct']}%)")
-        print(f"  P&L Std Dev:     ₹{stats['pnl_std_dev']:,.2f}")
+        print(f"  Expectancy:      Rs.{stats['expectancy']:,.2f}")
+        print(f"  Max Drawdown:    Rs.{stats['max_drawdown']:,.2f} ({stats['max_drawdown_pct']}%)")
+        print(f"  P&L Std Dev:     Rs.{stats['pnl_std_dev']:,.2f}")
         
-        print("\n📉 RISK-ADJUSTED RETURNS")
+        print("\n RISK-ADJUSTED RETURNS")
         print("-"*70)
         print(f"  Sharpe Ratio:    {stats['sharpe_ratio']}")
         print(f"  Sortino Ratio:   {stats['sortino_ratio']}")
         print(f"  Calmar Ratio:    {stats['calmar_ratio']}")
         
-        print("\n⏱️ TIMING")
+        print("\n TIMING")
         print("-"*70)
         print(f"  Avg Holding:     {stats['avg_holding_mins']} mins")
         
@@ -361,14 +361,20 @@ class PerformanceReporter:
                 json.dump(report_data, f, indent=2, default=str)
             self.logger.info(f"Summary report saved to: {json_filename}")
             
-            # V6-P-004: Generate PNG report
+            # Generate PNG report (non-overlapping layout)
             img_filename = os.path.join(self.reports_dir, f"backtest_{timestamp}.png")
             self._generate_report_image(trades_df, stats, img_filename)
             self.logger.info(f"PNG report saved to: {img_filename}")
             
-            print(f"\n📁 Reports saved to '{self.reports_dir}' directory")
+            # Generate interactive HTML report
+            html_filename = os.path.join(self.reports_dir, f"backtest_{timestamp}.html")
+            self._generate_html_report(trades_df, stats, html_filename)
+            self.logger.info(f"HTML report saved to: {html_filename}")
+            
+            print(f"\n Reports saved to '{self.reports_dir}' directory")
             print(f"   - JSON: {json_filename}")
-            print(f"   - PNG:  {img_filename}\n")
+            print(f"   - PNG:  {img_filename}")
+            print(f"   - HTML: {html_filename}\n")
         
         return report_data
 
@@ -379,9 +385,10 @@ class PerformanceReporter:
         filepath: str
     ) -> str:
         """
-        Generate a single matplotlib PNG with equity curve, P&L bars,
-        monthly breakdown, and stats panel.
-        Saves to filepath and returns the path.
+        Generate a clean, non-overlapping PNG with 6-panel layout:
+        Row 1: Equity Curve | Stats Panel
+        Row 2: P&L Per Trade | Monthly P&L
+        Row 3: Win/Loss Distribution | Drawdown Timeline
         """
         try:
             import matplotlib
@@ -389,122 +396,438 @@ class PerformanceReporter:
             import matplotlib.pyplot as plt
             from matplotlib.figure import Figure
             from matplotlib.gridspec import GridSpec
+            import matplotlib.ticker as mticker
         except ImportError:
             self.logger.warning("matplotlib not installed. Cannot generate PNG report.")
             return ""
 
-        fig = Figure(figsize=(14, 9), dpi=150)
+        fig = Figure(figsize=(20, 16), dpi=130, facecolor='#1a1a2e')
         
         if trades_df.empty:
             ax = fig.add_subplot(111)
-            ax.text(0.5, 0.5, "No trades in period", ha='center', va='center', fontsize=20)
+            ax.text(0.5, 0.5, "No trades in period", ha='center', va='center', fontsize=20, color='white')
+            ax.set_facecolor('#1a1a2e')
             ax.axis('off')
-            fig.savefig(filepath, bbox_inches='tight')
+            fig.savefig(filepath, bbox_inches='tight', facecolor=fig.get_facecolor())
             return filepath
-            
-        gs = GridSpec(2, 2, figure=fig, width_ratios=[1.5, 1], height_ratios=[1, 1])
-        gs.update(wspace=0.1, hspace=0.3)
         
-        # Colors
-        c_green = '#27a844'
-        c_red = '#dc3545'
-        c_gray = '#6c757d'
-        c_blue = '#0d6efd'
+        # Layout: 3 rows, 2 columns with generous spacing
+        gs = GridSpec(3, 2, figure=fig, width_ratios=[1.6, 1], height_ratios=[1.1, 0.9, 0.8])
+        gs.update(wspace=0.25, hspace=0.40, left=0.06, right=0.96, top=0.90, bottom=0.06)
         
-        # Date strings for title
+        # Dark theme colors
+        bg_dark = '#16213e'
+        bg_card = '#0f3460'
+        c_green = '#00d166'
+        c_red = '#ff4757'
+        c_cyan = '#00d2ff'
+        c_gold = '#ffd700'
+        c_gray = '#8892b0'
+        c_text = '#e6f1ff'
+        c_muted = '#a8b2d1'
+        
+        # Date strings
         start_dt = pd.to_datetime(self.config.get('backtest', {}).get('start_date', '2026-01-01'))
         end_dt = pd.to_datetime(self.config.get('backtest', {}).get('end_date', '2026-03-20'))
+        initial_cap = self.config.get('capital', {}).get('initial', 100000)
         
-        fig.suptitle(f"RSI-15m Backtest — {datetime.now().strftime('%Y-%m-%d')}\n"
-                     f"Period: {start_dt.strftime('%b %d %Y')} – {end_dt.strftime('%b %d %Y')} | {stats['total_trades']} trades", 
-                     fontsize=16, fontweight='bold', y=0.98)
+        net_pnl = stats['total_pnl']
+        ret_pct = (net_pnl / initial_cap * 100)
+        pnl_color = c_green if net_pnl >= 0 else c_red
+        
+        fig.suptitle(
+            f"RSI-15m Backtest Report  |  {start_dt.strftime('%b %d %Y')} - {end_dt.strftime('%b %d %Y')}"
+            f"  |  {stats['total_trades']} trades  |  "
+            f"Net P&L: Rs.{net_pnl:,.0f} ({ret_pct:+.1f}%)",
+            fontsize=15, fontweight='bold', color=c_text, y=0.96
+        )
 
-        # 1. Equity Curve
+        def style_ax(ax, title=''):
+            ax.set_facecolor(bg_dark)
+            ax.tick_params(colors=c_muted, labelsize=9)
+            ax.spines['top'].set_visible(False)
+            ax.spines['right'].set_visible(False)
+            ax.spines['left'].set_color(c_gray)
+            ax.spines['bottom'].set_color(c_gray)
+            if title:
+                ax.set_title(title, fontweight='bold', color=c_text, fontsize=12, pad=10)
+            ax.grid(True, linestyle=':', alpha=0.2, color=c_gray)
+
+        # ── Panel 1: Equity Curve ────────────────────────────────────────────
         ax1 = fig.add_subplot(gs[0, 0])
+        style_ax(ax1, 'Equity Curve & Drawdown')
+        
         trade_dates = pd.to_datetime(trades_df['exit_time'])
         equity = trades_df['running_capital']
-        
-        # Create a series with initial capital prepended
-        initial_cap = self.config.get('capital', {}).get('initial', 100000)
         times = [start_dt] + trade_dates.tolist()
         eq_vals = [initial_cap] + equity.tolist()
         
-        ax1.plot(times, eq_vals, color=c_blue, linewidth=2)
-        
-        # Drawdown shaded area
+        ax1.plot(times, eq_vals, color=c_cyan, linewidth=2.0, zorder=3)
         running_max = np.maximum.accumulate(eq_vals)
-        ax1.plot(times, running_max, color=c_gray, linestyle='--', alpha=0.5)
-        ax1.fill_between(times, running_max, eq_vals, where=(running_max > eq_vals), color=c_red, alpha=0.2)
+        ax1.plot(times, running_max, color=c_gray, linestyle='--', alpha=0.4, linewidth=1)
+        ax1.fill_between(times, running_max, eq_vals, 
+                         where=[rm > ev for rm, ev in zip(running_max, eq_vals)], 
+                         color=c_red, alpha=0.15)
+        ax1.fill_between(times, initial_cap, eq_vals,
+                         where=[ev >= initial_cap for ev in eq_vals],
+                         color=c_green, alpha=0.08)
+        ax1.axhline(initial_cap, color=c_gold, linestyle=':', alpha=0.4, linewidth=1)
+        ax1.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f'Rs.{x/1000:.0f}K'))
+        ax1.tick_params(axis='x', rotation=0)
+
+        # ── Panel 2: Stats Panel ─────────────────────────────────────────────
+        ax2 = fig.add_subplot(gs[0, 1])
+        ax2.set_facecolor(bg_dark)
+        ax2.axis('off')
         
-        ax1.set_title("Equity Curve & Drawdowns", fontweight='bold')
-        ax1.grid(True, linestyle=':', alpha=0.6)
+        gross = trades_df['pnl_gross'].sum()
+        charges = gross - net_pnl
+        slip_cfg = self.config.get('reporting', {}).get('slippage_buffer_enabled', False)
+        slip_amt = self.config.get('reporting', {}).get('slippage_buffer_per_trade', 0) if slip_cfg else 0
         
-        # 2. P&L Per Trade (Bars)
-        ax2 = fig.add_subplot(gs[1, 0])
+        # Build stats as a structured table
+        sections = [
+            ("RETURNS", [
+                ("Net P&L", f"Rs.{net_pnl:,.0f}", pnl_color),
+                ("Gross P&L", f"Rs.{gross:,.0f}", c_text),
+                ("Charges+Slip", f"Rs.{charges:,.0f}", c_muted),
+                ("Return %", f"{ret_pct:+.1f}%", pnl_color),
+                ("Best Trade", f"Rs.{stats['largest_win']:,.0f}", c_green),
+                ("Worst Trade", f"Rs.{stats['largest_loss']:,.0f}", c_red),
+            ]),
+            ("RISK METRICS", [
+                ("Win Rate", f"{stats['win_rate']}%", c_gold if stats['win_rate'] >= 40 else c_red),
+                ("Profit Factor", f"{stats['profit_factor']}", c_green if float(str(stats['profit_factor']).replace('inf','999')) >= 1.1 else c_red),
+                ("Sharpe", f"{stats['sharpe_ratio']}", c_text),
+                ("Sortino", f"{stats['sortino_ratio']}", c_text),
+                ("Max DD", f"Rs.{stats['max_drawdown']:,.0f} ({stats['max_drawdown_pct']}%)", c_red),
+                ("Streaks W/L", f"{stats['max_win_streak']} / {stats['max_loss_streak']}", c_text),
+                ("Avg Hold", f"{stats['avg_holding_mins']:.0f} min", c_muted),
+            ]),
+        ]
+        
+        # Build a single formatted text block for reliability
+        lines = []
+        for section_title, items in sections:
+            lines.append(f"{'='*32}")
+            lines.append(f"  {section_title}")
+            lines.append(f"{'='*32}")
+            for label, value, _ in items:
+                lines.append(f"  {label:<16s} {value}")
+            lines.append("")
+        
+        stats_text = '\n'.join(lines)
+        ax2.text(0.05, 0.95, stats_text, fontsize=9.5, color=c_text,
+                family='monospace', va='top', ha='left',
+                transform=ax2.transAxes, linespacing=1.5,
+                bbox=dict(boxstyle='round,pad=0.5', facecolor=bg_card, 
+                         edgecolor=c_gray, alpha=0.8))
+
+        # ── Panel 3: P&L Per Trade Bars ──────────────────────────────────────
+        ax3 = fig.add_subplot(gs[1, 0])
+        style_ax(ax3, 'Net P&L Per Trade')
+        
         pnl = trades_df['pnl_net']
         colors = [c_green if x > 0 else c_red for x in pnl]
-        ax2.bar(range(1, len(pnl)+1), pnl, color=colors, width=0.6)
-        ax2.axhline(0, color='black', linewidth=0.8)
-        ax2.set_title("Net P&L Per Trade", fontweight='bold')
-        ax2.set_xlabel("Trade Number")
-        ax2.grid(True, linestyle=':', alpha=0.6, axis='y')
+        ax3.bar(range(1, len(pnl)+1), pnl, color=colors, width=0.7, alpha=0.85)
+        ax3.axhline(0, color=c_text, linewidth=0.6, alpha=0.5)
+        ax3.set_xlabel("Trade #", color=c_muted, fontsize=9)
+        ax3.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f'Rs.{x/1000:.1f}K'))
+
+        # ── Panel 4: Monthly P&L ─────────────────────────────────────────────
+        ax4 = fig.add_subplot(gs[1, 1])
+        style_ax(ax4, 'Monthly Net P&L')
         
-        # 3. Monthly P&L
-        ax3 = fig.add_subplot(gs[1, 1])
-        # Group by Year-Month
-        trades_df['month'] = pd.to_datetime(trades_df['exit_time']).dt.to_period('M')
-        monthly = trades_df.groupby('month')['pnl_net'].sum()
+        trades_df_copy = trades_df.copy()
+        trades_df_copy['month'] = pd.to_datetime(trades_df_copy['exit_time']).dt.to_period('M')
+        monthly = trades_df_copy.groupby('month')['pnl_net'].sum()
         
         if not monthly.empty:
             m_colors = [c_green if x > 0 else c_red for x in monthly]
-            bars = ax3.bar(monthly.index.astype(str), monthly, color=m_colors)
-            ax3.axhline(0, color='black', linewidth=0.8)
-            ax3.set_title("Monthly Net P&L", fontweight='bold')
-            ax3.tick_params(axis='x', rotation=45)
-            # Add value labels
+            month_labels = [str(m) for m in monthly.index]
+            bars = ax4.bar(month_labels, monthly.values, color=m_colors, alpha=0.85)
+            ax4.axhline(0, color=c_text, linewidth=0.6, alpha=0.5)
+            ax4.tick_params(axis='x', rotation=45, labelsize=8)
             for bar in bars:
                 height = bar.get_height()
-                v_align = 'bottom' if height > 0 else 'top'
-                ax3.text(bar.get_x() + bar.get_width()/2., height,
-                        f'₹{int(height):,}', ha='center', va=v_align, 
-                        fontsize=8, fontweight='bold')
+                v_off = 200 if height >= 0 else -200
+                ax4.text(bar.get_x() + bar.get_width()/2., height + v_off,
+                        f'Rs.{int(height):,}', ha='center', va='bottom' if height >= 0 else 'top',
+                        fontsize=7, fontweight='bold', color=c_text)
+
+        # ── Panel 5: Win/Loss Distribution ───────────────────────────────────
+        ax5 = fig.add_subplot(gs[2, 0])
+        style_ax(ax5, 'P&L Distribution')
         
-        # 4. Stats Panel
-        ax4 = fig.add_subplot(gs[0, 1])
-        ax4.axis('off')
+        win_pnl = pnl[pnl > 0]
+        loss_pnl = pnl[pnl <= 0]
+        bins = np.linspace(pnl.min(), pnl.max(), 25)
+        if len(win_pnl) > 0:
+            ax5.hist(win_pnl, bins=bins, color=c_green, alpha=0.7, label=f'Wins ({len(win_pnl)})')
+        if len(loss_pnl) > 0:
+            ax5.hist(loss_pnl, bins=bins, color=c_red, alpha=0.7, label=f'Losses ({len(loss_pnl)})')
+        ax5.axvline(pnl.mean(), color=c_gold, linestyle='--', linewidth=1.5, 
+                   label=f'Avg: Rs.{pnl.mean():,.0f}')
+        ax5.legend(fontsize=8, facecolor=bg_dark, edgecolor=c_gray, labelcolor=c_text)
+        ax5.set_xlabel("P&L (Rs.)", color=c_muted, fontsize=9)
+        ax5.set_ylabel("Frequency", color=c_muted, fontsize=9)
+
+        # ── Panel 6: Drawdown Timeline ───────────────────────────────────────
+        ax6 = fig.add_subplot(gs[2, 1])
+        style_ax(ax6, 'Drawdown %')
         
-        gross = trades_df['pnl_gross'].sum()
-        net = stats['total_pnl']
-        charges = gross - net
+        eq_series = pd.Series(eq_vals, index=times)
+        peak_series = eq_series.cummax()
+        dd_pct_png = ((eq_series - peak_series) / peak_series * 100)
+        ax6.fill_between(dd_pct_png.index, dd_pct_png.values, 0, color=c_red, alpha=0.3)
+        ax6.plot(dd_pct_png.index, dd_pct_png.values, color=c_red, linewidth=1.2)
+        ax6.axhline(0, color=c_text, linewidth=0.5, alpha=0.3)
+        ax6.set_ylabel("DD %", color=c_muted, fontsize=9)
+        ax6.tick_params(axis='x', rotation=0, labelsize=8)
+        ax6.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f'{x:.0f}%'))
         
-        # Check if slippage buffer was configured
-        slip_cfg = self.config.get('reporting', {}).get('slippage_buffer_enabled', False)
-        slip_amt = self.config.get('reporting', {}).get('slippage_buffer_per_trade', 0) if slip_cfg else 0
-        total_slippage = slip_amt * stats['total_trades']
+        fig.savefig(filepath, bbox_inches='tight', facecolor=fig.get_facecolor(), edgecolor='none')
+        return filepath
+
+    def _generate_html_report(
+        self,
+        trades_df: pd.DataFrame,
+        stats: dict,
+        filepath: str
+    ) -> str:
+        """
+        Generate an interactive HTML dashboard using Plotly.
+        Features: hover tooltips, zoomable charts, full trade table.
+        """
+        try:
+            import plotly.graph_objects as go
+            from plotly.subplots import make_subplots
+        except ImportError:
+            self.logger.warning("plotly not installed. Skipping HTML report. Install: pip install plotly")
+            return ""
         
-        stats_text = (
-            f"RETURNS:\n"
-            f"  Net P&L:      ₹{net:,.2f}\n"
-            f"  Gross P&L:    ₹{gross:,.2f}\n"
-            f"  Charges:      ₹{charges:,.2f}\n"
-            f"  Slippage:     ₹{total_slippage:,.2f}\n"
-            f"  Return %:     {(net / initial_cap * 100):.2f}%\n"
-            f"  Best trade:   ₹{stats['largest_win']:.0f}\n"
-            f"  Worst trade:  ₹{stats['largest_loss']:.0f}\n"
-            f"  Max streak:   W:{stats['max_win_streak']} / L:{stats['max_loss_streak']}\n"
-            f"\nRISK:\n"
-            f"  Win Rate:     {stats['win_rate']}%\n"
-            f"  Profit Factor:{stats['profit_factor']}\n"
-            f"  Expectancy:   ₹{stats['expectancy']:.0f}\n"
-            f"  Sharpe:       {stats['sharpe_ratio']}\n"
-            f"  Sortino:      {stats['sortino_ratio']}\n"
-            f"  Max DD:       ₹{stats['max_drawdown']:,.0f} ({stats['max_drawdown_pct']}%)\n"
-            f"  Avg Hold:     {stats['avg_holding_mins']:.0f} min\n"
+        initial_cap = self.config.get('capital', {}).get('initial', 100000)
+        start_dt = self.config.get('backtest', {}).get('start_date', '')
+        end_dt = self.config.get('backtest', {}).get('end_date', '')
+        net_pnl = stats['total_pnl']
+        ret_pct = (net_pnl / initial_cap * 100)
+        
+        trade_dates = pd.to_datetime(trades_df['exit_time'])
+        equity = trades_df['running_capital'].tolist()
+        times = [pd.to_datetime(start_dt)] + trade_dates.tolist()
+        eq_vals = [initial_cap] + equity
+        
+        pnl = trades_df['pnl_net']
+        
+        # Monthly aggregation
+        trades_copy = trades_df.copy()
+        trades_copy['month'] = pd.to_datetime(trades_copy['exit_time']).dt.to_period('M').astype(str)
+        monthly = trades_copy.groupby('month').agg(
+            pnl_sum=('pnl_net', 'sum'),
+            count=('pnl_net', 'count'),
+            wins=('pnl_net', lambda x: (x > 0).sum())
+        ).reset_index()
+        
+        # Drawdown
+        eq_arr = np.array(eq_vals)
+        peak_arr = np.maximum.accumulate(eq_arr)
+        dd_pct = (eq_arr - peak_arr) / peak_arr * 100
+        
+        # Build figure: 4 rows, 2 cols
+        fig = make_subplots(
+            rows=4, cols=2,
+            row_heights=[0.28, 0.24, 0.22, 0.26],
+            column_widths=[0.6, 0.4],
+            subplot_titles=[
+                'Equity Curve', 'Key Metrics',
+                'Net P&L Per Trade', 'Monthly P&L',
+                'Drawdown %', 'P&L Distribution',
+                'Trade Log', ''
+            ],
+            specs=[
+                [{"type": "scatter"}, {"type": "table"}],
+                [{"type": "bar"}, {"type": "bar"}],
+                [{"type": "scatter"}, {"type": "histogram"}],
+                [{"type": "table", "colspan": 2}, None],
+            ],
+            vertical_spacing=0.06,
+            horizontal_spacing=0.08
         )
         
-        ax4.text(0.1, 0.9, stats_text, family='monospace', size=11, 
-                va='top', ha='left', linespacing=1.6,
-                bbox=dict(boxstyle='round', facecolor='#f8f9fa', alpha=1.0, edgecolor='#dee2e6'))
+        # 1. Equity Curve
+        fig.add_trace(go.Scatter(
+            x=times, y=eq_vals, 
+            mode='lines', name='Equity',
+            line=dict(color='#00d2ff', width=2.5),
+            hovertemplate='Date: %{x}<br>Capital: Rs.%{y:,.0f}<extra></extra>'
+        ), row=1, col=1)
         
-        fig.savefig(filepath, bbox_inches='tight')
+        fig.add_trace(go.Scatter(
+            x=times, y=peak_arr.tolist(),
+            mode='lines', name='Peak',
+            line=dict(color='#8892b0', width=1, dash='dash'),
+            hoverinfo='skip'
+        ), row=1, col=1)
+        
+        fig.add_hline(y=initial_cap, line_dash="dot", line_color="#ffd700", 
+                      annotation_text=f"Initial: Rs.{initial_cap:,}", row=1, col=1)
+        
+        # 2. Stats Table
+        gross = trades_df['pnl_gross'].sum()
+        pf_str = str(stats['profit_factor'])
+        
+        metric_names = [
+            'Net P&L', 'Gross P&L', 'Return %', 'Win Rate', 'Profit Factor',
+            'Sharpe', 'Sortino', 'Max Drawdown', 'Avg Win', 'Avg Loss',
+            'Best Trade', 'Worst Trade', 'Win Streak', 'Loss Streak', 'Avg Hold'
+        ]
+        metric_vals = [
+            f'Rs.{net_pnl:,.0f}', f'Rs.{gross:,.0f}', f'{ret_pct:+.1f}%',
+            f'{stats["win_rate"]}%', pf_str,
+            str(stats['sharpe_ratio']), str(stats['sortino_ratio']),
+            f'Rs.{stats["max_drawdown"]:,.0f} ({stats["max_drawdown_pct"]}%)',
+            f'Rs.{stats["avg_win"]:,.0f}', f'Rs.{stats["avg_loss"]:,.0f}',
+            f'Rs.{stats["largest_win"]:,.0f}', f'Rs.{stats["largest_loss"]:,.0f}',
+            str(stats['max_win_streak']), str(stats['max_loss_streak']),
+            f'{stats["avg_holding_mins"]:.0f} min'
+        ]
+        
+        val_colors = []
+        for v in metric_vals:
+            if v.startswith('Rs.-') or v.startswith('-'):
+                val_colors.append('#ff4757')
+            elif v.startswith('Rs.') and not v.startswith('Rs.0'):
+                val_colors.append('#00d166')
+            else:
+                val_colors.append('#e6f1ff')
+        
+        fig.add_trace(go.Table(
+            header=dict(
+                values=['Metric', 'Value'],
+                fill_color='#0f3460',
+                font=dict(color='#ffd700', size=12),
+                align='left', height=30
+            ),
+            cells=dict(
+                values=[metric_names, metric_vals],
+                fill_color='#16213e',
+                font=dict(color=[['#8892b0']*len(metric_names), val_colors], size=11),
+                align='left', height=25
+            )
+        ), row=1, col=2)
+        
+        # 3. P&L Per Trade
+        pnl_colors = ['#00d166' if x > 0 else '#ff4757' for x in pnl]
+        fig.add_trace(go.Bar(
+            x=list(range(1, len(pnl)+1)),
+            y=pnl.values,
+            marker_color=pnl_colors,
+            name='Trade P&L',
+            hovertemplate='Trade #%{x}<br>P&L: Rs.%{y:,.0f}<extra></extra>',
+            showlegend=False
+        ), row=2, col=1)
+        
+        # 4. Monthly P&L
+        if not monthly.empty:
+            m_colors = ['#00d166' if x > 0 else '#ff4757' for x in monthly['pnl_sum']]
+            fig.add_trace(go.Bar(
+                x=monthly['month'],
+                y=monthly['pnl_sum'],
+                marker_color=m_colors,
+                name='Monthly P&L',
+                text=[f'Rs.{v:,.0f}' for v in monthly['pnl_sum']],
+                textposition='outside',
+                textfont=dict(size=10),
+                hovertemplate='%{x}<br>P&L: Rs.%{y:,.0f}<extra></extra>',
+                showlegend=False
+            ), row=2, col=2)
+        
+        # 5. Drawdown %
+        fig.add_trace(go.Scatter(
+            x=times, y=dd_pct.tolist(),
+            fill='tozeroy',
+            mode='lines',
+            line=dict(color='#ff4757', width=1.5),
+            fillcolor='rgba(255, 71, 87, 0.2)',
+            name='Drawdown',
+            hovertemplate='Date: %{x}<br>DD: %{y:.1f}%<extra></extra>',
+            showlegend=False
+        ), row=3, col=1)
+        
+        # 6. P&L Distribution
+        fig.add_trace(go.Histogram(
+            x=pnl[pnl > 0], nbinsx=20,
+            marker_color='#00d166', opacity=0.7,
+            name=f'Wins ({len(pnl[pnl > 0])})',
+            hovertemplate='P&L: Rs.%{x}<br>Count: %{y}<extra></extra>'
+        ), row=3, col=2)
+        
+        fig.add_trace(go.Histogram(
+            x=pnl[pnl <= 0], nbinsx=20,
+            marker_color='#ff4757', opacity=0.7,
+            name=f'Losses ({len(pnl[pnl <= 0])})',
+            hovertemplate='P&L: Rs.%{x}<br>Count: %{y}<extra></extra>'
+        ), row=3, col=2)
+        
+        # 7. Trade Log Table
+        trade_tbl = trades_df[['symbol', 'entry_time', 'exit_time', 'entry_price', 
+                               'exit_price', 'qty', 'reason', 'pnl_gross', 'pnl_net']].copy()
+        trade_tbl['entry_time'] = pd.to_datetime(trade_tbl['entry_time']).dt.strftime('%Y-%m-%d %H:%M')
+        trade_tbl['exit_time'] = pd.to_datetime(trade_tbl['exit_time']).dt.strftime('%Y-%m-%d %H:%M')
+        
+        cell_colors_pnl = ['#00d166' if v > 0 else '#ff4757' for v in trade_tbl['pnl_net']]
+        n_rows = len(trade_tbl)
+        
+        fig.add_trace(go.Table(
+            header=dict(
+                values=['Symbol', 'Entry Time', 'Exit Time', 'Entry Px', 'Exit Px', 
+                        'Qty', 'Reason', 'Gross P&L', 'Net P&L'],
+                fill_color='#0f3460',
+                font=dict(color='#ffd700', size=11),
+                align='left', height=28
+            ),
+            cells=dict(
+                values=[trade_tbl[c].tolist() for c in trade_tbl.columns],
+                fill_color='#16213e',
+                font=dict(
+                    color=[['#e6f1ff']*n_rows, ['#e6f1ff']*n_rows, ['#e6f1ff']*n_rows,
+                           ['#e6f1ff']*n_rows, ['#e6f1ff']*n_rows, ['#e6f1ff']*n_rows,
+                           ['#e6f1ff']*n_rows, cell_colors_pnl, cell_colors_pnl],
+                    size=10
+                ),
+                align='left', height=24
+            )
+        ), row=4, col=1)
+        
+        # Layout styling
+        pnl_sign = '+' if net_pnl >= 0 else ''
+        fig.update_layout(
+            title=dict(
+                text=(f"<b>RSI-15m Backtest Dashboard</b>  |  {start_dt} to {end_dt}  |  "
+                      f"{stats['total_trades']} trades  |  "
+                      f"<span style='color:{'#00d166' if net_pnl >= 0 else '#ff4757'}'>"
+                      f"Net: Rs.{net_pnl:,.0f} ({pnl_sign}{ret_pct:.1f}%)</span>"),
+                font=dict(size=16, color='#e6f1ff'),
+                x=0.01
+            ),
+            template='plotly_dark',
+            paper_bgcolor='#1a1a2e',
+            plot_bgcolor='#16213e',
+            font=dict(color='#e6f1ff', family='Segoe UI, sans-serif'),
+            height=1600,
+            showlegend=False,
+            barmode='overlay'
+        )
+        
+        # Write HTML
+        fig.write_html(filepath, include_plotlyjs='cdn', full_html=True)
+        
+        # Auto-open in browser
+        try:
+            import webbrowser
+            webbrowser.open(f'file:///{os.path.abspath(filepath)}')
+        except Exception:
+            pass
+        
         return filepath
+

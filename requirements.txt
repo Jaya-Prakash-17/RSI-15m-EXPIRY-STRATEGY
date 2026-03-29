@@ -17,6 +17,10 @@ python-dotenv>=1.0     # .env file loading for API keys
 requests>=2.28         # Telegram bot notifications (utils/telegram_notifier.py)
 pytz>=2023.3           # IST timezone handling in live_trader.py
 
+# ─── Reporting & Visualization ───────────────────────────────
+matplotlib>=3.7        # PNG backtest report charts (reporting/performance.py)
+plotly>=5.15           # Interactive HTML backtest dashboard (reporting/performance.py)
+
 # ─── Note: platform-specific locking ─────────────────────────
 # fcntl  — stdlib on Linux/Mac (single-instance lock), NOT available on Windows
 # msvcrt — stdlib on Windows (single-instance lock), NOT available on Linux/Mac
