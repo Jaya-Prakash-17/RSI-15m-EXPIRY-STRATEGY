@@ -372,9 +372,10 @@ class LiveTrader:
         if not new_df.empty:
             combined = pd.concat([cached, new_df]).drop_duplicates(subset=['datetime'])
             combined = combined.sort_values('datetime').reset_index(drop=True)
-            # Trim to warmup window to prevent unbounded memory growth
-            cutoff = now - timedelta(minutes=self.strategy.rsi_warmup * 15 + 30)
-            combined = combined[combined['datetime'] >= cutoff].reset_index(drop=True)
+            # Trim to warmup window to prevent unbounded memory growth (using rows, not elapsed time which breaks on weekends)
+            max_rows = max(200, self.strategy.rsi_warmup + 50)
+            if len(combined) > max_rows:
+                combined = combined.tail(max_rows).reset_index(drop=True)
             self._candle_cache[symbol] = combined
 
         return self._candle_cache[symbol]
@@ -405,21 +406,21 @@ class LiveTrader:
         return True
 
     def _get_warmup_start_time(self):
-        """Calculate start time for RSI warmup period."""
-        # Get warmup period from strategy (in number of candles)
+        """Calculate start time for RSI warmup period, factoring in weekends and holidays."""
         warmup_candles = self.strategy.rsi_warmup
         
-        # Each candle is 15 minutes
-        warmup_minutes = warmup_candles * 15
+        # 1 day = ~25 candles (6.25 hrs). 
+        # Add 3 days for weekend + minimum 1-2 days holidays buffer
+        days_back = max(7, (warmup_candles // 25) + 4)
         
         # Start from market open today
         now = datetime.now()
         market_open = now.replace(hour=9, minute=15, second=0, microsecond=0)
         
-        # Go back by warmup period (usually will be previous day)
-        warmup_start = market_open - timedelta(minutes=warmup_minutes)
+        # Go back safely across weekends and holidays
+        warmup_start = market_open - timedelta(days=days_back)
         
-        self.logger.info(f"RSI warmup requires {warmup_candles} candles ({warmup_minutes} min), fetching from {warmup_start}")
+        self.logger.info(f"RSI warmup requires {warmup_candles} candles. Fetching {days_back} calendar days back from {warmup_start}")
         
         return warmup_start
 
