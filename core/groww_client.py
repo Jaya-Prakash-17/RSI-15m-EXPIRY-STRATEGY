@@ -268,7 +268,7 @@ class GrowwClient:
                 segment=segment,
                 exchange_trading_symbols=key
             )
-            return float(resp['ltp']) if resp and 'ltp' in resp else None
+            return float(resp[key]) if resp and key in resp else None
             
         except Exception as e:
             self.logger.error(f"Error fetching LTP for {symbol}: {e}")

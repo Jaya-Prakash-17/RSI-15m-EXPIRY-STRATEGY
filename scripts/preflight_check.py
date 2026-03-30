@@ -122,7 +122,7 @@ except Exception as e:
 print("\n[ Market data ]")
 try:
     if client:
-        ltp = client.get_ltp('NSE-NIFTY 50') or client.get_ltp('NIFTY')
+        ltp = client.get_ltp('NIFTY')
         if ltp and ltp > 0:
             ok(f"NIFTY LTP: ₹{ltp:,.2f}")
         else:
