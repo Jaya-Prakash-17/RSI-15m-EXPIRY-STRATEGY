@@ -26,7 +26,7 @@ risk:
 strategy:
   alert_validity: 1  # Candles allowed for price to break alert_high (after alert candle)
   exit_mode: single_lot #single_lot or multi_lot
-  lots_per_trade: 3              # V10-P-02: was 3 — 1 lot for live debut
+  lots_per_trade: 1              # 1 lot for live debut (V10-P-02 + V12-P-02)
   max_lots: 5                     # P-21: hard ceiling regardless of sizing mode
   max_position_pct: 0.8      # P-21: never risk > 25% of capital per trade
   max_correlated_positions: 2    # P-09: max same-direction trades across indices (1=no NIFTY CE + BANKNIFTY CE)
@@ -41,7 +41,7 @@ strategy:
   trade_only_on_expiry: false  # false:trade on every day, true:trade only on expiry day
   rsi_debug: false   # set true only when validating RSI values against Groww chart
   safe_sl_mode: true # If true, caps SL distance to max loss limit below
-  safe_sl_max_loss: 5000  # V10-P-02: 2% of capital per trade (was 10000)
+  safe_sl_max_loss: 2000  # V10-P-02: 2% of capital per trade (was 10000)
   min_sl_pct: 0.08   # 8% of trigger price floor for stop loss
   signal_window_start: '10:00' # No new alerts before this time
   signal_window_end: '13:30'   # No new alerts after this time

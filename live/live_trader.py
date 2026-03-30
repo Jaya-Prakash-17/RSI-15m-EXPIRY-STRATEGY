@@ -1537,34 +1537,7 @@ class LiveTrader:
             new_sl=new_sl_price if new_sl_price > 0 else None
         )
 
-    def _monitor_legacy_trade(self, trade, ltp):
-        """Monitor trades without exit_orders (legacy format)."""
-        symbol = trade['symbol']
-        trading_symbol = trade['trading_symbol']
-        trade_id = trade['trade_id']
-        
-        exit_triggered = False
-        reason = None
-        exit_price = ltp
-        
-        # Check SL condition (strategy-defined: alert candle low - 1)
-        sl_triggered = ltp <= trade['sl']
-        
-        if sl_triggered:
-            reason = 'SL'
-            exit_price = trade['sl']
-            exit_triggered = True
-            self.logger.info(f"🔴 SL HIT for {trade_id} at ₹{exit_price}")
-        
-        # Check Target (only if no exit triggered)
-        if not exit_triggered and ltp >= trade['targets'][1]:  # Using T2 as main target
-            reason = 'TARGET'
-            exit_price = ltp
-            exit_triggered = True
-            self.logger.info(f"🟢 TARGET HIT for {trade_id} at ₹{ltp}")
-        
-        if exit_triggered:
-            self._close_entire_position(trade, exit_price, reason)
+
 
     def _update_circuit_breaker(self, trade_pnl: float, reason: str) -> None:
         """V11-P-02: Update consecutive loss counter and activate circuit breaker if needed."""
@@ -1936,6 +1909,7 @@ class LiveTrader:
                         trade['reason'] = "DAILY_LOSS_LIMIT"
                         trade['pnl'] = total_pnl
                         self.tracker.close_trade(trade['trade_id'], actual_fill, "DAILY_LOSS_LIMIT", total_pnl)
+                        self._update_circuit_breaker(final_pnl, "DAILY_LOSS_LIMIT")
                         self.trade_logger.log_exit(trade, self.daily_pnl)
                         self.telegram.square_off(trade['symbol'], actual_fill, float(trade['entry_price']), remaining_qty, "DAILY_LOSS_LIMIT")
 

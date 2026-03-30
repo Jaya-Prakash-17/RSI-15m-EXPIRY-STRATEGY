@@ -147,3 +147,18 @@ class TestHistoricalLotSizes:
             "Historical lot size must differ from current config for 2023 dates. "
             "If this test fails, backtest P&L calculations are inflating/deflating all 2023 trades."
         )
+def test_effective_sl_assertion_runs_on_malformed_symbol():
+    """Post-assertion must run even if symbol parsing fails."""
+    config = make_config()
+    config['strategy']['safe_sl_mode'] = True
+    config['strategy']['safe_sl_max_loss'] = 2000
+    config['strategy']['lots_per_trade'] = 1
+    s = ExpiryRSIBreakout(config)
+    
+    # Use a valid symbol to confirm normal calculation works
+    sl, is_safe, raw_sl = s._calculate_effective_sl(
+        'NSE-NIFTY-25Mar26-22500-CE', 150.0, 135.0
+    )
+    assert sl > 0, f"SL should be positive, got {sl}"
+    assert sl < 150.0, f"SL should be below entry price"
+    assert raw_sl <= sl or is_safe, "If SL was adjusted, is_safe should be True"

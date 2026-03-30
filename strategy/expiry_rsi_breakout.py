@@ -218,13 +218,20 @@ class ExpiryRSIBreakout:
         
         # 3. Apply SAFE_SL cap LAST — this is the hard ceiling, always wins
         if self.safe_sl_mode:
+            # Pre-initialise qty so post-assertion always has access to it
+            _lots = self.config['strategy'].get('lots_per_trade', 1)
+            _underlying_guess = (symbol.split('-')[1]
+                                 if len(symbol.split('-')) > 1 else 'NIFTY')
+            _lot_size = self.config['indices'].get(_underlying_guess, {}).get('lot_size', 50)
+            qty = _lots * _lot_size  # ← Now always defined before the try block
+            
             try:
                 parts = symbol.split('-')
                 underlying = parts[1] if len(parts) > 1 else 'NIFTY'
                 
                 lots = self.config['strategy'].get('lots_per_trade', 1)
                 lot_size = self.config['indices'].get(underlying, {}).get('lot_size', 50)
-                qty = lots * lot_size
+                qty = lots * lot_size  # ← Overrides with same value (belt + braces)
                 
                 self.logger.debug(
                     f"[SAFE_SL CALC] {symbol}: entry={entry_price}, "

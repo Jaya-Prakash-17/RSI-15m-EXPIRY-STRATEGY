@@ -230,6 +230,42 @@ def validate_config(config):
                 f"Consider reducing to <= 2% (Rs.{int(capital*0.02)}) for safer drawdown."
             )
 
+    # ── V12-P-03: Capital concentration guard ────────────────────────────
+    # Warn if position cost (lots × lot_size × conservative premium) > 15% of capital
+    # Block if position cost > 30% of capital
+    # Uses a conservative premium of ₹200 (covers ATM options across NIFTY/BNF/SENSEX)
+    CONSERVATIVE_PREMIUM = 200  # ₹ — conservative ATM option premium estimate
+    lots_per_trade = config['strategy'].get('lots_per_trade', 1)
+    
+    max_position_cost = 0
+    for idx, details in config.get('indices', {}).items():
+        ls = details.get('lot_size', 1)
+        position_cost = lots_per_trade * ls * CONSERVATIVE_PREMIUM
+        if position_cost > max_position_cost:
+            max_position_cost = position_cost
+    
+    if capital > 0 and max_position_cost > 0:
+        position_cost_pct = (max_position_cost / capital) * 100
+        if position_cost_pct > 30.0:
+            logger.critical(
+                f"CRITICAL: Estimated max position cost ₹{max_position_cost:,.0f} "
+                f"= {position_cost_pct:.1f}% of capital ₹{capital:,.0f}. "
+                f"This exceeds 30% — single-position capital concentration risk. "
+                f"Reduce lots_per_trade from {lots_per_trade}. "
+                f"Recommended: 1 lot (₹{1 * 65 * CONSERVATIVE_PREMIUM:,.0f} = "
+                f"{1 * 65 * CONSERVATIVE_PREMIUM / capital * 100:.1f}% of capital)."
+            )
+            return False
+        elif position_cost_pct > 15.0:
+            logger.warning(
+                f"WARNING: Estimated max position cost ₹{max_position_cost:,.0f} "
+                f"= {position_cost_pct:.1f}% of capital. "
+                f"Consider reducing lots_per_trade. "
+                f"At 1 lot: ₹{1 * 65 * CONSERVATIVE_PREMIUM:,.0f} = "
+                f"{1 * 65 * CONSERVATIVE_PREMIUM / capital * 100:.1f}%."
+            )
+    # ── END capital concentration guard ──────────────────────────────────
+
     # ── paper_trading must be a boolean ──────────────────────────────────────
     paper = config['trading'].get('paper_trading')
     if not isinstance(paper, bool):

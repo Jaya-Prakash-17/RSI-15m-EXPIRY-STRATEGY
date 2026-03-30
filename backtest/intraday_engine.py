@@ -539,6 +539,10 @@ class IntradayEngine:
         row = self._get_latest_candle(df, time)
         if row is None: return 0
         
+        # CRITICAL FIX (V12-P-01): Define underlying from trade dict here so it is
+        # available in BOTH multi-lot and single-lot branches below.
+        underlying = trade.get('underlying', 'NIFTY')
+        
         # Guard: do not check SL/TP on the same candle as entry
         entry_candle_dt = trade.get('entry_candle_datetime', '')
         current_candle_dt = str(row['datetime']) if row is not None else ''
