@@ -160,6 +160,17 @@ def validate_config(config):
         logger.critical("CRITICAL: strategy.exit_mode must be 'single_lot' or 'multi_lot'")
         return False
 
+    # V11-P-08: Guard: multi_lot mode requires at least 3 lots
+    exit_mode = config['strategy'].get('exit_mode', 'single_lot')
+    lots_per_trade = config['strategy'].get('lots_per_trade', 1)
+    if exit_mode == 'multi_lot' and lots_per_trade < 3:
+        logger.critical(
+            f"CRITICAL: exit_mode='multi_lot' requires lots_per_trade >= 3 "
+            f"(got {lots_per_trade}). "
+            f"Either set exit_mode: single_lot or lots_per_trade: 3."
+        )
+        return False
+
     # ── Trading window order and Groww MIS cutoff ─────────────────────────────
     try:
         win = config['trading']['window']

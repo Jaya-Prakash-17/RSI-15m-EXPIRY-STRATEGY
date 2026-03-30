@@ -636,8 +636,15 @@ class IntradayEngine:
                     trade['remaining_qty'] -= exit_qty
                     trade['partial_pnl'] = trade.get('partial_pnl', 0) + pnl
                     trade['tp_hits'] = tp_level + 1
-                    # Trail SL
-                    new_sl = trade['sl'] + trade.get('alert_range', 0)
+                    # Trail SL — absolute prices to match live_trader._handle_tp_hit()
+                    entry_price = trade['entry_price']
+                    targets = trade['targets']
+                    if tp_level == 0:  # TP1 hit: move SL to entry (break-even)
+                        new_sl = self._round_to_tick(entry_price, underlying)
+                    elif tp_level == 1:  # TP2 hit: move SL to TP1 price
+                        new_sl = self._round_to_tick(targets[0], underlying)
+                    else:
+                        new_sl = trade['sl']  # No trail change at TP3 (full exit)
                     trade['sl'] = new_sl
                     self.capital += exit_price * exit_qty
                     self.logger.info(
@@ -664,6 +671,12 @@ class IntradayEngine:
                     return realized_pnl
         
         else:
+            # Single lot mode (or multi_lot with insufficient lots)
+            if exit_mode == 'multi_lot' and lots_per_trade < 3:
+                self.logger.warning(
+                    f"[CONFIG] exit_mode=multi_lot but lots_per_trade={lots_per_trade}. "
+                    f"Treating as single_lot. Fix config.yaml."
+                )
             # Single lot mode: trail SL at intermediate TPs, full exit at configured target
             target_idx = self.config['strategy'].get('single_lot_exit_target', 2) - 1
             
@@ -671,7 +684,15 @@ class IntradayEngine:
             # even if price passed through multiple in the same candle
             for tp in range(trade.get('tp_hits', 0), target_idx):
                 if row['high'] >= trade['targets'][tp]:
-                    new_sl = trade['sl'] + trade.get('alert_range', 0)
+                    # Absolute trail: TP1 → break-even, TP2 → TP1 price
+                    entry_price = trade['entry_price']
+                    targets = trade['targets']
+                    if tp == 0:   # TP1 hit
+                        new_sl = self._round_to_tick(entry_price, underlying)
+                    elif tp == 1:  # TP2 hit
+                        new_sl = self._round_to_tick(targets[0], underlying)
+                    else:
+                        new_sl = trade['sl']
                     trade['sl'] = new_sl
                     trade['tp_hits'] = tp + 1
                     self.logger.info(

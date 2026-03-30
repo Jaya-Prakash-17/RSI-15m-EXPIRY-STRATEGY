@@ -82,6 +82,10 @@ class LiveTrader:
         # Daily P&L tracking
         self.daily_pnl = 0.0
         
+        # V11: Circuit breaker state
+        self.consecutive_losses = 0
+        self.circuit_breaker_active = False
+        
         # Strategy filters
         self.enable_direction_filter = config['strategy'].get('direction_filter_enabled', False)
         self.max_loss_per_day = config['risk']['max_loss_per_day']
@@ -556,6 +560,11 @@ class LiveTrader:
         - NEGATED/EXPIRED: Cancels pending entry order
         - ENTRY: For backward compatibility (breakout already happened)
         """
+        # V11-P-02: Circuit breaker gate
+        if self.circuit_breaker_active:
+            self.logger.info("[CIRCUIT BREAKER] Active — skipping signal scan for all indices")
+            return
+        
         if self._check_daily_loss_limit():
             self.logger.warning("Daily loss limit reached. Skipping new signals.")
             return
@@ -1201,6 +1210,7 @@ class LiveTrader:
                     trade['reason'] = exit_reason
                     trade['pnl'] = total_pnl
                     self.tracker.close_trade(trade_id, exit_price, exit_reason, total_pnl)
+                    self._update_circuit_breaker(final_pnl, exit_reason)
                     self.trade_logger.log_exit(trade, self.daily_pnl)
                     continue
                 
@@ -1219,6 +1229,7 @@ class LiveTrader:
                         trade['reason'] = reason
                         trade['pnl'] = total_pnl
                         self.tracker.close_trade(trade_id, ltp, reason, total_pnl)
+                        self._update_circuit_breaker(final_pnl, reason)
                         self.trade_logger.log_exit(trade, self.daily_pnl)
                     continue
                 
@@ -1244,6 +1255,7 @@ class LiveTrader:
                     trade['reason'] = "TP3_HIT"
                     trade['pnl'] = total_pnl
                     self.tracker.close_trade(trade_id, ltp, "TP3_HIT", total_pnl)
+                    self._update_circuit_breaker(final_pnl, "TP3_HIT")
                     self.trade_logger.log_exit(trade, self.daily_pnl)
                 
                 continue
@@ -1273,6 +1285,7 @@ class LiveTrader:
                         trade['reason'] = "SL_HIT"
                         trade['pnl'] = total_pnl
                         self.tracker.close_trade(trade_id, fill_price, "SL_HIT", total_pnl)
+                        self._update_circuit_breaker(final_pnl, "SL_HIT")
                         self.trade_logger.log_exit(trade, self.daily_pnl)
                         continue
                     
@@ -1355,6 +1368,7 @@ class LiveTrader:
                         trade['reason'] = reason
                         trade['pnl'] = total_pnl
                         self.tracker.close_trade(trade_id, fill_price, reason, total_pnl)
+                        self._update_circuit_breaker(final_pnl, reason)
                         self.trade_logger.log_exit(trade, self.daily_pnl)
                         break  # Trade is closed
                     
@@ -1374,7 +1388,7 @@ class LiveTrader:
         # Update trail state
         exit_orders['trail_state'] = tp_level
         
-        # Trail SL — same rule as _handle_tp_hit and _handle_multi_lot_exits
+        # Trail SL — absolute prices (matches _handle_tp_hit for live mode)
         new_sl = 0
         if tp_level == 1:
             new_sl = trade['entry_price']  # Move to cost
@@ -1551,136 +1565,37 @@ class LiveTrader:
         if exit_triggered:
             self._close_entire_position(trade, exit_price, reason)
 
-    def _handle_multi_lot_exits(self, trade, ltp, exit_orders, targets, trail_state, alert_range):
-        """Handle multi-lot mode: partial exits + trailing SL.
-        
-        Trailing SL rule (matches _handle_tp_hit for live mode):
-        - TP1: Trail SL to entry_price (cost-to-cost)
-        - TP2: Trail SL to targets[0] (TP1 price)
-        """
-        trade_id = trade['trade_id']
-        symbol = trade['symbol']
-        trading_symbol = trade['trading_symbol']
-        sl_order_id = trade.get('sl_order_id')
-        entry_price = float(trade['entry_price'])
-        
-        # Check TP1 hit (not yet trailed)
-        if ltp >= targets[0] and trail_state == 0:
-            self.logger.info(f"🎯 TP1 HIT for {trade_id} at ₹{ltp}")
-            
-            # Execute partial exit (1 lot)
-            exit_order = exit_orders['orders'][0]
-            qty = exit_order['quantity']
-            
-            self.logger.info(f"Exiting {qty} lots at TP1...")
-            self.om.execute_partial_exit(symbol, trading_symbol, qty, "TP1")
-            exit_order['status'] = 'executed'
-            
-            # CRITICAL FIX: Trail SL to entry_price (cost-to-cost) — matches _handle_tp_hit
-            new_sl = self._round_to_tick(entry_price, trade.get('underlying', 'NIFTY'))
-            exit_orders['current_sl'] = new_sl
-            exit_orders['trail_state'] = 1
-            
-            # Calculate remaining qty and partial P&L
-            remaining_qty = trade.get('remaining_qty', trade['qty']) - qty
-            trade['remaining_qty'] = remaining_qty
-            partial_profit = (ltp - entry_price) * qty
-            self.daily_pnl += partial_profit
-            trade['partial_pnl'] = trade.get('partial_pnl', 0) + partial_profit
-            
-            # Modify broker SL order with new trigger and qty
-            if sl_order_id:
-                self.om.modify_sl_order(sl_order_id, new_sl, remaining_qty)
-                self.logger.info(f"🛡️ Broker SL Modified: {sl_order_id} → ₹{new_sl} | Qty: {remaining_qty}")
-            
-            self.logger.info(f"✅ Partial Exit TP1: {qty} units | P&L: ₹{partial_profit:.2f} | SL trailed to ₹{new_sl}")
-            
-            # Telegram: notify
-            self.telegram.target_hit(symbol, 1, ltp, entry_price, qty, new_sl)
-        
-        # Check TP2 hit
-        elif ltp >= targets[1] and trail_state == 1:
-            self.logger.info(f"🎯 TP2 HIT for {trade_id} at ₹{ltp}")
-            
-            # Execute partial exit (1 lot)
-            exit_order = exit_orders['orders'][1]
-            qty = exit_order['quantity']
-            
-            self.logger.info(f"Exiting {qty} lots at TP2...")
-            self.om.execute_partial_exit(symbol, trading_symbol, qty, "TP2")
-            exit_order['status'] = 'executed'
-            
-            # CRITICAL FIX: Trail SL to TP1 price — matches _handle_tp_hit
-            new_sl = self._round_to_tick(targets[0], trade.get('underlying', 'NIFTY'))
-            exit_orders['current_sl'] = new_sl
-            exit_orders['trail_state'] = 2
-            
-            # Calculate remaining qty and partial P&L
-            remaining_qty = trade.get('remaining_qty', trade['qty']) - qty
-            trade['remaining_qty'] = remaining_qty
-            partial_profit = (ltp - entry_price) * qty
-            self.daily_pnl += partial_profit
-            trade['partial_pnl'] = trade.get('partial_pnl', 0) + partial_profit
-            
-            # Modify broker SL order with new trigger and qty
-            if sl_order_id:
-                self.om.modify_sl_order(sl_order_id, new_sl, remaining_qty)
-                self.logger.info(f"🛡️ Broker SL Modified: {sl_order_id} → ₹{new_sl} | Qty: {remaining_qty}")
-            
-            self.logger.info(f"✅ Partial Exit TP2: {qty} units | P&L: ₹{partial_profit:.2f} | SL trailed to ₹{new_sl}")
-            
-            # Telegram: notify
-            self.telegram.target_hit(symbol, 2, ltp, entry_price, qty, new_sl)
-        
-        # Check TP3 hit (final exit)
-        elif ltp >= targets[2] and trail_state == 2:
-            self.logger.info(f"🎯 TP3 HIT for {trade_id} at ₹{ltp}")
-            
-            # Close remaining position
-            self._close_entire_position(trade, ltp, 'TP3')
+    def _update_circuit_breaker(self, trade_pnl: float, reason: str) -> None:
+        """V11-P-02: Update consecutive loss counter and activate circuit breaker if needed."""
+        max_consec = self.config.get('risk', {}).get('max_consecutive_losses', 999)
 
-    def _handle_single_lot_exits(self, trade, ltp, exit_orders, targets, trail_state, alert_range):
-        """Handle single-lot mode: exit fully at configured target (default: TP2, matching backtest)."""
-        trade_id = trade['trade_id']
-        sl_order_id = trade.get('sl_order_id')
-        
-        # BUG-003 FIX: Config-driven single-lot exit target (default: T2)
-        target_idx = self.config['strategy'].get('single_lot_exit_target', 2) - 1
-        
-        # Trail on TP1 hit (to BE)
-        if target_idx >= 1 and ltp >= targets[0] and trail_state == 0:
-            self.logger.info(f"🎯 TP1 reached for {trade_id} at ₹{ltp}")
-            
-            # Trail SL (no exit) - Move from alert_low-1 to alert_high-1 (Entry)
-            new_sl = exit_orders['current_sl'] + alert_range
-            exit_orders['current_sl'] = new_sl
-            exit_orders['trail_state'] = 1
-            
-            # Modify broker SL order with new trigger
-            if sl_order_id:
-                self.om.modify_sl_order(sl_order_id, new_sl)
-                self.logger.info(f"🛡️ Broker SL Modified: {sl_order_id} → ₹{new_sl} (BE)")
-            
-            self.logger.info(f"✅ SL trailed to ₹{new_sl} (no exit)")
-            # Update trail_state local variable for the next check
-            trail_state = 1
-
-        # Trail on TP2 hit (to TP1 level)
-        if target_idx >= 2 and ltp >= targets[1] and trail_state == 1:
-            self.logger.info(f"🎯 TP2 reached for {trade_id} at ₹{ltp}")
-            
-            # Trail SL (no exit) - Move from alert_high-1 to TP1-1
-            new_sl = exit_orders['current_sl'] + alert_range
-            exit_orders['current_sl'] = new_sl
-            exit_orders['trail_state'] = 2
-            
-        # Check configured target hit (FINAL EXIT for single-lot mode)
-        # Using IF instead of ELIF to allow trail + exit in same poll cycle
-        if ltp >= targets[target_idx]:
-            self.logger.info(f"🎯 TP{target_idx+1} HIT (FINAL) for {trade_id} at ₹{ltp}")
-            
-            # Close entire position
-            self._close_entire_position(trade, ltp, f'TP{target_idx+1}')
+        if trade_pnl < 0 or 'SL' in reason:
+            self.consecutive_losses += 1
+            self.logger.info(
+                f"[CIRCUIT BREAKER] Consecutive losses: {self.consecutive_losses}/{max_consec}"
+            )
+            if self.consecutive_losses >= max_consec:
+                self.circuit_breaker_active = True
+                self.logger.warning(
+                    f"[CIRCUIT BREAKER] ACTIVATED after {self.consecutive_losses} consecutive losses. "
+                    f"No new trades for rest of session."
+                )
+                self.telegram._send(
+                    f"<b>Circuit Breaker Activated</b>\n"
+                    f"{datetime.now().strftime('%H:%M:%S')}\n"
+                    f"{self.consecutive_losses} consecutive losses in a row.\n"
+                    f"No new trades for rest of session.\n"
+                    f"Daily P&L: Rs.{self.daily_pnl:+.0f}"
+                )
+        else:
+            # Reset on any win
+            if self.consecutive_losses > 0:
+                self.logger.info(
+                    f"[CIRCUIT BREAKER] Reset after win. Was at "
+                    f"{self.consecutive_losses} consecutive losses."
+                )
+            self.consecutive_losses = 0
+            self.circuit_breaker_active = False
 
     def _close_entire_position(self, trade, ltp, reason):
         """Close entire position and update tracker."""
@@ -1723,6 +1638,7 @@ class LiveTrader:
         
         # Close trade in tracker
         self.tracker.close_trade(trade_id, ltp, reason, total_pnl)
+        self._update_circuit_breaker(final_pnl, reason)
 
         # Telegram: notify based on exit reason
         entry_price = float(trade['entry_price'])
@@ -1895,6 +1811,7 @@ class LiveTrader:
                         
                         # Actual fill Detection (PROMPT 16 - Tiered approach)
                         actual_fill = None
+                        exit_order_id = None  # V11-P-01: init before conditional to prevent NameError
                         if exit_resp and exit_resp.get('groww_order_id'):
                             exit_order_id = exit_resp['groww_order_id']
                             time.sleep(3)  # Allow time to fill
@@ -1938,6 +1855,7 @@ class LiveTrader:
                         trade['reason'] = "SQ_OFF"
                         trade['pnl'] = total_pnl
                         self.tracker.close_trade(trade['trade_id'], actual_fill, "SQ_OFF", total_pnl)
+                        self._update_circuit_breaker(final_pnl, "SQ_OFF")
                         self.trade_logger.log_exit(trade, self.daily_pnl)
                         self.telegram.square_off(trade['symbol'], actual_fill, float(trade['entry_price']), remaining_qty, "SQ_OFF")
                         
@@ -1973,6 +1891,7 @@ class LiveTrader:
 
                         # Tier 1: Actual fill from our exit order response
                         actual_fill = None
+                        exit_order_id = None  # V11-P-01: init before conditional to prevent NameError
                         if exit_resp and exit_resp.get('groww_order_id'):
                             exit_order_id = exit_resp['groww_order_id']
                             time.sleep(3)  # Allow time to fill

@@ -1,5 +1,6 @@
 # strategy/expiry_rsi_breakout.py
 import pandas as pd
+import numpy as np
 import logging
 from datetime import time
 from core.exceptions import InsufficientDataError
@@ -81,83 +82,62 @@ class ExpiryRSIBreakout:
 
     def calculate_wilder_rsi(self, prices, return_components=False):
         """
-        Broker-grade Wilder's RSI calculation matching Groww's RSI.
+        Wilder's RSI — vectorized via numpy for live trading performance.
+        Numerically identical to the previous loop-based implementation.
         
-        Implementation:
-        1. Calculate price changes (close[i] - close[i-1])
-        2. Separate into gains and losses
-        3. First average: SMA of first N gains/losses (CRITICAL for seeding)
-        4. Subsequent averages: Wilder's smoothing (prior_avg * (N-1) + current_value) / N
-        5. RS = avg_gain / avg_loss
-        6. RSI = 100 - (100 / (1 + RS))
-        
-        Args:
-            prices: Pandas Series of close prices
-            return_components: If True, returns (rsi_series, gains, losses, avg_gains, avg_losses)
-        
-        Returns:
-            RSI series if return_components=False, else tuple with debug info
+        Seeding: SMA of first N price changes (indices 1 to N+1, skipping NaN at 0).
+        Smoothing: avg[i] = (avg[i-1] * (N-1) + value[i]) / N (Wilder's formula).
         """
-        if len(prices) < self.rsi_period + 1:
-            # Need at least period + 1 candles for first RSI value
+        n = self.rsi_period
+        
+        if len(prices) < n + 1:
             if return_components:
                 return None, None, None, None, None
             return None
         
-        # Step 1: Calculate price changes
-        delta = prices.diff()  # price[i] - price[i-1]
+        # Price changes — use numpy for speed
+        close = np.asarray(prices, dtype=np.float64)
+        delta = np.diff(close)  # length = len(close) - 1
         
-        # Step 2: Separate gains and losses
-        gains = delta.copy()
-        losses = delta.copy()
+        gains = np.where(delta > 0, delta, 0.0)
+        losses = np.where(delta < 0, -delta, 0.0)
         
-        gains[gains < 0] = 0  # Gains = positive changes only
-        losses[losses > 0] = 0  # Losses = negative changes only
-        losses = abs(losses)  # Make losses positive for calculation
+        # Seed: SMA of first N changes (indices 0 to N-1 in delta array,
+        # equivalent to prices indices 1 to N+1 used in the original code)
+        seed_gain = gains[:n].mean()
+        seed_loss = losses[:n].mean()
         
-        # Step 3 & 4: Wilder's smoothing with SMA seeding
-        avg_gains = []
-        avg_losses = []
+        # Vectorized Wilder smoothing using numpy loop (single pass, no .iloc overhead)
+        alpha = (n - 1) / n  # = 1 - 1/n
+        inv_n = 1.0 / n
         
-        # Calculate first average using SMA of first N periods
-        # Start from index 1 (skip NaN from diff) to index N+1
-        first_avg_gain = gains.iloc[1:self.rsi_period+1].mean()
-        first_avg_loss = losses.iloc[1:self.rsi_period+1].mean()
+        avg_gains = np.empty(len(delta), dtype=np.float64)
+        avg_losses = np.empty(len(delta), dtype=np.float64)
         
-        avg_gains.append(first_avg_gain)
-        avg_losses.append(first_avg_loss)
+        # Fill pre-seed with NaN
+        avg_gains[:n-1] = np.nan
+        avg_losses[:n-1] = np.nan
         
-        # Calculate subsequent averages using Wilder's smoothing
-        # Formula: avg[i] = (avg[i-1] * (N-1) + value[i]) / N
-        for i in range(self.rsi_period + 1, len(gains)):
-            current_gain = gains.iloc[i]
-            current_loss = losses.iloc[i]
-            
-            new_avg_gain = (avg_gains[-1] * (self.rsi_period - 1) + current_gain) / self.rsi_period
-            new_avg_loss = (avg_losses[-1] * (self.rsi_period - 1) + current_loss) / self.rsi_period
-            
-            avg_gains.append(new_avg_gain)
-            avg_losses.append(new_avg_loss)
+        # Seed at position n-1
+        avg_gains[n-1] = seed_gain
+        avg_losses[n-1] = seed_loss
         
-        # Step 5 & 6: Calculate RSI
-        rsi_values = []
-        for avg_gain, avg_loss in zip(avg_gains, avg_losses):
-            if avg_loss == 0:
-                # No losses = RSI 100
-                rsi_values.append(100.0)
-            else:
-                rs = avg_gain / avg_loss
-                rsi = 100 - (100 / (1 + rs))
-                rsi_values.append(rsi)
+        # Wilder smoothing from seed onwards
+        for i in range(n, len(delta)):
+            avg_gains[i] = avg_gains[i-1] * alpha + gains[i] * inv_n
+            avg_losses[i] = avg_losses[i-1] * alpha + losses[i] * inv_n
         
-        # Create RSI series aligned with prices
-        # RSI starts at index rsi_period (first N candles have no RSI)
+        # Calculate RSI
+        with np.errstate(divide='ignore', invalid='ignore'):
+            rs = np.where(avg_losses == 0, np.inf, avg_gains / avg_losses)
+            rsi_values = np.where(avg_losses == 0, 100.0, 100.0 - 100.0 / (1.0 + rs))
+        
+        # Align with original prices index (RSI starts at index n, prices index n+1)
         rsi_series = pd.Series(index=prices.index, dtype=float)
-        rsi_series.iloc[self.rsi_period:] = rsi_values
+        rsi_series.iloc[n:] = rsi_values[n-1:]
         
         if return_components:
-            return rsi_series, gains, losses, avg_gains, avg_losses
-        
+            return rsi_series, gains, losses, list(avg_gains), list(avg_losses)
         return rsi_series
 
     def calculate_latest_rsi(self, prices):
