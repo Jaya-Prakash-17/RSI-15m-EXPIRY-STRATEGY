@@ -5,6 +5,7 @@ import pytz
 import json
 import time
 import os
+import tempfile
 import pandas as pd
 from datetime import datetime, time as datetime_time, timedelta
 from data.data_manager import DataManager
@@ -235,6 +236,14 @@ class LiveTrader:
             self.spot_symbols[underlying] = underlying
             self.tracked_options[underlying] = {}  # Nested dict: {underlying: {symbol: df}}
         
+        # Clear stale data from previous sessions to keep bot_trades.json lean
+        # This moves any lingering active trades (from a previous session that
+        # didn't square off cleanly) to closed status before reconciliation.
+        # Must run BEFORE _reconcile_positions() so reconciliation starts clean.
+        self.tracker.clear_day_data()
+        self.tracker.trim_old_closed_trades(keep_days=30)
+        self.logger.info("Session data cleared: previous day's trades archived")
+
         # Reconcile positions on startup
         self._reconcile_positions()
         
@@ -270,7 +279,7 @@ class LiveTrader:
             if active_trades:
                 self.logger.warning(f"Found {len(active_trades)} active trades from previous session:")
                 for trade in active_trades:
-                    self.logger.warning(f"  - {trade['symbol']} | Qty: {trade.get('remaining_qty', trade['qty'])} | Entry: {trade['entry_price']}")
+                    self.logger.warning(f"  - {trade['symbol']} | Qty: {TradeTracker.get_remaining_qty(trade)} | Entry: {trade['entry_price']}")
                 self.logger.warning("⚠️  These positions will be managed by the bot")
             else:
                 self.logger.info("No active bot trades found. Starting fresh.")
@@ -529,7 +538,7 @@ class LiveTrader:
         for trade in active_trades:
             ltp = self._get_ltp_cached(trade.get('symbol', ''))  # P-20 cached
             if ltp and ltp > 0:
-                remaining_qty = trade.get('remaining_qty', trade.get('qty', 0))
+                remaining_qty = TradeTracker.get_remaining_qty(trade)
                 entry_price = float(trade.get('entry_price', 0))
                 unrealized = (ltp - entry_price) * remaining_qty
                 total_unrealized += unrealized
@@ -812,6 +821,18 @@ class LiveTrader:
                         f"⚠️ Failed to cancel pending order {order_id}. "
                         f"Keeping {symbol} in monitoring."
                     )
+                    # Telegram alert: trader must know this — cancel fail leaves
+                    # a live SL-M order at the broker that may still fill
+                    self.telegram._send(
+                        f"⚠️ <b>Cancel Order Failed</b>\n"
+                        f"Symbol: <code>{symbol}</code>\n"
+                        f"Order: {order_id}\n"
+                        f"Reason: {reason}\n"
+                        f"The SL-M entry order is still live at Groww.\n"
+                        f"If price hits ₹{pending.get('trigger_price', '?')}, "
+                        f"the trade will activate automatically.\n"
+                        f"Monitor closely or cancel manually in Groww app."
+                    )
                     return  # DO NOT delete — continue monitoring this symbol
             except Exception as e:
                 self.logger.error(f"Error canceling pending order: {e}")
@@ -832,13 +853,24 @@ class LiveTrader:
 
     def _save_strategy_state(self):
         filepath = 'data/strategy_state.json'
+        dir_name = os.path.dirname(os.path.abspath(filepath))
+        temp_path = None
         try:
             import json
             state = self.strategy.export_state()
-            with open(filepath, 'w') as f:
-                json.dump(state, f, indent=2, default=str)
+            with tempfile.NamedTemporaryFile(
+                mode='w', dir=dir_name, delete=False, suffix='.tmp'
+            ) as tf:
+                json.dump(state, tf, indent=2, default=str)
+                temp_path = tf.name
+            os.replace(temp_path, filepath)
         except Exception as e:
             self.logger.warning(f"Could not save strategy state: {e}")
+            if temp_path and os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except Exception:
+                    pass
 
     def _place_pending_entry(self, candidate):
         """Place a pending SL-M BUY order when an alert is generated."""
@@ -1220,9 +1252,9 @@ class LiveTrader:
                     target_idx = self.config.get('strategy', {}).get('single_lot_exit_target', 2) - 1
                     target_price = targets[target_idx] if target_idx < len(targets) else targets[-1]
                     if ltp >= target_price:
-                        # Single lot mode: Target is final exit
-                        self.logger.info(f"🎯 [PAPER] TARGET HIT (FINAL) for {symbol} @ ₹{ltp} - Closing Trade")
-                        final_pnl = (ltp - float(trade['entry_price'])) * float(trade['remaining_qty'])
+                        fill_price = target_price  # Limit sell fills at target price
+                        self.logger.info(f"🎯 [PAPER] TARGET HIT (FINAL) for {symbol} @ ₹{fill_price} (LTP: ₹{ltp:.2f}) - Closing Trade")
+                        final_pnl = (fill_price - float(trade['entry_price'])) * float(trade['remaining_qty'])
                         total_pnl = final_pnl + float(trade.get('partial_pnl', 0))
                         self.daily_pnl += final_pnl
                         reason = f"TP{target_idx+1}_HIT"
@@ -1236,20 +1268,23 @@ class LiveTrader:
                 
                 # Check TP1 (multi-lot only - trail SL)
                 if exit_mode == 'multi_lot' and len(targets) > 0 and trail_state < 1 and ltp >= targets[0]:
-                    self.logger.info(f"🎯 [PAPER] TP1 HIT for {symbol} @ ₹{ltp}")
-                    self._handle_paper_tp_hit(trade, 1, ltp)
+                    tp1_fill = targets[0]  # Limit sell fills at target price (not current LTP)
+                    self.logger.info(f"🎯 [PAPER] TP1 HIT for {symbol} @ ₹{tp1_fill} (LTP: ₹{ltp:.2f})")
+                    self._handle_paper_tp_hit(trade, 1, tp1_fill)
                     trail_state = trade.get('exit_orders', {}).get('trail_state', 0)  # Re-read
                 
                 # Check TP2 
                 if exit_mode == 'multi_lot' and len(targets) > 1 and trail_state == 1 and ltp >= targets[1]:
-                    self.logger.info(f"🎯 [PAPER] TP2 HIT for {symbol} @ ₹{ltp}")
-                    self._handle_paper_tp_hit(trade, 2, ltp)
+                    tp2_fill = targets[1]  # Limit sell fills at target price
+                    self.logger.info(f"🎯 [PAPER] TP2 HIT for {symbol} @ ₹{tp2_fill} (LTP: ₹{ltp:.2f})")
+                    self._handle_paper_tp_hit(trade, 2, tp2_fill)
                     trail_state = trade.get('exit_orders', {}).get('trail_state', 0)  # Re-read
                 
                 # Check TP3 (multi-lot only - final exit)
                 if exit_mode == 'multi_lot' and len(targets) > 2 and trail_state == 2 and ltp >= targets[2]:
-                    self.logger.info(f"🚀 [PAPER] TP3 HIT for {symbol} @ ₹{ltp} - Closing Trade")
-                    final_pnl = (ltp - float(trade['entry_price'])) * float(trade['remaining_qty'])
+                    tp3_fill = targets[2]  # Limit sell fills at target price
+                    self.logger.info(f"🚀 [PAPER] TP3 HIT for {symbol} @ ₹{tp3_fill} (LTP: ₹{ltp:.2f}) - Closing Trade")
+                    final_pnl = (tp3_fill - float(trade['entry_price'])) * float(trade['remaining_qty'])
                     total_pnl = final_pnl + float(trade.get('partial_pnl', 0))
                     self.daily_pnl += final_pnl
                     trade['exit_price'] = ltp
@@ -1303,7 +1338,7 @@ class LiveTrader:
                             f"Re-placing SL now..."
                         )
                         current_sl = trade.get('exit_orders', {}).get('current_sl', trade['sl'])
-                        remaining_qty = trade.get('remaining_qty', trade['qty'])
+                        remaining_qty = TradeTracker.get_remaining_qty(trade)
                         underlying = trade.get('underlying', 'NIFTY')
                         trading_symbol = trade.get('trading_symbol', symbol)
                         
@@ -1378,8 +1413,7 @@ class LiveTrader:
                         self.logger.info(f"🎯 TP{tp_level} HIT for {symbol}")
                         self._handle_tp_hit(trade, tp_level, t_status)
                         trail_state = trade.get('exit_orders', {}).get('trail_state', 0)
-    
-    def _handle_paper_tp_hit(self, trade, tp_level, ltp):
+    def _handle_paper_tp_hit(self, trade, tp_level, fill_price):
         """Handle paper trading TP hit with LTP-based simulation."""
         trade_id = trade['trade_id']
         exit_orders = trade.get('exit_orders', {})
@@ -1412,12 +1446,12 @@ class LiveTrader:
         else:
             partial_qty = remainder * lot_size
             
-        partial_profit = (ltp - float(trade['entry_price'])) * partial_qty
+        partial_profit = (fill_price - float(trade['entry_price'])) * partial_qty
         self.daily_pnl += partial_profit
         trade['partial_pnl'] = trade.get('partial_pnl', 0) + partial_profit
         
         # Update remaining qty
-        remaining = trade.get('remaining_qty', trade['qty']) - partial_qty
+        remaining = TradeTracker.get_remaining_qty(trade) - partial_qty
         trade['remaining_qty'] = remaining
         
         self.tracker.update_trade(trade_id, {
@@ -1429,7 +1463,7 @@ class LiveTrader:
         self.logger.info(f"✅ [PAPER] Partial Exit TP{tp_level}: {partial_qty} units | P&L: ₹{partial_profit:.2f}")
         
         # Telegram: notify
-        self.telegram.target_hit(trade['symbol'], tp_level, ltp, float(trade['entry_price']), partial_qty, new_sl if new_sl > 0 else None)
+        self.telegram.target_hit(trade['symbol'], tp_level, fill_price, float(trade['entry_price']), partial_qty, new_sl if new_sl > 0 else None)
 
     def _handle_tp_hit(self, trade, tp_level, order_status):
         """Handle logic when a Target is hit (Partial Exit + Trail SL)."""
@@ -1576,7 +1610,7 @@ class LiveTrader:
         symbol = trade['symbol']
         trading_symbol = trade['trading_symbol']
         trade_id = trade['trade_id']
-        remaining_qty = trade.get('remaining_qty', trade['qty'])
+        remaining_qty = TradeTracker.get_remaining_qty(trade)
         sl_order_id = trade.get('sl_order_id')
         exit_orders = trade.get('exit_orders', {})
         
@@ -1776,7 +1810,7 @@ class LiveTrader:
                                 try: self.om.cancel_order(tid)
                                 except: pass
                         
-                        remaining_qty = trade.get('remaining_qty', trade['qty'])
+                        remaining_qty = TradeTracker.get_remaining_qty(trade)
                         
                         # Place exit order
                         exit_resp = self.om.place_exit_order(
@@ -1843,7 +1877,7 @@ class LiveTrader:
                     # Square off remaining positions
                     active_trades = self.tracker.get_active_trades()
                     for trade in active_trades:
-                        remaining_qty = trade.get('remaining_qty', trade['qty'])
+                        remaining_qty = TradeTracker.get_remaining_qty(trade)
 
                         # Cancel broker SL / target orders first
                         sl_id = trade.get('sl_order_id')

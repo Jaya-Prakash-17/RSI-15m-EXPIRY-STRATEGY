@@ -739,7 +739,7 @@ class IntradayEngine:
         
         # BUG-001 FIX: Use remaining_qty (not original qty) to avoid
         # inflated P&L after partial exits at TP1/TP2
-        remaining = trade.get('remaining_qty', trade['qty'])
+        remaining = TradeTracker.get_remaining_qty(trade)
         partial_pnl = trade.get('partial_pnl', 0)
         credit = exit_price * remaining
         self.capital += credit

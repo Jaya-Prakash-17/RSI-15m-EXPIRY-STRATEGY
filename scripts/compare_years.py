@@ -70,8 +70,8 @@ def print_table(results):
         dd_ok = dd > -35.0
         wr_ok = 25 <= wr <= 55  # Relaxed range for different market regimes
 
-        verdict = "PASS" if (pf_ok and dd_ok) else "FAIL"
-        if not (pf_ok and dd_ok):
+        verdict = "PASS" if (pf_ok and dd_ok and wr_ok) else "FAIL"
+        if not (pf_ok and dd_ok and wr_ok):
             all_pass = False
 
         flags = []
@@ -80,7 +80,10 @@ def print_table(results):
         if not dd_ok:
             flags.append(f"DD={dd:.1f}%")
         if not wr_ok:
-            flags.append(f"WR={wr:.1f}%")
+            if wr < 25:
+                flags.append(f"WR={wr:.1f}%<25% (strategy too noisy or data issue)")
+            else:
+                flags.append(f"WR={wr:.1f}%>55% (suspiciously high — check for look-ahead bias)")
 
         flag_str = " | ".join(flags) if flags else ""
         print(
@@ -90,8 +93,10 @@ def print_table(results):
         )
 
     print("=" * 80)
-    print(f"\nGO/NO-GO CRITERIA:")
-    print(f"  Profit Factor >= 1.1 | Max Drawdown > -35%")
+    print(f"\nGO/NO-GO CRITERIA (ALL must pass):")
+    print(f"  Profit Factor >= 1.1")
+    print(f"  Max Drawdown > -35%")
+    print(f"  Win Rate 25%-55% (strategy behaving as designed)")
     print(
         f"\nFINAL VERDICT: {'ALL YEARS PASS - ready for live consideration' if all_pass else 'STRATEGY FAILS OUT-OF-SAMPLE - do not deploy live'}"
     )

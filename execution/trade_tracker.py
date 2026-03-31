@@ -301,11 +301,14 @@ class TradeTracker:
     # --- Pending Entries Persistence (MEDIUM FIX) ---
     
     def save_pending_entries(self, pending_entries):
-        """Persist pending entries to JSON so they survive crashes."""
+        """Persist pending entries atomically. Uses tempfile+os.replace
+        to prevent corruption on crash between truncate and write."""
         with self.lock:
             filepath = self.filepath.replace("bot_trades", "pending_entries")
+            dir_name = os.path.dirname(os.path.abspath(filepath))
+            temp_path = None
             try:
-                # Convert datetime objects to strings for JSON serialization
+                # Serialise datetime objects
                 serializable = {}
                 for symbol, entry in pending_entries.items():
                     entry_copy = {}
@@ -318,10 +321,22 @@ class TradeTracker:
                             entry_copy[k] = v
                     serializable[symbol] = entry_copy
                 
-                with open(filepath, 'w') as f:
-                    json.dump(serializable, f, indent=2, default=str)
+                # Atomic write: write to temp file, then replace atomically
+                with tempfile.NamedTemporaryFile(
+                    mode='w', dir=dir_name, delete=False, suffix='.tmp'
+                ) as tf:
+                    json.dump(serializable, tf, indent=2, default=str)
+                    temp_path = tf.name
+                
+                os.replace(temp_path, filepath)  # atomic on POSIX; near-atomic on Windows
+                
             except Exception as e:
                 self.logger.error(f"Error saving pending entries: {e}")
+                if temp_path and os.path.exists(temp_path):
+                    try:
+                        os.remove(temp_path)
+                    except Exception:
+                        pass
 
     def load_pending_entries(self):
         """Load pending entries from JSON (for crash recovery)."""
@@ -345,3 +360,22 @@ class TradeTracker:
                         json.dump({}, f)
             except Exception as e:
                 self.logger.error(f"Error clearing pending entries: {e}")
+
+    def trim_old_closed_trades(self, keep_days: int = 30):
+        """Remove closed trades older than keep_days from the file.
+        Keeps the JSON file lean over long-running operation."""
+        from datetime import datetime, timedelta
+        cutoff = datetime.now() - timedelta(days=keep_days)
+        cutoff_str = cutoff.strftime("%Y%m%d")
+        
+        with self.lock:
+            data = self._load_data()
+            before = len(data["closed_trades"])
+            data["closed_trades"] = [
+                t for t in data["closed_trades"]
+                if t.get("trade_id", "").split("_")[1] >= cutoff_str
+            ]
+            after = len(data["closed_trades"])
+            if before != after:
+                self._save_data(data)
+                self.logger.info(f"Trimmed {before - after} old closed trades (kept {after})")
