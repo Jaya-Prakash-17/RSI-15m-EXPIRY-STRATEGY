@@ -43,7 +43,6 @@ strategy:
   max_lots: 5
   max_position_pct: 0.8
   min_sl_pct: 0.10
-  min_volume: 1000
   risk_per_trade_pct: 0.05
   rsi:
     min_candles_for_signal: 27
@@ -55,12 +54,9 @@ strategy:
   safe_sl_mode: true
   signal_window_end: '13:30'
   signal_window_start: '10:00'
-  single_lot_exit_target: 3
+  single_lot_exit_target: 2
   strike_range: 4
   trade_only_on_expiry: false
-  trailing_stop:
-    enabled: true
-    move_by_alert_range: true
 trading:
   order_poll_interval_seconds: 5
   paper_trading: true

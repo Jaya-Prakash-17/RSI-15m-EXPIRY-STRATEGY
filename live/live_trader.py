@@ -433,10 +433,11 @@ class LiveTrader:
         
         return warmup_start
 
-    def _update_option_universe(self):
+    def _update_option_universe(self, warmup_start=None):
         """Update tracked option universe based on current spot price for ALL indices."""
         now = datetime.now()
-        warmup_start = self._get_warmup_start_time()
+        if warmup_start is None:
+            warmup_start = self._get_warmup_start_time()
         
         for underlying in self.underlyings:
             spot_symbol = self.spot_symbols.get(underlying, underlying)
@@ -491,12 +492,12 @@ class LiveTrader:
                         self.logger.info(f"Adding {symbol} to tracking for {underlying}.")
                         self.tracked_options[underlying][symbol] = pd.DataFrame()
 
-    def _poll_candle_close(self):
-        """Check if a new candle has closed (uses first underlying for timing)."""
-        now = datetime.now()
-        warmup_start = self._get_warmup_start_time()
+    def _poll_candle_close(self, warmup_start=None):
+        """Poll latest spot candle to detect 15-min period close."""
+        if warmup_start is None:
+            warmup_start = self._get_warmup_start_time()
         
-        # Use first underlying for candle timing (all indices have same candle timing)
+        now = datetime.now()
         first_underlying = self.underlyings[0] if self.underlyings else None
         if not first_underlying:
             return False
@@ -566,7 +567,7 @@ class LiveTrader:
             return True
         return False
 
-    def _process_strategy_logic(self):
+    def _process_strategy_logic(self, warmup_start=None):
         """Process strategy logic for all tracked options across ALL indices.
         
         Handles:
@@ -574,6 +575,8 @@ class LiveTrader:
         - NEGATED/EXPIRED: Cancels pending entry order
         - ENTRY: For backward compatibility (breakout already happened)
         """
+        if warmup_start is None:
+            warmup_start = self._get_warmup_start_time()
         # V11-P-02: Circuit breaker gate
         if self.circuit_breaker_active:
             self.logger.info("[CIRCUIT BREAKER] Active — skipping signal scan for all indices")
@@ -1227,7 +1230,7 @@ class LiveTrader:
             
             # --- BEGIN SINGLE LOT SL TRAILING (LIVE & PAPER) ---
             if exit_mode == 'single_lot' and len(targets) > 0:
-                ltp = self.client.get_ltp(symbol)
+                ltp = self._get_ltp_cached(symbol)
                 if ltp is not None:
                     target_idx = self.config.get('strategy', {}).get('single_lot_exit_target', 2) - 1
                     for tp in range(trail_state, target_idx):
@@ -1264,7 +1267,7 @@ class LiveTrader:
 
             # PAPER TRADING: Use LTP-based simulation
             if self.paper_trading and sl_order_id and sl_order_id.startswith('PAPER_'):
-                ltp = self.client.get_ltp(symbol)
+                ltp = self._get_ltp_cached(symbol)
                 if ltp is None:
                     continue
                 
@@ -1324,10 +1327,28 @@ class LiveTrader:
                 
                 # Check TP3 (multi-lot only - final exit)
                 if exit_mode == 'multi_lot' and len(targets) > 2 and trail_state == 2 and ltp >= targets[2]:
-                    tp3_fill = targets[2]  # Limit sell fills at target price
+                    tp3_fill = targets[2]  # Limit sell fills at target price (not current LTP)
                     self.logger.info(f"🚀 [PAPER] TP3 HIT for {symbol} @ ₹{tp3_fill} (LTP: ₹{ltp:.2f}) - Closing Trade")
                     final_pnl = (tp3_fill - float(trade['entry_price'])) * float(trade['remaining_qty'])
                     total_pnl = final_pnl + float(trade.get('partial_pnl', 0))
+                    self.daily_pnl += final_pnl
+                    reason = "TP3_HIT"
+                    trade['exit_price'] = tp3_fill
+                    trade['exit_time'] = datetime.now().isoformat()
+                    trade['reason'] = reason
+                    trade['pnl'] = total_pnl
+                    self.tracker.close_trade(trade_id, tp3_fill, reason, total_pnl)
+                    self._update_circuit_breaker(final_pnl, reason)
+                    self.trade_logger.log_exit(trade, self.daily_pnl)
+                    self.telegram.target_hit(
+                        symbol=symbol,
+                        tp_num=3,
+                        price=tp3_fill,
+                        entry_price=float(trade['entry_price']),
+                        qty_exited=int(trade.get('remaining_qty', 0)),
+                        new_sl=None
+                    )
+                    continue  # CRITICAL: prevents fall-through to live section
                         # ─── LIVE TRADING MONITORING (Broker Calls) ──────────────────────
             if not self.paper_trading:
                 # 1. Check SL Order Status
@@ -1395,7 +1416,7 @@ class LiveTrader:
                                     f"🚨🚨 SL RE-PLACEMENT FAILED for {symbol}! "
                                     f"EMERGENCY EXIT to protect capital."
                                 )
-                                ltp = self.client.get_ltp(symbol) or current_sl
+                                ltp = self._get_ltp_cached(symbol) or current_sl
                                 self.om.place_exit_order(symbol, remaining_qty, trading_symbol, "EMERGENCY_NO_SL")
                                 self.tracker.close_trade(trade_id, ltp, "EMERGENCY_NO_SL", trade.get('partial_pnl', 0))
                                 continue
@@ -2008,9 +2029,10 @@ class LiveTrader:
                     self._halt_alert_sent = False
 
                 # Process Candle Logic
-                if self._poll_candle_close():
-                    self._update_option_universe()
-                    self._process_strategy_logic()
+                warmup_start = self._get_warmup_start_time()
+                if self._poll_candle_close(warmup_start):
+                    self._update_option_universe(warmup_start)
+                    self._process_strategy_logic(warmup_start)
 
                 # Monitor active positions and pending entries (throttled to ORDER_POLL_INTERVAL)
                 # Order status API calls are expensive — checking every 5s is sufficient

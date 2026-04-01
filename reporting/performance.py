@@ -67,7 +67,7 @@ class PerformanceReporter:
             'total': total_charges
         }
 
-    def calculate_advanced_stats(self, trades_df):
+    def calculate_advanced_stats(self, trades_df, initial_cap=None):
         """Calculate advanced performance statistics"""
         if trades_df.empty:
             return {}
@@ -93,12 +93,27 @@ class PerformanceReporter:
         gross_loss = abs(loss_trades['pnl_net'].sum()) if not loss_trades.empty else 1
         profit_factor = gross_profit / gross_loss if gross_loss > 0 else float('inf')
         
-        # Drawdown
-        cum_pnl = pnl.cumsum()
-        peak = cum_pnl.cummax()
-        drawdown = cum_pnl - peak
-        max_drawdown = drawdown.min()
-        max_drawdown_pct = (max_drawdown / peak.max() * 100) if peak.max() > 0 else 0
+        # Drawdown — use running_capital (actual equity) if available;
+        # fallback to initial_cap-based calculation.
+        # Using cumulative P&L peak as denominator produces >100% values when
+        # early losses precede later recovery (e.g. -154% in Jan-Mar 2026).
+        if 'running_capital' in trades_df.columns and initial_cap is not None:
+            cap_series = pd.concat([
+                pd.Series([float(initial_cap)]),
+                trades_df['running_capital'].reset_index(drop=True)
+            ]).reset_index(drop=True)
+            peak_cap = cap_series.cummax()
+            drawdown_cap = cap_series - peak_cap
+            max_drawdown = drawdown_cap.min()
+            max_drawdown_pct = (max_drawdown / peak_cap.max() * 100) if peak_cap.max() > 0 else 0
+        else:
+            # Fallback: use initial capital as denominator (still better than peak cumPnL)
+            cum_pnl = pnl.cumsum()
+            peak = cum_pnl.cummax()
+            drawdown = cum_pnl - peak
+            max_drawdown = drawdown.min()
+            denom = float(initial_cap) if initial_cap and initial_cap > 0 else (peak.max() if peak.max() > 0 else 1)
+            max_drawdown_pct = (max_drawdown / denom * 100)
         
         # Risk-adjusted metrics
         std_pnl = pnl.std() if len(pnl) > 1 else 0
@@ -277,7 +292,8 @@ class PerformanceReporter:
             trades_df['pnl_net'] = trades_df['pnl_gross'] - trades_df['charges']
 
         # Calculate all statistics
-        stats = self.calculate_advanced_stats(trades_df)
+        initial_cap = self.config.get('capital', {}).get('initial', None)
+        stats = self.calculate_advanced_stats(trades_df, initial_cap=initial_cap)
         total_charges = trades_df['charges'].sum()
         total_slippage = trades_df['slippage'].sum()
 
