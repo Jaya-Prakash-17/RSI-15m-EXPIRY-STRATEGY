@@ -23,33 +23,84 @@ class DataManager:
         self.data_cache = {}
         self.logger.info("Data cache cleared.")
 
+    def _check_for_gaps(self, df, start_date, end_date, symbol):
+        """
+        P-04: Internal Gap Detection.
+        Validates whether the dataframe contains expected trading sessions.
+        Returns a list of missing (start, end) date segments.
+        """
+        if df.empty:
+            return [(start_date, end_date)]
+
+        df = df.copy()
+        df['date'] = df['datetime'].dt.date
+        actual_days = sorted(df['date'].unique())
+        
+        # Determine expected trading days (Monday-Friday)
+        expected_days = pd.date_range(start=start_date, end=end_date, freq='B').date
+        
+        missing_segments = []
+        current_missing_start = None
+        
+        for day in expected_days:
+            # Simple check: Does at least one candle exist for this trading day?
+            if day not in actual_days:
+                if current_missing_start is None:
+                    current_missing_start = day
+            else:
+                if current_missing_start is not None:
+                    # Found the end of a gap
+                    missing_segments.append((
+                        pd.to_datetime(current_missing_start), 
+                        pd.to_datetime(day) - timedelta(seconds=1)
+                    ))
+                    current_missing_start = None
+        
+        # Handle trailing gap at end of range
+        if current_missing_start is not None:
+            missing_segments.append((pd.to_datetime(current_missing_start), end_date))
+            
+        return missing_segments
+
     def get_spot_candles(self, symbol, start_date, end_date, refresh=False):
         filepath = os.path.join(self.base_path, "spot", f"{symbol}_15m.csv")
         
+        # 1. Basic coverage check (Boundary)
         need_download = refresh or not os.path.exists(filepath)
+        gaps = []
         
-        # Check if existing file covers the requested date range
         if not need_download and os.path.exists(filepath):
-            existing_df = self._load_csv(filepath)
-            if not existing_df.empty and 'datetime' in existing_df.columns:
-                existing_df['datetime'] = pd.to_datetime(existing_df['datetime'])
-                file_max_date = existing_df['datetime'].max().date()
-                file_min_date = existing_df['datetime'].min().date()
-                requested_end = end_date.date() if hasattr(end_date, 'date') else end_date
-                requested_start = start_date.date() if hasattr(start_date, 'date') else start_date
+            df = self._load_csv(filepath)
+            if df.empty:
+                need_download = True
+            else:
+                df['datetime'] = pd.to_datetime(df['datetime'])
+                file_min = df['datetime'].min()
+                file_max = df['datetime'].max()
                 
-                # If file doesn't cover requested start or end dates, re-download
-                if file_max_date < requested_end or file_min_date > requested_start:
-                    self.logger.info(f"Spot data for {symbol} needs update (file: {file_min_date} to {file_max_date}, need {requested_start} to {requested_end})")
+                # Boundary check
+                if file_min > start_date or file_max < end_date:
+                    self.logger.info(f"Spot {symbol} boundary mismatch: file={file_min.date()} to {file_max.date()}, requested={start_date.date()} to {end_date.date()}")
                     need_download = True
-        
+                else:
+                    # 2. P-04: Interval Gap Check (Core Requirement)
+                    gaps = self._check_for_gaps(df, start_date, end_date, symbol)
+                    if gaps:
+                        self.logger.warning(f"Detected {len(gaps)} gaps in {symbol} spot data.")
+                        for gs, ge in gaps:
+                            self.logger.info(f"  Missing: {gs.date()} to {ge.date()}")
+                        need_download = True # Trigger Repair/Download
+
         if need_download:
-            self.logger.info(f"Spot data for {symbol} missing or refresh requested.")
-            success = self.downloader.download_spot_data(symbol, start_date, end_date)
-            if not success and not os.path.exists(filepath):
-                # Return empty DataFrame instead of crashing - allows graceful skip
-                self.logger.warning(f"No spot data available for {symbol} - skipping")
-                return pd.DataFrame()
+            if gaps:
+                self.logger.info(f"Attempting to repair {len(gaps)} gaps for {symbol}...")
+                for gs, ge in gaps:
+                    self.downloader.download_spot_data(symbol, gs, ge)
+            else:
+                # Full or Boundary download
+                self.downloader.download_spot_data(symbol, start_date, end_date)
+            
+            # Clear cache so we reload the repaired file
             if filepath in self.data_cache: del self.data_cache[filepath]
         
         df = self._load_csv(filepath)

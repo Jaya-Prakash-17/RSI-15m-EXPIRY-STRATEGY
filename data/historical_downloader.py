@@ -88,6 +88,7 @@ class HistoricalDownloader:
         chunk_num = 0
         
         while chunk_start < end_date:
+            # P-01: Correct chunking - end is start + max_days (not skipping a day)
             chunk_end = min(chunk_start + timedelta(days=max_days), end_date)
             chunk_num += 1
             
@@ -97,11 +98,12 @@ class HistoricalDownloader:
             if df is not None and not df.empty:
                 all_dfs.append(df)
             
-            # Move to next chunk
-            chunk_start = chunk_end + timedelta(days=1)
+            # P-02: Next chunk starts exactly where this one ended (no day skipped)
+            # The API and merge logic handle duplicates naturally
+            chunk_start = chunk_end
             
             # Small delay between chunks to avoid rate limiting
-            time.sleep(0.5)
+            time.sleep(1.0)
         
         if not all_dfs:
             self.logger.warning(f"No data downloaded for {symbol}")
@@ -120,11 +122,19 @@ class HistoricalDownloader:
         for attempt in range(self.retry_count):
             try:
                 df = self.client.get_historical_candles(symbol, interval, start_date, end_date)
+                
+                # P-03: Suspicious Empty Handle
+                # If df is empty but we requested a multi-day range, it might be a transient API glitch.
+                # Retrying 1-2 times before accepting "No Data" as terminal.
+                if df is not None and df.empty:
+                    days_requested = (end_date - start_date).days
+                    if days_requested > 2: # Logic: Weekends exist, but 3+ days should have SOME data
+                        self.logger.warning(f"Attempt {attempt+1}: Suspiciously empty response for {symbol} ({days_requested} days). Retrying...")
+                        time.sleep(2 * (attempt + 1))
+                        continue
+                    return df # Accept empty for < 2 days (often weekend/holiday)
+                
                 if df is not None and not df.empty:
-                    return df
-                elif df is not None and df.empty:
-                    # Empty but 200 OK. Maybe data doesn't exist yet.
-                    self.logger.debug(f"Attempt {attempt+1}: Empty dataframe for {symbol} (historical range: {start_date} to {end_date})")
                     return df
                     
             except Exception as e:
@@ -132,9 +142,9 @@ class HistoricalDownloader:
                 is_rate_limit = "429" in msg or "rate limit" in msg
                 
                 # Exponential backoff with jitter
-                wait_time = (2 ** attempt) + (random.random() * 2)
+                wait_time = (5 ** attempt) + (random.random() * 5)
                 if is_rate_limit:
-                    wait_time += 5  # extra penalty for 429
+                    wait_time += 15  # Heavy penalty for 429 to allow bucket reset
                     self.logger.warning(f"429 Rate Limit hit. Cooling off for {wait_time:.1f}s (Attempt {attempt+1})")
                 else:
                     self.logger.warning(f"Download attempt {attempt+1} failed for {symbol}: {e}. Waiting {wait_time:.1f}s")
