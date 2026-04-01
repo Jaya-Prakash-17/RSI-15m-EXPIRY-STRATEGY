@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 import pytz
 from data.historical_downloader import HistoricalDownloader
 from core.exceptions import DataError
+from utils.symbol_parser import build_option_symbol
 
 class DataManager:
     def __init__(self, config):

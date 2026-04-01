@@ -1,6 +1,6 @@
 backtest:
-  end_date: '2025-12-31'
-  start_date: '2025-01-01'
+  end_date: '2026-03-31'
+  start_date: '2026-01-01'
 capital:
   initial: 200000
 charges:
@@ -43,7 +43,7 @@ strategy:
   max_lots: 5
   max_position_pct: 0.8
   min_sl_pct: 0.10
-  min_volume: 10000
+  min_volume: 1000
   risk_per_trade_pct: 0.05
   rsi:
     min_candles_for_signal: 27

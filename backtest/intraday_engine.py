@@ -6,6 +6,7 @@ from datetime import datetime, time, timedelta
 from utils.nse_calendar import is_trading_day
 from utils.symbol_parser import detect_underlying   # P-17: shared underlying detection
 from utils.historical_lot_sizes import get_historical_lot_size
+from execution.trade_tracker import TradeTracker
 
 class IntradayEngine:
     def __init__(self, data_manager, config):
