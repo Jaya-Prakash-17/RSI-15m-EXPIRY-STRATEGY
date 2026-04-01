@@ -33,10 +33,10 @@ indices:
     expiry_day: Tuesday
     lot_size: 65
     tick_size: 0.05
-  SENSEX:
-    expiry_day: Thursday
-    lot_size: 20
-    tick_size: 0.05
+  # SENSEX:
+  #   expiry_day: Thursday
+  #   lot_size: 20
+  #   tick_size: 0.05
 
 # Performance Reporting
 reporting:
