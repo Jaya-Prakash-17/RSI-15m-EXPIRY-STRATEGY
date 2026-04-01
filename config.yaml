@@ -1,8 +1,8 @@
 backtest:
-  end_date: '2024-12-31'
-  start_date: '2024-01-01'
+  end_date: '2025-12-31'
+  start_date: '2025-01-01'
 capital:
-  initial: 100000
+  initial: 200000
 charges:
   brokerage_per_trade: 20
   exchange_txn_fee: 0.0009
@@ -32,17 +32,18 @@ reporting:
 risk:
   consecutive_loss_cooldown: 2
   max_consecutive_losses: 3
-  max_loss_per_day: 5000
+  max_loss_per_day: 6000
 strategy:
   alert_validity: 1
   direction_filter_enabled: false
   dynamic_sizing_enabled: false
   exit_mode: single_lot
-  lots_per_trade: 1
+  lots_per_trade: 3
   max_correlated_positions: 2
   max_lots: 5
   max_position_pct: 0.8
-  min_sl_pct: 0.08
+  min_sl_pct: 0.10
+  min_volume: 10000
   risk_per_trade_pct: 0.05
   rsi:
     min_candles_for_signal: 27
@@ -50,11 +51,11 @@ strategy:
     threshold: 60
     warmup_periods: 100
   rsi_debug: false
-  safe_sl_max_loss: 2000
+  safe_sl_max_loss: 5000
   safe_sl_mode: true
   signal_window_end: '13:30'
   signal_window_start: '10:00'
-  single_lot_exit_target: 2
+  single_lot_exit_target: 3
   strike_range: 4
   trade_only_on_expiry: false
   trailing_stop:

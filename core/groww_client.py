@@ -6,6 +6,7 @@ import datetime
 import pandas as pd
 import numpy as np
 import dotenv
+import time
 dotenv.load_dotenv()
 
 try:
@@ -46,29 +47,40 @@ class GrowwClient:
             self.logger.warning(f"Initial authentication failed: {e}. Will retry on next API call.")
 
 
-    def _authenticate(self):
-        """Internal authentication logic with better error messages."""
+    def _authenticate(self, retry_count=3):
+        """Internal authentication logic with better error messages and 429 handling."""
         if not self.api_key or not self.api_secret:
             raise ValueError("API credentials missing. Cannot authenticate.")
 
-        try:
-            access_token = GrowwAPI.get_access_token(api_key=self.api_key, secret=self.api_secret)
-            self.client = GrowwAPI(access_token)
-            self.logger.info("Successfully authenticated with Groww API.")
-        except Exception as e:
-            msg = str(e)
-            if "Authorisation failed" in msg or "permissions" in msg:
-                error_msg = (
-                    "CRITICAL: Groww Authorisation Failed. "
-                    "1. Check if GROWW_API_KEY is correct and NOT EXPIRED (JWT tokens expire daily). "
-                    "2. Ensure 'Trading API' is enabled on your Groww developer portal. "
-                    "3. Ensure you have 'Approved' the daily session if using Key/Secret flow."
-                )
-            else:
-                error_msg = f"CRITICAL: Authentication failed: {e}"
-            
-            self.logger.error(error_msg)
-            raise ConnectionError(error_msg)
+        for attempt in range(retry_count):
+            try:
+                access_token = GrowwAPI.get_access_token(api_key=self.api_key, secret=self.api_secret)
+                self.client = GrowwAPI(access_token)
+                self.logger.info("Successfully authenticated with Groww API.")
+                return
+            except Exception as e:
+                msg = str(e).lower()
+                if "429" in msg or "rate limit" in msg:
+                    wait_time = (2 ** attempt) + random.random()
+                    self.logger.warning(f"429 Rate Limit hit during auth. Waiting {wait_time:.1f}s (Attempt {attempt+1}/{retry_count})")
+                    time.sleep(wait_time)
+                    continue
+                
+                if "authorisation failed" in msg or "permissions" in msg:
+                    error_msg = (
+                        "CRITICAL: Groww Authorisation Failed. "
+                        "1. Check if GROWW_API_KEY is correct and NOT EXPIRED. "
+                        "2. Ensure 'Trading API' is enabled on your Groww developer portal. "
+                    )
+                else:
+                    error_msg = f"CRITICAL: Authentication failed: {e}"
+                
+                self.logger.error(error_msg)
+                if attempt == retry_count - 1:
+                    raise ConnectionError(error_msg)
+                time.sleep(1)
+
+        raise ConnectionError(f"Failed to authenticate after {retry_count} attempts due to rate limiting.")
 
 
     def _safe_call(self, api_func, *args, **kwargs):

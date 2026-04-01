@@ -351,15 +351,8 @@ class TradeTracker:
             return {}
 
     def clear_pending_entries(self):
-        """Clear pending entries file."""
-        with self.lock:
-            filepath = self.filepath.replace("bot_trades", "pending_entries")
-            try:
-                if os.path.exists(filepath):
-                    with open(filepath, 'w') as f:
-                        json.dump({}, f)
-            except Exception as e:
-                self.logger.error(f"Error clearing pending entries: {e}")
+        """Clear pending entries file atomically."""
+        self.save_pending_entries({})
 
     def trim_old_closed_trades(self, keep_days: int = 30):
         """Remove closed trades older than keep_days from the file.

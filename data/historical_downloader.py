@@ -3,6 +3,7 @@ import os
 import pandas as pd
 import logging
 import time
+import random
 from core.groww_client import GrowwClient
 from datetime import datetime, timedelta
 
@@ -115,16 +116,30 @@ class HistoricalDownloader:
         return combined_df
 
     def _download_with_retry(self, symbol, interval, start_date, end_date):
-        """Attempts to download with retries."""
+        """Attempts to download with exponential retries and 429 awareness."""
         for attempt in range(self.retry_count):
             try:
                 df = self.client.get_historical_candles(symbol, interval, start_date, end_date)
-                if not df.empty:
+                if df is not None and not df.empty:
                     return df
+                elif df is not None and df.empty:
+                    # Empty but 200 OK. Maybe data doesn't exist yet.
+                    self.logger.debug(f"Attempt {attempt+1}: Empty dataframe for {symbol} (historical range: {start_date} to {end_date})")
+                    return df
+                    
             except Exception as e:
-                self.logger.warning(f"Download attempt {attempt+1} failed for {symbol}: {e}")
-            
-            time.sleep(1)  # Backoff
+                msg = str(e).lower()
+                is_rate_limit = "429" in msg or "rate limit" in msg
+                
+                # Exponential backoff with jitter
+                wait_time = (2 ** attempt) + (random.random() * 2)
+                if is_rate_limit:
+                    wait_time += 5  # extra penalty for 429
+                    self.logger.warning(f"429 Rate Limit hit. Cooling off for {wait_time:.1f}s (Attempt {attempt+1})")
+                else:
+                    self.logger.warning(f"Download attempt {attempt+1} failed for {symbol}: {e}. Waiting {wait_time:.1f}s")
+                
+                time.sleep(wait_time)
             
         self.logger.warning(f"All download attempts failed for {symbol}")
         return None

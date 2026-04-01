@@ -40,3 +40,17 @@ def parse_opt_type(symbol: str) -> str:
     if symbol.endswith('-PE') or '-PE-' in symbol:
         return 'PE'
     return ''
+
+def build_option_symbol(underlying: str, expiry_date, strike: float, opt_type: str) -> str:
+    """
+    Constructs a standardized option symbol used across backtesting, live trading, and data files.
+    Format: {EXCHANGE}-{UNDERLYING}-{DDMMMyy}-{STRIKE}-{OPT_TYPE}
+    """
+    from datetime import datetime
+    if isinstance(expiry_date, str):
+        date_str = expiry_date
+    else:
+        date_str = expiry_date.strftime("%d%b%y")
+        
+    exchange = "BSE" if underlying in ("SENSEX", "BANKEX") else "NSE"
+    return f"{exchange}-{underlying}-{date_str}-{int(strike)}-{opt_type}"

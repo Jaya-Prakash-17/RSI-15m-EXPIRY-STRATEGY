@@ -484,6 +484,10 @@ class LiveTrader:
                         self.tracked_options[underlying] = {}
                     
                     if symbol not in self.tracked_options[underlying]:
+                        # Issue #8: Minimum Volume Filter
+                        # We only add to tracking if the option has sufficient volume
+                        # or if we're doing initial discovery. For now, we add everything
+                        # but check volume during signal generation.
                         self.logger.info(f"Adding {symbol} to tracking for {underlying}.")
                         self.tracked_options[underlying][symbol] = pd.DataFrame()
 
@@ -845,10 +849,9 @@ class LiveTrader:
 
         # Telegram: notify that setup expired/was negated
         if reason == 'EXPIRED':
-            parts = symbol.split('-')
-            underlying = parts[1] if len(parts) > 1 else ''
-            strike = float(parts[3]) if len(parts) > 3 else 0
-            opt_type = parts[4] if len(parts) > 4 else ''
+            underlying = pending.get('underlying', '')
+            strike = pending.get('strike', 0)
+            opt_type = pending.get('opt_type', '')
             self.telegram.alert_expired(symbol, underlying, strike, opt_type, pending.get('trigger_price', 0))
 
     def _save_strategy_state(self):
@@ -1217,16 +1220,55 @@ class LiveTrader:
             target_ids = trade.get('target_order_ids', [])
             exit_orders = trade.get('exit_orders', {})
             trail_state = exit_orders.get('trail_state', 0)
+            exit_mode = exit_orders.get('mode', 'single_lot')
+            targets = trade.get('targets', [])
+            current_sl = exit_orders.get('current_sl', trade['sl'])
+            underlying = trade.get('underlying', 'NIFTY')
             
+            # --- BEGIN SINGLE LOT SL TRAILING (LIVE & PAPER) ---
+            if exit_mode == 'single_lot' and len(targets) > 0:
+                ltp = self.client.get_ltp(symbol)
+                if ltp is not None:
+                    target_idx = self.config.get('strategy', {}).get('single_lot_exit_target', 2) - 1
+                    for tp in range(trail_state, target_idx):
+                        if tp < len(targets) and ltp >= targets[tp]:
+                            entry_price = float(trade['entry_price'])
+                            new_sl_price = 0
+                            if tp == 0:
+                                new_sl_price = entry_price
+                            elif tp == 1:
+                                new_sl_price = targets[0]
+                                
+                            if new_sl_price > 0:
+                                new_sl_price = self._round_to_tick(new_sl_price, underlying)
+                                if new_sl_price > current_sl:
+                                    self.logger.info(f"📈 TRAILING SL to ₹{new_sl_price} (TP{tp+1} crossed @ ₹{ltp})")
+                                    # Modified actual SL order if live
+                                    if sl_order_id and not (self.paper_trading and sl_order_id.startswith('PAPER_')):
+                                        self.om.modify_sl_order(sl_order_id, new_sl_price, new_qty=trade['remaining_qty'])
+                                    
+                                    exit_orders['current_sl'] = new_sl_price
+                                    exit_orders['trail_state'] = tp + 1
+                                    self.tracker.update_trade(trade_id, {'exit_orders': exit_orders})
+                                    
+                                    self.telegram._send(
+                                        f"📈 <b>SL Trailed (Single Lot)</b>\n"
+                                        f"Symbol: <code>{symbol}</code>\n"
+                                        f"Crossed TP{tp+1}. New SL: ₹{new_sl_price}"
+                                    )
+                                    trail_state = tp + 1
+                                    current_sl = new_sl_price
+                        else:
+                            break
+            # --- END SINGLE LOT SL TRAILING ---
+
             # PAPER TRADING: Use LTP-based simulation
             if self.paper_trading and sl_order_id and sl_order_id.startswith('PAPER_'):
                 ltp = self.client.get_ltp(symbol)
                 if ltp is None:
                     continue
                 
-                current_sl = exit_orders.get('current_sl', trade['sl'])
-                targets = trade.get('targets', [])
-                exit_mode = exit_orders.get('mode', 'single_lot')
+
                 
                 # Check SL condition (strategy-defined: alert candle low - 1)
                 sl_triggered = ltp <= current_sl
@@ -1286,133 +1328,124 @@ class LiveTrader:
                     self.logger.info(f"🚀 [PAPER] TP3 HIT for {symbol} @ ₹{tp3_fill} (LTP: ₹{ltp:.2f}) - Closing Trade")
                     final_pnl = (tp3_fill - float(trade['entry_price'])) * float(trade['remaining_qty'])
                     total_pnl = final_pnl + float(trade.get('partial_pnl', 0))
-                    self.daily_pnl += final_pnl
-                    trade['exit_price'] = ltp
-                    trade['reason'] = "TP3_HIT"
-                    trade['pnl'] = total_pnl
-                    self.tracker.close_trade(trade_id, ltp, "TP3_HIT", total_pnl)
-                    self._update_circuit_breaker(final_pnl, "TP3_HIT")
-                    self.trade_logger.log_exit(trade, self.daily_pnl)
-                
-                continue
-            
-            # LIVE TRADING: Check actual broker order statuses
-            # 1. Check SL Order Status
-            if sl_order_id:
-                sl_status = self.client.get_order_status(sl_order_id)
-                if sl_status:
-                    sl_state = sl_status.get('status', '').upper()
-                    
-                    if is_order_filled(sl_state):
-                        self.logger.info(f"🔴 SL HIT for {symbol} (Order {sl_order_id})")
-                        fill_price = sl_status.get('fill_price') or float(trade['sl'])
-                        self.logger.info(f"SL Fill price extracted: \u20b9{fill_price} (reference was: \u20b9{trade['sl']})")
+                        # ─── LIVE TRADING MONITORING (Broker Calls) ──────────────────────
+            if not self.paper_trading:
+                # 1. Check SL Order Status
+                if sl_order_id:
+                    sl_status = self.client.get_order_status(sl_order_id)
+                    if sl_status:
+                        sl_state = sl_status.get('status', '').upper()
                         
-                        # Cancel all pending target orders
-                        for tid in target_ids:
-                            if tid:
-                                self.om.cancel_order(tid)
-                        
-                        # Close trade
-                        final_pnl = (float(fill_price) - float(trade['entry_price'])) * float(trade['remaining_qty'])
-                        total_pnl = final_pnl + float(trade.get('partial_pnl', 0))
-                        self.daily_pnl += final_pnl 
-                        trade['exit_price'] = fill_price
-                        trade['reason'] = "SL_HIT"
-                        trade['pnl'] = total_pnl
-                        self.tracker.close_trade(trade_id, fill_price, "SL_HIT", total_pnl)
-                        self._update_circuit_breaker(final_pnl, "SL_HIT")
-                        self.trade_logger.log_exit(trade, self.daily_pnl)
-                        continue
-                    
-                    elif sl_state in ('CANCELLED', 'REJECTED', 'EXPIRED'):
-                        # Exchange cancelled our SL — CRITICAL: re-place immediately
-                        self.logger.critical(
-                            f"🚨 SL order {sl_order_id} was {sl_state} by exchange/broker! "
-                            f"Re-placing SL immediately for {symbol}..."
-                        )
-                        self.telegram._send(
-                            f"🚨 <b>SL ORDER CANCELLED BY EXCHANGE</b>\n"
-                            f"Symbol: <code>{symbol}</code>\n"
-                            f"Order: {sl_order_id} → {sl_state}\n"
-                            f"Re-placing SL now..."
-                        )
-                        current_sl = trade.get('exit_orders', {}).get('current_sl', trade['sl'])
-                        remaining_qty = TradeTracker.get_remaining_qty(trade)
-                        underlying = trade.get('underlying', 'NIFTY')
-                        trading_symbol = trade.get('trading_symbol', symbol)
-                        
-                        # Use place_sl_order from order_manager
-                        new_sl_order = self.om.place_sl_order(
-                            symbol, remaining_qty, current_sl, trading_symbol
-                        )
-                        
-                        if new_sl_order and new_sl_order.get('groww_order_id'):
-                            new_sl_id = new_sl_order['groww_order_id']
-                            self.tracker.update_trade(trade_id, {'sl_order_id': new_sl_id})
-                            trade['sl_order_id'] = new_sl_id
-                            self.logger.critical(f"✅ SL re-placed: {new_sl_id} @ \u20b9{current_sl}")
-                            self.telegram._send(
-                                f"✅ <b>SL Re-placed</b>\n"
-                                f"Symbol: <code>{symbol}</code>\n"
-                                f"New SL: \u20b9{current_sl} | Order: {new_sl_id}"
-                            )
-                        else:
-                            self.logger.critical(
-                                f"🚨🚨 SL RE-PLACEMENT FAILED for {symbol}! "
-                                f"EMERGENCY EXIT to protect capital."
-                            )
-                            ltp = self.client.get_ltp(symbol) or current_sl
-                            # Use _close_entire_position or similar logic locally if not existent
-                            # For now, let's assume we place an exit order immediately
-                            self.om.place_exit_order(symbol, remaining_qty, trading_symbol, "EMERGENCY_NO_SL")
-                            self.tracker.close_trade(trade_id, ltp, "EMERGENCY_NO_SL", trade.get('partial_pnl', 0))
+                        if is_order_filled(sl_state):
+                            self.logger.info(f"🔴 SL HIT for {symbol} (Order {sl_order_id})")
+                            fill_price = sl_status.get('fill_price') or float(trade['sl'])
+                            self.logger.info(f"SL Fill price extracted: \u20b9{fill_price} (reference was: \u20b9{trade['sl']})")
+                            
+                            # Cancel all pending target orders
+                            for tid in target_ids:
+                                if tid:
+                                    self.om.cancel_order(tid)
+                            
+                            # Close trade
+                            final_pnl = (float(fill_price) - float(trade['entry_price'])) * float(trade['remaining_qty'])
+                            total_pnl = final_pnl + float(trade.get('partial_pnl', 0))
+                            self.daily_pnl += final_pnl 
+                            trade['exit_price'] = fill_price
+                            trade['reason'] = "SL_HIT"
+                            trade['pnl'] = total_pnl
+                            self.tracker.close_trade(trade_id, fill_price, "SL_HIT", total_pnl)
+                            self._update_circuit_breaker(final_pnl, "SL_HIT")
+                            self.trade_logger.log_exit(trade, self.daily_pnl)
                             continue
+                        
+                        elif sl_state in ('CANCELLED', 'REJECTED', 'EXPIRED'):
+                            # Exchange cancelled our SL — CRITICAL: re-place immediately
+                            self.logger.critical(
+                                f"🚨 SL order {sl_order_id} was {sl_state} by exchange/broker! "
+                                f"Re-placing SL immediately for {symbol}..."
+                            )
+                            self.telegram._send(
+                                f"🚨 <b>SL ORDER CANCELLED BY EXCHANGE</b>\n"
+                                f"Symbol: <code>{symbol}</code>\n"
+                                f"Order: {sl_order_id} → {sl_state}\n"
+                                f"Re-placing SL now..."
+                            )
+                            current_sl = trade.get('exit_orders', {}).get('current_sl', trade['sl'])
+                            remaining_qty = TradeTracker.get_remaining_qty(trade)
+                            underlying = trade.get('underlying', 'NIFTY')
+                            trading_symbol = trade.get('trading_symbol', symbol)
+                            
+                            # Use place_sl_order from order_manager
+                            new_sl_order = self.om.place_sl_order(
+                                symbol, remaining_qty, current_sl, trading_symbol
+                            )
+                            
+                            if new_sl_order and new_sl_order.get('groww_order_id'):
+                                new_sl_id = new_sl_order['groww_order_id']
+                                self.tracker.update_trade(trade_id, {'sl_order_id': new_sl_id})
+                                trade['sl_order_id'] = new_sl_id
+                                self.logger.critical(f"✅ SL re-placed: {new_sl_id} @ \u20b9{current_sl}")
+                                self.telegram._send(
+                                    f"✅ <b>SL Re-placed</b>\n"
+                                    f"Symbol: <code>{symbol}</code>\n"
+                                    f"New SL: \u20b9{current_sl} | Order: {new_sl_id}"
+                                )
+                            else:
+                                self.logger.critical(
+                                    f"🚨🚨 SL RE-PLACEMENT FAILED for {symbol}! "
+                                    f"EMERGENCY EXIT to protect capital."
+                                )
+                                ltp = self.client.get_ltp(symbol) or current_sl
+                                self.om.place_exit_order(symbol, remaining_qty, trading_symbol, "EMERGENCY_NO_SL")
+                                self.tracker.close_trade(trade_id, ltp, "EMERGENCY_NO_SL", trade.get('partial_pnl', 0))
+                                continue
 
-            # 2. Check Target Order Statuses
-            exit_mode = exit_orders.get('mode', 'single_lot')
-            
-            # Check Targets Iteratively
-            for i, tid in enumerate(target_ids):
-                tp_level = i + 1
-                if not tid: continue
+                # 2. Check Target Order Statuses
+                exit_mode = exit_orders.get('mode', 'single_lot')
                 
-                # Only check if this target level hasn't been hit yet 
-                # (For multi-lot, trail_state keeps track. For single-lot, it's just one hit then exit)
-                if exit_mode == 'multi_lot' and tp_level <= trail_state:
-                    continue
+                # Check Targets Iteratively
+                for i, tid in enumerate(target_ids):
+                    tp_level = i + 1
+                    if not tid: continue
                     
-                t_status = self.client.get_order_status(tid)
-                if t_status and is_order_filled(t_status.get('status')):
-                    fill_price = t_status.get('fill_price') or float(trade['entry_price'])
-                    self.logger.info(f"Target Fill price extracted: ₹{fill_price} (reference was: ₹{trade['entry_price']})")
-                    
-                    if exit_mode == 'single_lot' or (exit_mode == 'multi_lot' and tp_level == 3):
-                        # Final Exit (Single Lot OR Multi-lot TP3)
-                        self.logger.info(f"🚀 TP{tp_level} HIT (FINAL) for {symbol} - Closing Trade")
+                    # Only check if this target level hasn't been hit yet 
+                    if exit_mode == 'multi_lot' and tp_level <= trail_state:
+                        continue
                         
-                        if sl_order_id:
-                            self.om.cancel_order(sl_order_id)
-                            self.logger.info(f"🛡️ SL Order Cancelled: {sl_order_id}")
+                    t_status = self.client.get_order_status(tid)
+                    if t_status and is_order_filled(t_status.get('status')):
+                        fill_price = t_status.get('fill_price') or float(trade['entry_price'])
+                        self.logger.info(f"Target Fill price extracted: ₹{fill_price} (reference was: ₹{trade['entry_price']})")
                         
-                        # Calculate PnL and close trade
-                        final_pnl = (float(fill_price) - float(trade['entry_price'])) * float(trade['remaining_qty'])
-                        total_pnl = final_pnl + float(trade.get('partial_pnl', 0))
-                        self.daily_pnl += final_pnl
-                        reason = f"TP{tp_level}_HIT"
-                        trade['exit_price'] = fill_price
-                        trade['reason'] = reason
-                        trade['pnl'] = total_pnl
-                        self.tracker.close_trade(trade_id, fill_price, reason, total_pnl)
-                        self._update_circuit_breaker(final_pnl, reason)
-                        self.trade_logger.log_exit(trade, self.daily_pnl)
-                        break  # Trade is closed
-                    
-                    elif exit_mode == 'multi_lot':
-                        # Partial Exit (TP1 or TP2)
-                        self.logger.info(f"🎯 TP{tp_level} HIT for {symbol}")
-                        self._handle_tp_hit(trade, tp_level, t_status)
-                        trail_state = trade.get('exit_orders', {}).get('trail_state', 0)
+                        if exit_mode == 'single_lot' or (exit_mode == 'multi_lot' and tp_level == 3):
+                            # Final Exit (Single Lot OR Multi-lot TP3)
+                            self.logger.info(f"🚀 TP{tp_level} HIT (FINAL) for {symbol} - Closing Trade")
+                            
+                            if sl_order_id:
+                                self.om.cancel_order(sl_order_id)
+                                self.logger.info(f"🛡️ SL Order Cancelled: {sl_order_id}")
+                            
+                            # Calculate PnL and close trade
+                            final_pnl = (float(fill_price) - float(trade['entry_price'])) * float(trade['remaining_qty'])
+                            total_pnl = final_pnl + float(trade.get('partial_pnl', 0))
+                            self.daily_pnl += final_pnl
+                            reason = f"TP{tp_level}_HIT"
+                            trade['exit_price'] = fill_price
+                            trade['reason'] = reason
+                            trade['pnl'] = total_pnl
+                            self.tracker.close_trade(trade_id, fill_price, reason, total_pnl)
+                            self._update_circuit_breaker(final_pnl, reason)
+                            self.trade_logger.log_exit(trade, self.daily_pnl)
+                            break  # Trade is closed
+                        elif exit_mode == 'multi_lot':
+                            # Partial Exit (TP1 or TP2)
+                            self.logger.info(f"🎯 TP{tp_level} HIT for {symbol}")
+                            self._handle_tp_hit(trade, tp_level, t_status)
+                            trail_state = trade.get('exit_orders', {}).get('trail_state', 0)
+                            
+            # End if not self.paper_trading
+        # End for trade in active_trades
+
     def _handle_paper_tp_hit(self, trade, tp_level, fill_price):
         """Handle paper trading TP hit with LTP-based simulation."""
         trade_id = trade['trade_id']

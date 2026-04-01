@@ -750,10 +750,10 @@ class IntradayEngine:
         trade['reason'] = reason
         trade['status'] = 'CLOSED'
         trade['pnl'] = pnl
-        trade['qty'] = remaining  # Record actual exit quantity
+        trade['remaining_qty'] = 0  # Fully closed
         trade['running_capital'] = self.capital
         
-        self.logger.info(f"EXIT: {symbol} at {exit_price} | Remaining Qty: {remaining} | PnL: {pnl} | Reason: {reason}")
+        self.logger.info(f"EXIT: {symbol} at {exit_price} | Exited Qty: {remaining} | PnL: {pnl} | Reason: {reason}")
         return pnl
 
     def _verify_safe_sl_compliance(self, trades):

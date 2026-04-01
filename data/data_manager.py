@@ -351,13 +351,7 @@ class DataManager:
                 self.logger.warning(f"Failed to get contract from API: {e}")
         
         # Fallback: Construct symbol manually
-        # Format: ddMMMyyy (e.g., 03Feb26)
-        date_str = expiry_date.strftime("%d%b%y")
-        
-        # Determine exchange prefix based on underlying
-        exchange = "BSE" if underlying == "SENSEX" else "NSE"
-        
-        symbol = f"{exchange}-{underlying}-{date_str}-{int(strike)}-{opt_type}"
+        symbol = build_option_symbol(underlying, expiry_date, strike, opt_type)
         
         self.logger.info(f"Using constructed symbol {symbol} for {underlying} (ref: {ref_date})")
         
