@@ -140,9 +140,10 @@ class ExpiryRSIBreakout:
             return rsi_series, gains, losses, list(avg_gains), list(avg_losses)
         return rsi_series
 
-    def calculate_latest_rsi(self, prices):
+    def calculate_latest_rsi(self, prices, return_prev=False):
         """
         Calculates the LATEST RSI value from a series of prices.
+        If return_prev is True, returns (latest_rsi, prev_rsi).
         Returns None if insufficient data for stable RSI calculation.
         
         This is the main method used by the strategy.
@@ -178,7 +179,14 @@ class ExpiryRSIBreakout:
             latest_price = prices.iloc[-1]
             candle_count = len(prices)
             self.logger.debug(f"RSI Debug | Time: {latest_time} | Close: {latest_price:.2f} | RSI: {latest_rsi:.2f} | Candles: {candle_count}")
-        
+        # Get the previous non-NaN RSI value if requested
+        if return_prev:
+            prev_rsi = rsi_series.iloc[-2] if len(rsi_series) > 1 else np.nan
+            return (
+                latest_rsi if not pd.isna(latest_rsi) else None, 
+                prev_rsi if not pd.isna(prev_rsi) else None
+            )
+
         return latest_rsi if not pd.isna(latest_rsi) else None
 
     def calculate_rsi(self, prices):
@@ -298,11 +306,9 @@ class ExpiryRSIBreakout:
         if symbol not in self.state:
              self.state[symbol] = {
                  'alert': None, 
-                 'age': 0, 
+                 'age': 0,
                  'alert_time': None, 
-                 'last_processed_time': None,
-                 'prev_rsi': None,
-                 'current_rsi': None
+                 'last_processed_time': None
              }
         
         state = self.state[symbol]
@@ -310,21 +316,14 @@ class ExpiryRSIBreakout:
         
         current_time = current_candle['datetime']
         
-        # Calculate RSI
-        current_rsi = self.calculate_latest_rsi(price_history)
+        # Calculate RSI (gets both current and previous candle's RSI directly from array)
+        rsi_result = self.calculate_latest_rsi(price_history, return_prev=True)
         
         # Skip if insufficient data
-        if current_rsi is None:
+        if rsi_result is None or (isinstance(rsi_result, tuple) and rsi_result[0] is None):
             return None
-        
-        # MEDIUM FIX #5: Optimized RSI calculation
-        # Cache the previous RSI value instead of calculating Wilder's RSI twice per candle.
-        # Only update prev_rsi when moving to a strictly new candle.
-        if state['last_processed_time'] is not None and current_time > state['last_processed_time']:
-            state['prev_rsi'] = state.get('current_rsi')
             
-        state['current_rsi'] = current_rsi
-        prev_rsi = state['prev_rsi']
+        current_rsi, prev_rsi = rsi_result
 
         # Age Increment Logic
         # Increment on every NEW candle strictly after the alert — regardless of
