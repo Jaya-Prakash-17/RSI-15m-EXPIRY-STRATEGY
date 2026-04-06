@@ -85,7 +85,7 @@ class ExpiryRSIBreakout:
         Wilder's RSI — vectorized via numpy for live trading performance.
         Numerically identical to the previous loop-based implementation.
         
-        Seeding: SMA of first N price changes (indices 1 to N+1, skipping NaN at 0).
+        Seeding: SMA of first N price changes (indices 1 to N+1).
         Smoothing: avg[i] = (avg[i-1] * (N-1) + value[i]) / N (Wilder's formula).
         """
         n = self.rsi_period
@@ -95,50 +95,46 @@ class ExpiryRSIBreakout:
                 return None, None, None, None, None
             return None
         
-        # Price changes — use numpy for speed
+        # Performance optimization: if already a numpy array, use directly
         close = np.asarray(prices, dtype=np.float64)
-        delta = np.diff(close)  # length = len(close) - 1
+        delta = np.diff(close)
         
         gains = np.where(delta > 0, delta, 0.0)
         losses = np.where(delta < 0, -delta, 0.0)
         
-        # Seed: SMA of first N changes (indices 0 to N-1 in delta array,
-        # equivalent to prices indices 1 to N+1 used in the original code)
+        # Seed at position n-1
         seed_gain = gains[:n].mean()
         seed_loss = losses[:n].mean()
         
-        # Vectorized Wilder smoothing using numpy loop (single pass, no .iloc overhead)
-        alpha = (n - 1) / n  # = 1 - 1/n
+        alpha = (n - 1) / n
         inv_n = 1.0 / n
         
         avg_gains = np.empty(len(delta), dtype=np.float64)
         avg_losses = np.empty(len(delta), dtype=np.float64)
         
-        # Fill pre-seed with NaN
-        avg_gains[:n-1] = np.nan
-        avg_losses[:n-1] = np.nan
-        
-        # Seed at position n-1
+        avg_gains[:n] = np.nan # Match pandas index shift
+        avg_losses[:n] = np.nan
         avg_gains[n-1] = seed_gain
         avg_losses[n-1] = seed_loss
         
-        # Wilder smoothing from seed onwards
+        # Accelerate the loop for long series (backtesting)
         for i in range(n, len(delta)):
             avg_gains[i] = avg_gains[i-1] * alpha + gains[i] * inv_n
             avg_losses[i] = avg_losses[i-1] * alpha + losses[i] * inv_n
         
-        # Calculate RSI
         with np.errstate(divide='ignore', invalid='ignore'):
             rs = np.where(avg_losses == 0, np.inf, avg_gains / avg_losses)
             rsi_values = np.where(avg_losses == 0, 100.0, 100.0 - 100.0 / (1.0 + rs))
         
-        # Align with original prices index (RSI starts at index n, prices index n+1)
-        rsi_series = pd.Series(index=prices.index, dtype=float)
-        rsi_series.iloc[n:] = rsi_values[n-1:]
-        
-        if return_components:
-            return rsi_series, gains, losses, list(avg_gains), list(avg_losses)
-        return rsi_series
+        # Convert back to Series only if needed or keep as array for internal speed
+        if isinstance(prices, pd.Series):
+            rsi_series = pd.Series(index=prices.index, dtype=float)
+            rsi_series.iloc[n:] = rsi_values[n-1:]
+            if return_components:
+                return rsi_series, gains, losses, list(avg_gains), list(avg_losses)
+            return rsi_series
+        else:
+            return rsi_values # Return raw array for speed in vectorized contexts
 
     def calculate_latest_rsi(self, prices, return_prev=False):
         """
@@ -291,7 +287,7 @@ class ExpiryRSIBreakout:
             self.state[symbol]['age'] = 0
             self.state[symbol]['alert_time'] = None
 
-    def check_signal(self, symbol, current_candle, price_history, is_tradable=True):
+    def check_signal(self, symbol, current_candle, price_history=None, is_tradable=True, rsi_values=None):
         """
         Checks for signals based on candle and RSI.
         STRICTLY separates Alert and Entry.
@@ -302,6 +298,7 @@ class ExpiryRSIBreakout:
             current_candle: The current candle row
             price_history: Pandas Series of closing prices ending with current_candle
             is_tradable: Boolean flag if we are inside trading window
+            rsi_values: (current_rsi, prev_rsi) tuple - if provided, avoids re-calculation
         """
         if symbol not in self.state:
              self.state[symbol] = {
@@ -317,13 +314,15 @@ class ExpiryRSIBreakout:
         current_time = current_candle['datetime']
         
         # Calculate RSI (gets both current and previous candle's RSI directly from array)
-        rsi_result = self.calculate_latest_rsi(price_history, return_prev=True)
-        
-        # Skip if insufficient data
-        if rsi_result is None or (isinstance(rsi_result, tuple) and rsi_result[0] is None):
-            return None
-            
-        current_rsi, prev_rsi = rsi_result
+        if rsi_values is not None:
+            current_rsi, prev_rsi = rsi_values
+        else:
+            # Fallback to slow calculation if no cached value provided
+            rsi_result = self.calculate_latest_rsi(price_history, return_prev=True)
+            # Skip if insufficient data
+            if rsi_result is None or (isinstance(rsi_result, tuple) and rsi_result[0] is None):
+                return None
+            current_rsi, prev_rsi = rsi_result
 
         # Age Increment Logic
         # Increment on every NEW candle strictly after the alert — regardless of
@@ -411,7 +410,7 @@ class ExpiryRSIBreakout:
         # Only if we don't have an active alert.
         if state['alert'] is None and is_tradable:
             # Minimum candle quality guard
-            if len(price_history) < self.min_candles_for_signal:
+            if price_history is not None and len(price_history) < self.min_candles_for_signal:
                 self.logger.debug(
                     f"[{symbol}] Insufficient history: {len(price_history)} < {self.min_candles_for_signal}"
                 )

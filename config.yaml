@@ -4,10 +4,11 @@
 backtest:
   start_date: '2020-01-01'           # Backtest start (YYYY-MM-DD)
   end_date: '2025-12-31'             # Backtest end (YYYY-MM-DD)
+  offline_mode: true                 # Run using local data files
 
 # Capital Configuration
 capital:
-  initial: 100000                    # Initial trading capital per session (Rs.)
+  initial: 10000                    # Initial trading capital per session (Rs.)
 
 # Trading Charges & Taxes (Live Values as of Jan 2026)
 charges:
@@ -41,7 +42,7 @@ indices:
 # Performance Reporting
 reporting:
   slippage_buffer_enabled: true      # If true, subtracts flat buffer from each trade P&L
-  slippage_buffer_per_trade: 75      # Flat slippage buffer in Rs. (P-28)
+  slippage_buffer_per_trade: 65      # Flat slippage buffer in Rs. (P-28)
 
 # Risk Management
 risk:
@@ -54,8 +55,8 @@ strategy:
   alert_validity: 1                  # Alert candle + 1 candle window for entry
   direction_filter_enabled: false    # If true, filters CE on bearish / PE on bullish spot
   dynamic_sizing_enabled: false      # Placeholder for future capital scaling
-  exit_mode: single_lot              # 'single_lot' or 'multi_lot'
-  lots_per_trade: 3                  # Number of lots per position
+  exit_mode: single_lot            # 'single_lot' or 'multi_lot'
+  lots_per_trade: 1                 # Number of lots per position
   max_correlated_positions: 2        # Max concurrent trades in same direction (P-09)
   max_lots: 5                        # Global lot limit (hard cap)
   max_position_pct: 0.8              # Max % of capital to use per trade
@@ -67,11 +68,11 @@ strategy:
     threshold: 60                    # Breakout threshold (60 for CE calls, 40 for PE puts)
     warmup_periods: 100              # Min history required before scanning (V16 prerequisite)
   rsi_debug: false                   # Verbose RSI value logging
-  safe_sl_max_loss: 5000             # Absolute loss cap per trade (Rs.) (P-23)
+  safe_sl_max_loss: 6000             # Absolute loss cap per trade (Rs.) (P-23)
   safe_sl_mode: true                 # Enforce safe_sl_max_loss guard
   signal_window_start: '10:00'       # Start scanner window (P-30)
   signal_window_end: '13:30'         # End scanner window (P-30)
-  single_lot_exit_target: 2         # Target index for exit (1=T1, 2=T2, 3=T3)
+  single_lot_exit_target: 2        # Target index for exit (1=T1, 2=T2, 3=T3)
   strike_range: 3                    # Number of strikes to scan around ATM
   trade_only_on_expiry: false        # If true, scans only indices expiring TODAY
 

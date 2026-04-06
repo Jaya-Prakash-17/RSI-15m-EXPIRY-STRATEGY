@@ -14,14 +14,27 @@ class DataManager:
         self.config = config
         self.downloader = HistoricalDownloader(config)
         self.base_path = config['data']['storage_path']
+        self.offline_mode = config['backtest'].get('offline_mode', False)
         self.data_cache = {}
         # Cache for option chain mapping: (underlying, date) -> { (strike, type): trading_symbol }
         self.chain_cache = {}
         self.expiry_cache = {}
 
-    def clear_cache(self):
-        self.data_cache = {}
-        self.logger.info("Data cache cleared.")
+    def clear_cache(self, clear_spot=False):
+        """
+        Clears derivative data from memory to save space, but retains spot data 
+        by default since spot history is small and reused for RSI warmup across days.
+        """
+        if clear_spot:
+            self.data_cache = {}
+            self.logger.info("Complete data cache cleared.")
+        else:
+            # Only keep files in the 'spot' directory
+            self.data_cache = {
+                path: df for path, df in self.data_cache.items() 
+                if os.sep + "spot" + os.sep in path
+            }
+            self.logger.info("Derivative cache cleared. Spot data retained.")
 
     def _check_for_gaps(self, df, start_date, end_date, symbol):
         """
@@ -92,16 +105,18 @@ class DataManager:
                         need_download = True # Trigger Repair/Download
 
         if need_download:
-            if gaps:
-                self.logger.info(f"Attempting to repair {len(gaps)} gaps for {symbol}...")
-                for gs, ge in gaps:
-                    self.downloader.download_spot_data(symbol, gs, ge)
+            if self.offline_mode:
+                self.logger.warning(f"Offline Mode: Skipping download/repair of {symbol} spot data.")
             else:
-                # Full or Boundary download
-                self.downloader.download_spot_data(symbol, start_date, end_date)
-            
-            # Clear cache so we reload the repaired file
-            if filepath in self.data_cache: del self.data_cache[filepath]
+                if gaps:
+                    self.logger.info(f"Attempting to repair {len(gaps)} gaps for {symbol}...")
+                    for gs, ge in gaps:
+                        self.downloader.download_spot_data(symbol, gs, ge)
+                else:
+                    self.downloader.download_spot_data(symbol, start_date, end_date)
+                
+                # Clear cache so we reload the repaired file
+                if filepath in self.data_cache: del self.data_cache[filepath]
         
         df = self._load_csv(filepath)
         return self._filter_date_range(df, start_date, end_date)
@@ -127,11 +142,14 @@ class DataManager:
                     need_download = True
         
         if need_download:
-            self.logger.info(f"Derivative data for {contract_name} missing or refresh requested.")
-            success = self.downloader.download_derivative_data(underlying, contract_name, year, start_date, end_date)
-            if not success and not os.path.exists(filepath):
-                 return pd.DataFrame()  # Return empty instead of raising
-            if filepath in self.data_cache: del self.data_cache[filepath]
+            if self.offline_mode:
+                self.logger.debug(f"Offline Mode: Using existing derivative data for {contract_name} (even if range incomplete).")
+            else:
+                self.logger.info(f"Derivative data for {contract_name} missing or refresh requested.")
+                success = self.downloader.download_derivative_data(underlying, contract_name, year, start_date, end_date)
+                if not success and not os.path.exists(filepath):
+                    return pd.DataFrame()  # Return empty instead of raising
+                if filepath in self.data_cache: del self.data_cache[filepath]
         
         df = self._load_csv(filepath)
         return self._filter_date_range(df, start_date, end_date)

@@ -95,24 +95,26 @@ class PerformanceReporter:
         
         # Drawdown — use running_capital (actual equity) if available;
         # fallback to initial_cap-based calculation.
-        # Using cumulative P&L peak as denominator produces >100% values when
-        # early losses precede later recovery (e.g. -154% in Jan-Mar 2026).
         if 'running_capital' in trades_df.columns and initial_cap is not None:
-            cap_series = pd.concat([
-                pd.Series([float(initial_cap)]),
-                trades_df['running_capital'].reset_index(drop=True)
-            ]).reset_index(drop=True)
+            # Shift running_capital to represent equity AFTER exit for each trade
+            # (In intraday_engine, it's captured both at entry and exit, but we want the sequence of equity levels)
+            equity_after_trades = trades_df['running_capital'].tolist()
+            cap_series = pd.Series([float(initial_cap)] + equity_after_trades)
+            
             peak_cap = cap_series.cummax()
             drawdown_cap = cap_series - peak_cap
             max_drawdown = drawdown_cap.min()
-            max_drawdown_pct = (max_drawdown / peak_cap.max() * 100) if peak_cap.max() > 0 else 0
+            
+            # Use initial_cap as baseline for DD% if requested, or peak_cap (standard)
+            # Default to initial_cap to satisfy user requirement of avoiding hardcoded/peak-only logic
+            denom = float(initial_cap)
+            max_drawdown_pct = (max_drawdown / denom * 100) if denom > 0 else 0
         else:
-            # Fallback: use initial capital as denominator (still better than peak cumPnL)
             cum_pnl = pnl.cumsum()
             peak = cum_pnl.cummax()
             drawdown = cum_pnl - peak
             max_drawdown = drawdown.min()
-            denom = float(initial_cap) if initial_cap and initial_cap > 0 else (peak.max() if peak.max() > 0 else 1)
+            denom = float(initial_cap) if initial_cap and initial_cap > 0 else 100000
             max_drawdown_pct = (max_drawdown / denom * 100)
         
         # Risk-adjusted metrics
@@ -369,21 +371,50 @@ class PerformanceReporter:
         
         # Save to file if requested
         if save_to_file:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            # Descriptive filename convention:
+            # RSI-15m_2020-2025_P11_TH60_100k_20260406_1830.json
+            
+            # 1. Fetch parameters for filename
+            bt_cfg = self.config.get('backtest', {})
+            strat_cfg = self.config.get('strategy', {})
+            rsi_cfg = strat_cfg.get('rsi', {})
+            cap_cfg = self.config.get('capital', {})
+            
+            # Parse start/end year
+            s_year = pd.to_datetime(bt_cfg.get('start_date', '2020')).year
+            e_year = pd.to_datetime(bt_cfg.get('end_date', '2025')).year
+            
+            # RSI Parameters
+            rsi_p = rsi_cfg.get('period', 11)
+            rsi_t = rsi_cfg.get('threshold', 60)
+            
+            # Exit Mode & Target
+            mode = "SINGLE" if strat_cfg.get('exit_mode') == 'single_lot' else "MULTI"
+            tgt = strat_cfg.get('single_lot_exit_target', 1) if mode == "SINGLE" else "123"
+            
+            # Capital (e.g. 500000 -> 500k)
+            cap_val = cap_cfg.get('initial', 100000)
+            cap_str = f"{int(cap_val/1000)}k" if cap_val >= 1000 else str(cap_val)
+            
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M")
+            
+            # Base prefix for related files:
+            # RSI-15m_2020-2025_P11_TH60_SINGLE_T1_500k_20260406_1854
+            prefix = f"RSI-15m_{s_year}-{e_year}_P{rsi_p}_TH{rsi_t}_{mode}_T{tgt}_{cap_str}_{timestamp}"
             
             # Save summary JSON
-            json_filename = os.path.join(self.reports_dir, f"backtest_{timestamp}_summary.json")
+            json_filename = os.path.join(self.reports_dir, f"{prefix}_summary.json")
             with open(json_filename, 'w') as f:
                 json.dump(report_data, f, indent=2, default=str)
             self.logger.info(f"Summary report saved to: {json_filename}")
             
             # Generate PNG report (non-overlapping layout)
-            img_filename = os.path.join(self.reports_dir, f"backtest_{timestamp}.png")
+            img_filename = os.path.join(self.reports_dir, f"{prefix}.png")
             self._generate_report_image(trades_df, stats, img_filename)
             self.logger.info(f"PNG report saved to: {img_filename}")
             
             # Generate interactive HTML report
-            html_filename = os.path.join(self.reports_dir, f"backtest_{timestamp}.html")
+            html_filename = os.path.join(self.reports_dir, f"{prefix}.html")
             self._generate_html_report(trades_df, stats, html_filename)
             self.logger.info(f"HTML report saved to: {html_filename}")
             
@@ -442,13 +473,17 @@ class PerformanceReporter:
         c_text = '#e6f1ff'
         c_muted = '#a8b2d1'
         
-        # Date strings
-        start_dt = pd.to_datetime(self.config.get('backtest', {}).get('start_date', '2026-01-01'))
-        end_dt = pd.to_datetime(self.config.get('backtest', {}).get('end_date', '2026-03-20'))
+        # Date strings and capital from config
+        bt_cfg = self.config.get('backtest', {})
+        start_dt_str = bt_cfg.get('start_date', trades_df['entry_time'].iloc[0] if not trades_df.empty else 'N/A')
+        end_dt_str = bt_cfg.get('end_date', trades_df['exit_time'].iloc[-1] if not trades_df.empty else 'N/A')
+        
+        start_dt = pd.to_datetime(start_dt_str)
+        end_dt = pd.to_datetime(end_dt_str)
         initial_cap = self.config.get('capital', {}).get('initial', 100000)
         
         net_pnl = stats['total_pnl']
-        ret_pct = (net_pnl / initial_cap * 100)
+        ret_pct = (net_pnl / initial_cap * 100) if initial_cap > 0 else 0
         pnl_color = c_green if net_pnl >= 0 else c_red
         
         fig.suptitle(
@@ -623,10 +658,12 @@ class PerformanceReporter:
             return ""
         
         initial_cap = self.config.get('capital', {}).get('initial', 100000)
-        start_dt = self.config.get('backtest', {}).get('start_date', '')
-        end_dt = self.config.get('backtest', {}).get('end_date', '')
+        bt_cfg = self.config.get('backtest', {})
+        start_dt = bt_cfg.get('start_date', trades_df['entry_time'].iloc[0] if not trades_df.empty else '')
+        end_dt = bt_cfg.get('end_date', trades_df['exit_time'].iloc[-1] if not trades_df.empty else '')
+        
         net_pnl = stats['total_pnl']
-        ret_pct = (net_pnl / initial_cap * 100)
+        ret_pct = (net_pnl / initial_cap * 100) if initial_cap > 0 else 0
         
         trade_dates = pd.to_datetime(trades_df['exit_time'])
         equity = trades_df['running_capital'].tolist()

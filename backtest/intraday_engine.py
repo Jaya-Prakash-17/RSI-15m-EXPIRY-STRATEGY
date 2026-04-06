@@ -274,6 +274,17 @@ class IntradayEngine:
             return
 
         strategy = self.strategy_cls(self.config)
+        
+        # Performance Upgrade: Pre-calculate RSI for all symbols at once
+        # This converts a massive O(N^2) bottleneck into an O(N) operation.
+        rsi_cache = {}
+        for symbol, df in option_data.items():
+            # Calculate the ENTIRE RSI series for this option's history including warmup
+            # We use .values for the raw numpy array to bypass pandas overhead
+            rsi_series = strategy.calculate_wilder_rsi(df['close'].values)
+            if rsi_series is not None:
+                rsi_cache[symbol] = rsi_series
+        
         timestamps = sorted(spot_df['datetime'].unique())
         # CRITICAL FIX: Only process candles from the actual backtest date, not warmup period
         # This prevents signals from warmup days appearing in backtest results
@@ -361,14 +372,21 @@ class IntradayEngine:
                 
                 self.last_processed_candle_time[symbol] = current_candle_time
                 
-                # Issue 6: RSI History Integrity
-                history_closes = df[df['datetime'] <= current_candle_time]['close']
+                # Performance Upgrade: Use pre-calculated RSI values
+                symbol_rsis = rsi_cache.get(symbol)
+                if symbol_rsis is None: continue
                 
-                # Debug logging
-                if debug_count < max_debug:
-                    self.logger.info(f"DEBUG: {symbol} at {t} - history_closes: {len(history_closes)} rows")
+                # Get index of current candle in its own dataframe to pull RSI
+                # row.name is its index in df
+                curr_idx = row.name
+                if curr_idx < 1 or curr_idx >= len(symbol_rsis): continue
                 
-                signal = strategy.check_signal(symbol, row, history_closes)
+                curr_rsi = symbol_rsis[curr_idx]
+                prev_rsi = symbol_rsis[curr_idx - 1]
+                
+                if np.isnan(curr_rsi): continue
+                
+                signal = strategy.check_signal(symbol, row, rsi_values=(curr_rsi, prev_rsi))
                 diag['rsi_checks'] += 1
                 
                 # Debug signal result
