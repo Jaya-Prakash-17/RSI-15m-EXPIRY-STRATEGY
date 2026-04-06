@@ -7,7 +7,7 @@ backtest:
 
 # Capital Configuration
 capital:
-  initial: 200000                    # Initial trading capital per session (Rs.)
+  initial: 100000                    # Initial trading capital per session (Rs.)
 
 # Trading Charges & Taxes (Live Values as of Jan 2026)
 charges:
@@ -41,7 +41,7 @@ indices:
 # Performance Reporting
 reporting:
   slippage_buffer_enabled: true      # If true, subtracts flat buffer from each trade P&L
-  slippage_buffer_per_trade: 50      # Flat slippage buffer in Rs. (P-28)
+  slippage_buffer_per_trade: 75      # Flat slippage buffer in Rs. (P-28)
 
 # Risk Management
 risk:
@@ -71,8 +71,8 @@ strategy:
   safe_sl_mode: true                 # Enforce safe_sl_max_loss guard
   signal_window_start: '10:00'       # Start scanner window (P-30)
   signal_window_end: '13:30'         # End scanner window (P-30)
-  single_lot_exit_target: 3         # Target index for exit (1=T1, 2=T2, 3=T3)
-  strike_range: 4                    # Number of strikes to scan around ATM
+  single_lot_exit_target: 2         # Target index for exit (1=T1, 2=T2, 3=T3)
+  strike_range: 3                    # Number of strikes to scan around ATM
   trade_only_on_expiry: false        # If true, scans only indices expiring TODAY
 
 # Live/Paper Trading Environment
@@ -81,6 +81,6 @@ trading:
   paper_trading: true                # Simulation mode (V15-P-01 hardened)
   trade_log_file: logs/PAPER_TRADES_LOG.csv
   window:
-    start: '10:15'                   # Trading window start (IST)
+    start: '09:45'                   # Trading window start (IST)
     end: '13:45'                     # Trading window end (IST)
     auto_square_off: '15:15'         # Force close all positions at this time (IST)
