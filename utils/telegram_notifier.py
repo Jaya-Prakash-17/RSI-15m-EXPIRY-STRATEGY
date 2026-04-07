@@ -45,11 +45,21 @@ class TelegramNotifier:
     All methods are fire-and-forget — they never crash your main bot.
     """
 
-    def __init__(self):
-        self.token = os.getenv("TELEGRAM_BOT_TOKEN")
-        raw_ids = os.getenv("TELEGRAM_CHAT_ID", "")
+    def __init__(self, config=None):
+        import yaml
+        if config is None:
+            config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config.yaml")
+            try:
+                with open(config_path, "r") as f:
+                    config = yaml.safe_load(f)
+            except Exception:
+                config = {}
+                
+        tele_cfg = config.get("telegram", {})
+        self.token = tele_cfg.get("bot_token")
+        raw_ids = str(tele_cfg.get("chat_ids", ""))
         self.chat_ids = [cid.strip() for cid in raw_ids.split(",") if cid.strip()]
-        self.owner_id = os.getenv("TELEGRAM_OWNER_ID")
+        self.owner_id = str(tele_cfg.get("owner_id", "")).strip()
         self.logger = logging.getLogger("TelegramNotifier")
 
         self.enabled = bool(self.token and self.chat_ids)
@@ -57,8 +67,8 @@ class TelegramNotifier:
             self.logger.info(f"✅ Telegram notifications enabled for {len(self.chat_ids)} chat(s)")
         else:
             self.logger.warning(
-                "⚠️  Telegram not configured — add TELEGRAM_BOT_TOKEN and "
-                "TELEGRAM_CHAT_ID to your .env file"
+                "⚠️  Telegram not configured — add bot_token and "
+                "chat_ids to your config.yaml file under 'telegram'"
             )
 
     # ─────────────────────────────────────────────
@@ -390,7 +400,7 @@ class TelegramNotifier:
             f"✅ Telegram alerts are working!\n"
             f"You'll get notified on every setup."
         )
-        self._send(msg)
+        self._send_to_owner(msg)
 
     def daily_loss_limit_hit(self, daily_pnl: float, limit: float):
         """Send when daily loss limit is reached and bot stops trading."""
@@ -403,7 +413,7 @@ class TelegramNotifier:
             f"🛑 Bot will not take new trades today.\n"
             f"Close any open positions manually."
         )
-        self._send(msg)
+        self._send_to_owner(msg)
     
     def alert_manual_shutdown(self):
         """Send when bot is manually shut down (Ctrl+C). Only to owner."""
@@ -434,5 +444,5 @@ class TelegramNotifier:
             f"trade alerts to this chat.\n\n"
             f"<i>Setup complete. Happy trading! 🚀</i>"
         )
-        self._send(msg)
-        self.logger.info(f"Test message sent to {len(self.chat_ids)} Telegram chat(s)")
+        self._send_to_owner(msg)
+        self.logger.info(f"Test message sent to owner Telegram chat")

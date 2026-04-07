@@ -236,6 +236,10 @@ class PerformanceReporter:
             # Timing
             'avg_holding_mins': round(avg_holding_mins, 1),
             
+            # Capital Deployment
+            'avg_capital_deployed': round(trades_df['cost'].mean(), 2) if 'cost' in trades_df.columns else 0,
+            'max_capital_deployed': round(trades_df['cost'].max(), 2) if 'cost' in trades_df.columns else 0,
+            
             # Volatility
             'pnl_std_dev': round(std_pnl, 2)
         }
@@ -247,6 +251,10 @@ class PerformanceReporter:
             return None
 
         # Calculate trading charges for each trade
+        # Ensure cost column exists (entry_price * qty)
+        if 'cost' not in trades_df.columns:
+            trades_df['cost'] = trades_df['entry_price'] * trades_df['qty']
+            
         # Read exit config once, outside the loop
         exit_mode = self.config.get('strategy', {}).get('exit_mode', 'single_lot')
         lots_per_trade = self.config.get('strategy', {}).get('lots_per_trade', 1)
@@ -275,20 +283,45 @@ class PerformanceReporter:
         trades_df['charges'] = [c['total'] for c in charges_list]
         trades_df['pnl_gross'] = trades_df['pnl']
 
-        # P-28: Apply configurable slippage buffer per trade
+        # P-28 / V16-P-04: Apply configurable slippage buffer per trade
         slip_cfg = self.config.get('reporting', {})
-        slip_amount = float(slip_cfg.get('slippage_buffer_per_trade', 0))
         slip_enabled = slip_cfg.get('slippage_buffer_enabled', False)
+        slip_model = slip_cfg.get('slippage_model', 'flat')
 
-        if slip_enabled and slip_amount > 0:
-            trades_df['slippage'] = slip_amount
+        if slip_enabled:
+            if slip_model == 'position_scaled':
+                # V16-P-04: Position-scaled slippage
+                ticks_per_side = slip_cfg.get('slippage_ticks_per_side', 1)
+                slip_min = float(slip_cfg.get('slippage_min_per_trade', 50))
+                slip_max = float(slip_cfg.get('slippage_max_per_trade', 500))
+
+                slippage_vals = []
+                for _, trade in trades_df.iterrows():
+                    underlying = trade.get('underlying', 'NIFTY')
+                    tick = self.config.get('indices', {}).get(underlying, {}).get('tick_size', 0.05)
+                    qty = trade.get('qty', 1)
+                    slip = ticks_per_side * tick * qty * 2  # 2 sides (entry + exit)
+                    slip = max(slip_min, min(slip_max, slip))
+                    slippage_vals.append(slip)
+
+                trades_df['slippage'] = slippage_vals
+                self.logger.info(
+                    f"Position-scaled slippage applied: "
+                    f"avg=Rs.{trades_df['slippage'].mean():.2f}/trade, "
+                    f"total=Rs.{trades_df['slippage'].sum():.2f}"
+                )
+            else:
+                # Flat model (backward compatible)
+                slip_amount = float(slip_cfg.get('slippage_buffer_per_trade', 0))
+                trades_df['slippage'] = slip_amount
+                self.logger.info(
+                    f"Flat slippage buffer applied: Rs.{slip_amount}/trade x "
+                    f"{len(trades_df)} trades = Rs.{trades_df['slippage'].sum():.2f} total"
+                )
+
             trades_df['pnl_net'] = (trades_df['pnl_gross']
                                    - trades_df['charges']
                                    - trades_df['slippage'])
-            self.logger.info(
-                f"Slippage buffer applied: Rs.{slip_amount}/trade x "
-                f"{len(trades_df)} trades = Rs.{trades_df['slippage'].sum():.2f} total"
-            )
         else:
             trades_df['slippage'] = 0.0
             trades_df['pnl_net'] = trades_df['pnl_gross'] - trades_df['charges']
@@ -333,7 +366,8 @@ class PerformanceReporter:
         print(f"  Gross P&L:       Rs.{trades_df['pnl_gross'].sum():,.2f}")
         print(f"  Total Charges:   Rs.{total_charges:,.2f}")
         if total_slippage > 0:
-            print(f"  Slippage Buffer: Rs.{total_slippage:,.2f}  (Rs.{slip_amount:.0f}/trade)")
+            avg_slip = total_slippage / max(1, len(trades_df))
+            print(f"  Slippage Buffer: Rs.{total_slippage:,.2f}  (Avg Rs.{avg_slip:.0f}/trade)")
         print(f"  Net P&L:         Rs.{stats['total_pnl']:,.2f}")
         print(f"  Avg P&L/Trade:   Rs.{stats['avg_pnl_per_trade']:,.2f}")
         print(f"  Avg Win:         Rs.{stats['avg_win']:,.2f}")
@@ -552,6 +586,7 @@ class PerformanceReporter:
                 ("Sharpe", f"{stats['sharpe_ratio']}", c_text),
                 ("Sortino", f"{stats['sortino_ratio']}", c_text),
                 ("Max DD", f"Rs.{stats['max_drawdown']:,.0f} ({stats['max_drawdown_pct']}%)", c_red),
+                ("Avg Capital", f"Rs.{stats['avg_capital_deployed']:,.0f}", c_cyan),
                 ("Streaks W/L", f"{stats['max_win_streak']} / {stats['max_loss_streak']}", c_text),
                 ("Avg Hold", f"{stats['avg_holding_mins']:.0f} min", c_muted),
             ]),
@@ -731,14 +766,15 @@ class PerformanceReporter:
         
         metric_names = [
             'Net P&L', 'Gross P&L', 'Return %', 'Win Rate', 'Profit Factor',
-            'Sharpe', 'Sortino', 'Max Drawdown', 'Avg Win', 'Avg Loss',
-            'Best Trade', 'Worst Trade', 'Win Streak', 'Loss Streak', 'Avg Hold'
+            'Sharpe', 'Sortino', 'Max Drawdown', 'Avg Capital', 'Avg Win', 
+            'Avg Loss', 'Best Trade', 'Worst Trade', 'Win Streak', 'Loss Streak', 'Avg Hold'
         ]
         metric_vals = [
             f'Rs.{net_pnl:,.0f}', f'Rs.{gross:,.0f}', f'{ret_pct:+.1f}%',
             f'{stats["win_rate"]}%', pf_str,
             str(stats['sharpe_ratio']), str(stats['sortino_ratio']),
             f'Rs.{stats["max_drawdown"]:,.0f} ({stats["max_drawdown_pct"]}%)',
+            f'Rs.{stats["avg_capital_deployed"]:,.0f}',
             f'Rs.{stats["avg_win"]:,.0f}', f'Rs.{stats["avg_loss"]:,.0f}',
             f'Rs.{stats["largest_win"]:,.0f}', f'Rs.{stats["largest_loss"]:,.0f}',
             str(stats['max_win_streak']), str(stats['max_loss_streak']),
@@ -824,7 +860,7 @@ class PerformanceReporter:
         
         # 7. Trade Log Table
         trade_tbl = trades_df[['symbol', 'entry_time', 'exit_time', 'entry_price', 
-                               'exit_price', 'qty', 'reason', 'pnl_gross', 'pnl_net']].copy()
+                               'exit_price', 'qty', 'cost', 'reason', 'pnl_gross', 'pnl_net']].copy()
         trade_tbl['entry_time'] = pd.to_datetime(trade_tbl['entry_time']).dt.strftime('%Y-%m-%d %H:%M')
         trade_tbl['exit_time'] = pd.to_datetime(trade_tbl['exit_time']).dt.strftime('%Y-%m-%d %H:%M')
         
@@ -834,7 +870,7 @@ class PerformanceReporter:
         fig.add_trace(go.Table(
             header=dict(
                 values=['Symbol', 'Entry Time', 'Exit Time', 'Entry Px', 'Exit Px', 
-                        'Qty', 'Reason', 'Gross P&L', 'Net P&L'],
+                        'Qty', 'Capital', 'Reason', 'Gross P&L', 'Net P&L'],
                 fill_color='#0f3460',
                 font=dict(color='#ffd700', size=11),
                 align='left', height=28
@@ -845,7 +881,7 @@ class PerformanceReporter:
                 font=dict(
                     color=[['#e6f1ff']*n_rows, ['#e6f1ff']*n_rows, ['#e6f1ff']*n_rows,
                            ['#e6f1ff']*n_rows, ['#e6f1ff']*n_rows, ['#e6f1ff']*n_rows,
-                           ['#e6f1ff']*n_rows, cell_colors_pnl, cell_colors_pnl],
+                           ['#ffd700']*n_rows, ['#e6f1ff']*n_rows, cell_colors_pnl, cell_colors_pnl],
                     size=10
                 ),
                 align='left', height=24

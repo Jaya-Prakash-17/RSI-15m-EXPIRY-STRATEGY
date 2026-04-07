@@ -20,15 +20,35 @@ def extract_year(summary):
 
 
 def load_summaries(reports_dir):
-    pattern = os.path.join(reports_dir, 'backtest_*_summary.json')
+    # Pattern updated to catch the strategy-named summary files
+    pattern = os.path.join(reports_dir, '*_summary.json')
     files = sorted(glob.glob(pattern))
+    print(f"Found {len(files)} summary files in {reports_dir}")
     results = []
     for f in files:
         try:
             with open(f) as fp:
                 data = json.load(fp)
+            
+            # Smart year extraction: internal config OR filename segment
             year = extract_year(data)
+            if year == 'unknown':
+                # Try to find a 4-digit year in the filename (e.g., ..._2023-2023_...)
+                import re
+                match = re.search(r'(\d{4})-\1', os.path.basename(f))
+                if match:
+                    year = match.group(1)
+                else:
+                    # Fallback to any 4-digit number
+                    match = re.search(r'_(\d{4})_', os.path.basename(f))
+                    if match:
+                        year = match.group(1)
+            
             s = data.get('summary', {})
+            # Handle potential index list in config
+            indices_cfg = data.get('config', {}).get('indices', {})
+            index_list = list(indices_cfg.keys()) if isinstance(indices_cfg, dict) else [str(indices_cfg)]
+            
             results.append({
                 'year': year,
                 'file': os.path.basename(f),
@@ -39,11 +59,13 @@ def load_summaries(reports_dir):
                 'max_drawdown_pct': s.get('max_drawdown_pct', 0),
                 'net_pnl': s.get('total_pnl', 0),
                 'sharpe': s.get('sharpe_ratio', 0),
+                'indices': ", ".join(index_list),
                 'lots': data.get('config', {}).get('strategy', {}).get('lots_per_trade', '?'),
                 'exit_target': data.get('config', {}).get('strategy', {}).get('single_lot_exit_target', '?'),
             })
         except Exception as e:
             print(f"Error loading {f}: {e}")
+    print(f"Successfully loaded metrics for {len(results)} years.")
     return results
 
 
@@ -52,7 +74,7 @@ def print_table(results):
         print("No summary files found.")
         return
 
-    header = f"{'Year':<6} {'Trades':<8} {'Win%':<7} {'PF':<6} {'Max DD%':<10} {'Net P&L':<12} {'Sharpe':<8} {'Verdict'}"
+    header = f"{'Yr':<4} {'Trd':<4} {'Win%':<5} {'PF':<5} {'DD%':<6} {'PnL':<10} {'Shp':<5} {'Verdict'}"
     print("\n" + "=" * 80)
     print(" OUT-OF-SAMPLE VALIDATION TABLE")
     print("=" * 80)
@@ -65,31 +87,18 @@ def print_table(results):
         dd = r['max_drawdown_pct']
         wr = r['win_rate']
 
-        # GO/NO-GO criteria
         pf_ok = pf >= 1.1
         dd_ok = dd > -35.0
-        wr_ok = 25 <= wr <= 55  # Relaxed range for different market regimes
+        wr_ok = 25 <= wr <= 55
 
         verdict = "PASS" if (pf_ok and dd_ok and wr_ok) else "FAIL"
         if not (pf_ok and dd_ok and wr_ok):
             all_pass = False
 
-        flags = []
-        if not pf_ok:
-            flags.append(f"PF={pf:.2f}<1.1")
-        if not dd_ok:
-            flags.append(f"DD={dd:.1f}%")
-        if not wr_ok:
-            if wr < 25:
-                flags.append(f"WR={wr:.1f}%<25% (strategy too noisy or data issue)")
-            else:
-                flags.append(f"WR={wr:.1f}%>55% (suspiciously high — check for look-ahead bias)")
-
-        flag_str = " | ".join(flags) if flags else ""
         print(
-            f"{r['year']:<6} {r['trades']:<8} {wr:<7.1f} {pf:<6.2f} "
-            f"{dd:<10.1f} Rs.{r['net_pnl']:<10,.0f} {r['sharpe']:<8.2f} "
-            f"{verdict} {flag_str}"
+            f"{r['year']:<4} {r['trades']:<4} {wr:<5.1f} {pf:<5.2f} "
+            f"{dd:<6.1f} {r['net_pnl']:<10,.0f} {r['sharpe']:<5.2f} "
+            f"{verdict}"
         )
 
     print("=" * 80)
@@ -97,6 +106,29 @@ def print_table(results):
     print(f"  Profit Factor >= 1.1")
     print(f"  Max Drawdown > -35%")
     print(f"  Win Rate 25%-55% (strategy behaving as designed)")
+
+    # V16-P-02: Year-over-year consistency checks
+    pnls = {r['year']: r['net_pnl'] for r in results if r['year'] != 'unknown'}
+    total_pnl = sum(pnls.values()) if pnls else 0
+
+    if len(pnls) >= 2 and total_pnl != 0:
+        import numpy as np
+        pnl_values = list(pnls.values())
+        cv = np.std(pnl_values) / abs(np.mean(pnl_values)) if np.mean(pnl_values) != 0 else 0
+        print(f"\n  YoY Consistency:")
+        print(f"    PnL Coefficient of Variation: {cv:.2f}")
+        if cv > 1.5:
+            print(f"    ⚠️  HIGH VARIANCE: strategy performance is regime-dependent")
+        
+        for yr, pnl in pnls.items():
+            share = abs(pnl) / abs(total_pnl) * 100 if total_pnl != 0 else 0
+            if share > 40:
+                print(f"    ⚠️  CONCENTRATION: {yr} accounts for {share:.1f}% of total PnL (limit: 40%)")
+        
+        crash_years_pnl = sum(pnls.get(y, 0) for y in ['2020', '2021'])
+        if total_pnl > 0 and crash_years_pnl / total_pnl > 0.5:
+            print(f"    ⚠️  REGIME BIAS: 2020+2021 = {crash_years_pnl/total_pnl*100:.1f}% of total PnL (crash-bounce regime)")
+
     print(
         f"\nFINAL VERDICT: {'ALL YEARS PASS - ready for live consideration' if all_pass else 'STRATEGY FAILS OUT-OF-SAMPLE - do not deploy live'}"
     )

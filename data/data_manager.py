@@ -14,7 +14,7 @@ class DataManager:
         self.config = config
         self.downloader = HistoricalDownloader(config)
         self.base_path = config['data']['storage_path']
-        self.offline_mode = config['backtest'].get('offline_mode', False)
+        self.offline_mode = config.get('backtest', {}).get('offline_mode', False)
         self.data_cache = {}
         # Cache for option chain mapping: (underlying, date) -> { (strike, type): trading_symbol }
         self.chain_cache = {}
@@ -78,11 +78,11 @@ class DataManager:
     def get_spot_candles(self, symbol, start_date, end_date, refresh=False):
         filepath = os.path.join(self.base_path, "spot", f"{symbol}_15m.csv")
         
-        # 1. Basic coverage check (Boundary)
-        need_download = refresh or not os.path.exists(filepath)
+        file_exists = os.path.exists(filepath)
+        need_download = refresh or not file_exists
         gaps = []
         
-        if not need_download and os.path.exists(filepath):
+        if not need_download and file_exists:
             df = self._load_csv(filepath)
             if df.empty:
                 need_download = True
@@ -96,26 +96,30 @@ class DataManager:
                     self.logger.info(f"Spot {symbol} boundary mismatch: file={file_min.date()} to {file_max.date()}, requested={start_date.date()} to {end_date.date()}")
                     need_download = True
                 else:
-                    # 2. P-04: Interval Gap Check (Core Requirement)
+                    # P-04: Interval Gap Check
                     gaps = self._check_for_gaps(df, start_date, end_date, symbol)
                     if gaps:
                         self.logger.warning(f"Detected {len(gaps)} gaps in {symbol} spot data.")
                         for gs, ge in gaps:
                             self.logger.info(f"  Missing: {gs.date()} to {ge.date()}")
-                        need_download = True # Trigger Repair/Download
+                        need_download = True
 
         if need_download:
             if self.offline_mode:
                 self.logger.warning(f"Offline Mode: Skipping download/repair of {symbol} spot data.")
+            elif file_exists:
+                # Smart fallback: file exists but has boundary/gap issues
+                # Use existing data without API call, just log the issue
+                self.logger.info(f"Using existing spot data for {symbol} (file present, skipping API repair)")
             else:
+                # File truly missing — must download
+                self.logger.info(f"Spot data for {symbol} not found locally, downloading...")
                 if gaps:
-                    self.logger.info(f"Attempting to repair {len(gaps)} gaps for {symbol}...")
                     for gs, ge in gaps:
                         self.downloader.download_spot_data(symbol, gs, ge)
                 else:
                     self.downloader.download_spot_data(symbol, start_date, end_date)
                 
-                # Clear cache so we reload the repaired file
                 if filepath in self.data_cache: del self.data_cache[filepath]
         
         df = self._load_csv(filepath)
@@ -124,10 +128,11 @@ class DataManager:
     def get_derivative_candles(self, underlying, contract_name, year, start_date, end_date, refresh=False):
         filepath = os.path.join(self.base_path, "derivatives", underlying, str(year), f"{contract_name}_15m.csv")
         
-        need_download = refresh or not os.path.exists(filepath)
+        file_exists = os.path.exists(filepath)
+        need_download = refresh or not file_exists
         
         # Check if existing file covers the requested date range
-        if not need_download and os.path.exists(filepath):
+        if not need_download and file_exists:
             existing_df = self._load_csv(filepath)
             if not existing_df.empty and 'datetime' in existing_df.columns:
                 existing_df['datetime'] = pd.to_datetime(existing_df['datetime'])
@@ -136,19 +141,22 @@ class DataManager:
                 requested_end = end_date.date() if hasattr(end_date, 'date') else end_date
                 requested_start = start_date.date() if hasattr(start_date, 'date') else start_date
                 
-                # If file doesn't cover requested start or end dates, re-download
                 if file_max_date < requested_end or file_min_date > requested_start:
-                    self.logger.info(f"Derivative {contract_name} needs update (file: {file_min_date} to {file_max_date}, need {requested_start} to {requested_end})")
+                    self.logger.debug(f"Derivative {contract_name} boundary mismatch (file: {file_min_date} to {file_max_date}, need {requested_start} to {requested_end})")
                     need_download = True
         
         if need_download:
             if self.offline_mode:
                 self.logger.debug(f"Offline Mode: Using existing derivative data for {contract_name} (even if range incomplete).")
+            elif file_exists:
+                # Smart fallback: file exists but range incomplete — use what we have
+                self.logger.debug(f"Using existing derivative data for {contract_name} (file present, skipping API)")
             else:
-                self.logger.info(f"Derivative data for {contract_name} missing or refresh requested.")
+                # File truly missing — must download
+                self.logger.info(f"Derivative data for {contract_name} not found locally, downloading...")
                 success = self.downloader.download_derivative_data(underlying, contract_name, year, start_date, end_date)
                 if not success and not os.path.exists(filepath):
-                    return pd.DataFrame()  # Return empty instead of raising
+                    return pd.DataFrame()
                 if filepath in self.data_cache: del self.data_cache[filepath]
         
         df = self._load_csv(filepath)

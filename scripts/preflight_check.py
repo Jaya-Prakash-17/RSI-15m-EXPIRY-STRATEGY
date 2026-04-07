@@ -140,7 +140,7 @@ try:
     if notifier.enabled:
         ok(f"Configured ({len(notifier.chat_ids)} chat(s))")
     else:
-        warn("Not configured — add TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID to .env")
+        warn("Not configured — add bot_token + chat_ids to config.yaml under 'telegram'")
 except Exception as e:
     warn(f"Telegram: {e}")
 

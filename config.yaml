@@ -2,13 +2,13 @@
 
 # Backtest Settings
 backtest:
-  start_date: '2020-01-01'           # Backtest start (YYYY-MM-DD)
+  start_date: '2025-01-01'           # Backtest start (YYYY-MM-DD)
   end_date: '2025-12-31'             # Backtest end (YYYY-MM-DD)
   offline_mode: true                 # Run using local data files
 
 # Capital Configuration
 capital:
-  initial: 10000                    # Initial trading capital per session (Rs.)
+  initial: 200000                # Initial trading capital per session (Rs.)
 
 # Trading Charges & Taxes (Live Values as of Jan 2026)
 charges:
@@ -41,8 +41,12 @@ indices:
 
 # Performance Reporting
 reporting:
-  slippage_buffer_enabled: true      # If true, subtracts flat buffer from each trade P&L
-  slippage_buffer_per_trade: 65      # Flat slippage buffer in Rs. (P-28)
+  slippage_buffer_enabled: true      # If true, subtracts slippage buffer from each trade P&L
+  slippage_buffer_per_trade: 65      # Flat slippage buffer in Rs. (used when model='flat')
+  slippage_model: position_scaled    # 'flat' or 'position_scaled' (V16-P-04)
+  slippage_ticks_per_side: 1         # Ticks of slippage per entry/exit side (position_scaled)
+  slippage_min_per_trade: 50         # Floor (Rs.) even for tiny positions
+  slippage_max_per_trade: 500        # Cap (Rs.) to avoid penalizing large wins unfairly
 
 # Risk Management
 risk:
@@ -56,14 +60,16 @@ strategy:
   direction_filter_enabled: false    # If true, filters CE on bearish / PE on bullish spot
   dynamic_sizing_enabled: false      # Placeholder for future capital scaling
   exit_mode: single_lot            # 'single_lot' or 'multi_lot'
-  lots_per_trade: 1                 # Number of lots per position
+  lots_per_trade: 3                 # Number of lots per position
   max_correlated_positions: 2        # Max concurrent trades in same direction (P-09)
   max_lots: 5                        # Global lot limit (hard cap)
   max_position_pct: 0.8              # Max % of capital to use per trade
   min_sl_pct: 0.10                   # Minimum SL % distance (P-27)
   risk_per_trade_pct: 0.05           # Target risk % per trade relative to initial capital
+  min_alert_range_points: 0.5       # Skip alerts with candle range < this (V16-P-01 data guard)
+  min_volume_candles_pct: 0.5        # Min fraction of expiry-day candles with volume>0 (V16-P-05)
   rsi:
-    min_candles_for_signal: 27       # Min candles required to validate RSI signal (V14-P-01)
+    min_candles_for_signal: 33       # Min candles required to validate RSI signal (V16-P-03: 11*3)
     period: 11                       # RSI Lookback period
     threshold: 60                    # Breakout threshold (60 for CE calls, 40 for PE puts)
     warmup_periods: 100              # Min history required before scanning (V16 prerequisite)
@@ -72,7 +78,7 @@ strategy:
   safe_sl_mode: true                 # Enforce safe_sl_max_loss guard
   signal_window_start: '10:00'       # Start scanner window (P-30)
   signal_window_end: '13:30'         # End scanner window (P-30)
-  single_lot_exit_target: 2        # Target index for exit (1=T1, 2=T2, 3=T3)
+  single_lot_exit_target: 3       # Target index for exit (1=T1, 2=T2, 3=T3)
   strike_range: 3                    # Number of strikes to scan around ATM
   trade_only_on_expiry: false        # If true, scans only indices expiring TODAY
 
@@ -85,3 +91,8 @@ trading:
     start: '09:45'                   # Trading window start (IST)
     end: '13:45'                     # Trading window end (IST)
     auto_square_off: '15:15'         # Force close all positions at this time (IST)
+
+telegram:
+  bot_token: '***REDACTED_TOKEN***'
+  chat_ids: '***REDACTED_CHAT_IDS***'
+  owner_id: '***REDACTED_OWNER_ID***'

@@ -42,6 +42,9 @@ class ExpiryRSIBreakout:
         # Debug logging for RSI validation
         self.rsi_debug = config['strategy'].get('rsi_debug', False)
         
+        # V16-P-01: Minimum alert range guard (data quality)
+        self.min_alert_range = config['strategy'].get('min_alert_range_points', 0.5)
+        
         # Risk management: SAFE_SL Mode
         self.safe_sl_mode = config['strategy'].get('safe_sl_mode', False)
         self.safe_sl_max_loss = config['strategy'].get('safe_sl_max_loss', 5000)
@@ -493,6 +496,16 @@ class ExpiryRSIBreakout:
                     'datetime': current_candle['datetime']
                 }
                 
+                # V16-P-01: Reject corrupt or flat candles (negative/tiny range)
+                alert_range = alert_candle['high'] - alert_candle['low']
+                if alert_range < self.min_alert_range:
+                    self.logger.warning(
+                        f"[{symbol}] Skipping alert: corrupt or flat candle "
+                        f"(range={alert_range:.2f}, high={alert_candle['high']}, "
+                        f"low={alert_candle['low']})"
+                    )
+                    return None
+                
                 # Calculate Effective SL (Base, Base + SAFE_SL, and Floor)
                 effective_sl, is_safe_applied, raw_sl = self._calculate_effective_sl(symbol, alert_candle['high'], alert_candle['low'])
 
@@ -501,7 +514,6 @@ class ExpiryRSIBreakout:
                 state['alert_time'] = current_time
                 self.logger.info(f"ALERT: RSI Breakout for {symbol} at {current_time} (RSI: {current_rsi:.2f})")
                 
-                alert_range = alert_candle['high'] - alert_candle['low']
                 return {
                     'action': 'ALERT',
                     'price': alert_candle['high'],

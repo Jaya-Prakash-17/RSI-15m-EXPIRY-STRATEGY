@@ -172,6 +172,37 @@ class IntradayEngine:
         except Exception as e:
             self.logger.warning(f"[PATH CHECK] Could not validate paths for {underlying}: {e}")
 
+    def _is_option_data_tradeable(self, df, backtest_date, warmup_start):
+        """
+        V16-P-05: Data quality filter for option symbols.
+        Returns (is_ok, reject_reason).
+        """
+        if df is None or df.empty:
+            return False, 'empty_df'
+        
+        warmup_required = self.config['strategy']['rsi'].get('warmup_periods', 100)
+        if len(df) < warmup_required + 1:
+            return False, f'insufficient_bars_{len(df)}'
+        
+        # Check volume quality on expiry day only
+        try:
+            bd = backtest_date.date() if hasattr(backtest_date, 'date') else backtest_date
+            expiry_day_data = df[df['datetime'].dt.date == bd]
+            if not expiry_day_data.empty:
+                min_vol_pct = self.config['strategy'].get('min_volume_candles_pct', 0.5)
+                zero_vol_pct = (expiry_day_data['volume'] == 0).mean()
+                if zero_vol_pct > min_vol_pct:
+                    return False, f'low_volume_{zero_vol_pct:.0%}'
+                
+                # Check for data integrity (no high<low candles)
+                corrupt = (expiry_day_data['high'] < expiry_day_data['low']).sum()
+                if corrupt > 0:
+                    return False, f'corrupt_candles_{corrupt}'
+        except Exception:
+            pass  # If date filtering fails, don't reject.
+        
+        return True, 'ok'
+
     def process_expiry_day(self, underlying, date):
         # V6-P-001: Diagnostic Tracking Dictionary
         diag = {
@@ -258,8 +289,15 @@ class IntradayEngine:
                     )
                     if not df.empty:
                         df = df.sort_values('datetime').reset_index(drop=True)
-                        option_data[symbol] = df
-                        diag['opt_symbols_loaded'] += 1
+                        # V16-P-05: Data quality filter
+                        is_ok, reject_reason = self._is_option_data_tradeable(df, date, warmup_start)
+                        if is_ok:
+                            option_data[symbol] = df
+                            diag['opt_symbols_loaded'] += 1
+                        else:
+                            diag['opt_symbols_filtered'] = diag.get('opt_symbols_filtered', 0) + 1
+                            if self.config['strategy'].get('rsi_debug', False):
+                                self.logger.debug(f"Filtered {symbol}: {reject_reason}")
                     else:
                         diag['opt_symbols_empty'] += 1
                 except Exception as e:
@@ -431,7 +469,7 @@ class IntradayEngine:
             f"[DIAG] {diag['date']} {diag['underlying']} | "
             f"{'TRADE' if diag['trades_opened'] else 'NO TRADE'} | "
             f"data={diag['opt_symbols_loaded']}/{diag['opt_symbols_attempted']} "
-            f"({diag['opt_symbols_empty']} empty) | "
+            f"({diag['opt_symbols_empty']} empty, {diag.get('opt_symbols_filtered', 0)} filtered) | "
             f"ts={diag['timestamps_in_window']} | "
             f"rsi_checks={diag['rsi_checks']} | "
             f"alerts={diag['alerts_fired']} | "
@@ -562,12 +600,9 @@ class IntradayEngine:
         # available in BOTH multi-lot and single-lot branches below.
         underlying = trade.get('underlying', 'NIFTY')
         
-        # Guard: do not check SL/TP on the same candle as entry
-        entry_candle_dt = trade.get('entry_candle_datetime', '')
-        current_candle_dt = str(row['datetime']) if row is not None else ''
-        if entry_candle_dt and current_candle_dt == entry_candle_dt:
-            self.logger.debug(f"[SAME-CANDLE GUARD] Skipped SL check on entry candle {current_candle_dt} for {trade['symbol']}")
-            return 0
+        # V16-P-06: Management starts at T+2 by design (entry sets active_trade at the END
+        # of the T+1 loop iteration, so management loop runs from T+2 onwards).
+        # No same-candle SL risk exists in this architecture.
         
         realized_pnl = 0
         
@@ -585,6 +620,32 @@ class IntradayEngine:
         
         # Check SL condition (strategy-defined: alert candle low - 1)
         sl_triggered = row['low'] <= trade['sl']
+        
+        # V16-P-08: If SL has been trailed ABOVE entry (profitable trail),
+        # check final target FIRST. Price must pass through target to hit
+        # trailed SL from below, so TP takes priority.
+        trailed_sl_above_entry = trade.get('sl', 0) > trade.get('entry_price', 0)
+        exit_mode = self.config['strategy'].get('exit_mode', 'multi_lot')
+        
+        if trailed_sl_above_entry and sl_triggered:
+            # Check if final target was ALSO hit on this candle
+            if exit_mode == 'single_lot' or (exit_mode == 'multi_lot' and self.config['strategy'].get('lots_per_trade', 3) < 3):
+                target_idx = self.config['strategy'].get('single_lot_exit_target', 2) - 1
+                if row['high'] >= trade['targets'][target_idx]:
+                    exit_price = max(row['open'], trade['targets'][target_idx])
+                    pnl = (exit_price - trade['entry_price']) * trade['qty']
+                    self.capital += exit_price * trade['qty']
+                    trade['exit_time'] = time
+                    trade['exit_price'] = exit_price
+                    trade['reason'] = f'TP{target_idx+1}'
+                    trade['status'] = 'CLOSED'
+                    trade['pnl'] = pnl
+                    trade['running_capital'] = self.capital
+                    self.logger.info(
+                        f"TP-BEFORE-SL (trailed): {symbol} at {exit_price:.2f} | "
+                        f"SL was {trade['sl']:.2f} > entry {trade['entry_price']:.2f} | PnL: {pnl:.2f}"
+                    )
+                    return pnl
         
         if sl_triggered:
             # V10: Intraday gap-down fix
