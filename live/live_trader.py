@@ -938,11 +938,12 @@ class LiveTrader:
         trigger_price = self._round_to_tick(signal['price'], underlying)
         cost = trigger_price * qty
         
-        # Check available balance
-        balance = self.client.get_balance()
-        if balance is None or balance < cost:
-            self.logger.warning(f"Insufficient Capital: ₹{balance} < ₹{cost}")
-            return
+        # Check available balance (Bypass for Paper Trading)
+        if not self.paper_trading:
+            balance = self.client.get_balance()
+            if balance is None or balance < cost:
+                self.logger.warning(f"Insufficient Capital: ₹{balance} < ₹{cost}")
+                return
         
         self.logger.info(f"📌 PLACING PENDING ENTRY ORDER for {symbol} ({underlying}) at ₹{trigger_price}")
         
@@ -1322,6 +1323,7 @@ class LiveTrader:
                     self.tracker.close_trade(trade_id, exit_price, exit_reason, total_pnl)
                     self._update_circuit_breaker(final_pnl, exit_reason)
                     self.trade_logger.log_exit(trade, self.daily_pnl)
+                    self.telegram.sl_hit(symbol, exit_price, float(trade['entry_price']), float(trade['remaining_qty']), self.daily_pnl)
                     continue
                 
                 # Check single lot final target first
@@ -1341,6 +1343,15 @@ class LiveTrader:
                         self.tracker.close_trade(trade_id, ltp, reason, total_pnl)
                         self._update_circuit_breaker(final_pnl, reason)
                         self.trade_logger.log_exit(trade, self.daily_pnl)
+                        
+                        self.telegram.target_hit(
+                            symbol=symbol,
+                            tp_num=target_idx+1,
+                            price=fill_price,
+                            entry_price=float(trade['entry_price']),
+                            qty_exited=float(trade['remaining_qty']),
+                            new_sl=None
+                        )
                     continue
                 
                 # Check TP1 (multi-lot only - trail SL)
