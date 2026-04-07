@@ -7,6 +7,7 @@ import time
 import os
 import tempfile
 import pandas as pd
+import numpy as np
 from datetime import datetime, time as datetime_time, timedelta
 from data.data_manager import DataManager
 from execution.order_manager import OrderManager, is_order_filled
@@ -627,6 +628,18 @@ class LiveTrader:
             if underlying not in self.tracked_options:
                 continue
             
+            # ── VECTORIZED LIVE PULSE ──────────────────────────────────────
+            # Phase 1: Collect candle data and close arrays for all symbols
+            symbol_candle_data = {}   # {symbol: (df, last_row, current_candle_time)}
+            symbols_closes = {}       # {symbol: np.array of close prices}
+            
+            if self.prev_closed_candle_time:
+                closed_candle_cutoff = self.prev_closed_candle_time + timedelta(seconds=30)
+            elif self.last_candle_time:
+                closed_candle_cutoff = self.last_candle_time - timedelta(seconds=1)
+            else:
+                closed_candle_cutoff = now - timedelta(minutes=15)
+            
             for symbol in list(self.tracked_options[underlying].keys()):
                 try:
                     year = now.year
@@ -634,39 +647,58 @@ class LiveTrader:
                     df = self._get_option_candles_incremental(
                         underlying, symbol, year, warmup_start, now
                     )
-                    if self.prev_closed_candle_time:
-                        closed_candle_cutoff = self.prev_closed_candle_time + timedelta(seconds=30)
-                    elif self.last_candle_time:
-                        closed_candle_cutoff = self.last_candle_time - timedelta(seconds=1)
-                    else:
-                        closed_candle_cutoff = now - timedelta(minutes=15)
                     last_row = self._get_latest_candle(df, closed_candle_cutoff)
-                    if last_row is None: continue
+                    if last_row is None:
+                        continue
+                    
+                    current_candle_time = last_row['datetime']
+                    
+                    # Prevent duplicate processing
+                    last_processed = self.last_processed_candle_time.get(symbol)
+                    if last_processed and current_candle_time <= last_processed:
+                        continue
+                    
+                    self.tracked_options[underlying][symbol] = df
+                    
+                    # Extract close prices as numpy array (fast path — no Pandas filter)
+                    dt_arr = df['datetime'].values
+                    mask = dt_arr <= np.datetime64(current_candle_time)
+                    close_arr = df['close'].values[mask]
+                    
+                    symbol_candle_data[symbol] = (df, last_row, current_candle_time)
+                    symbols_closes[symbol] = close_arr
+                    
+                except Exception as e:
+                    self.logger.error(f"Error collecting data for {symbol}: {e}")
+            
+            # Phase 2: Batch RSI computation (single call for ALL symbols)
+            if symbols_closes:
+                batch_rsi = self.strategy.batch_calculate_rsi(symbols_closes)
+            else:
+                batch_rsi = {}
+            
+            # Phase 3: Signal checking with pre-computed RSI values
+            for symbol, (df, last_row, current_candle_time) in symbol_candle_data.items():
+                try:
+                    rsi_pair = batch_rsi.get(symbol, (None, None))
                     
                     self.logger.debug(
                         f"[{symbol}] RSI check on CLOSED candle: "
                         f"{last_row['datetime'].strftime('%H:%M')} "
                         f"H={last_row['high']:.2f} L={last_row['low']:.2f} "
                         f"range={last_row['high']-last_row['low']:.2f} "
-                        f"({len(df[df['datetime'] <= last_row['datetime']])} candles in history)"
+                        f"RSI={rsi_pair[0]:.2f}" if rsi_pair[0] else
+                        f"[{symbol}] RSI=None (insufficient data)"
                     )
                     
-                    self.tracked_options[underlying][symbol] = df
-                    
-                    # Prevent duplicate processing
-                    last_processed = self.last_processed_candle_time.get(symbol)
-                    current_candle_time = last_row['datetime']
-                    
-                    if last_processed and current_candle_time <= last_processed:
-                        continue
-                    
                     self.last_processed_candle_time[symbol] = current_candle_time
-
                     
-                    # Get price history with warmup
-                    history_closes = df[df['datetime'] <= current_candle_time]['close']
-                    
-                    signal = self.strategy.check_signal(symbol, last_row, history_closes, is_tradable=is_tradable)
+                    signal = self.strategy.check_signal(
+                        symbol, last_row,
+                        price_history=None,      # Not needed when rsi_values provided
+                        is_tradable=is_tradable,
+                        rsi_values=rsi_pair       # Pre-computed (current, prev)
+                    )
                     
                     if signal:
                         action = signal.get('action')

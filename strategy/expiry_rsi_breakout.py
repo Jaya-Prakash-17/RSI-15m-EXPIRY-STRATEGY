@@ -192,6 +192,75 @@ class ExpiryRSIBreakout:
         """
         return self.calculate_wilder_rsi(prices)
 
+    def batch_calculate_rsi(self, symbols_closes: dict) -> dict:
+        """
+        Vectorized Live Pulse: Compute (current_rsi, prev_rsi) for ALL symbols
+        in a single batch call.
+
+        Args:
+            symbols_closes: {symbol: np.ndarray of close prices} or {symbol: pd.Series}
+
+        Returns:
+            {symbol: (current_rsi, prev_rsi)} — values are float or None.
+            Symbols with insufficient data are returned as (None, None).
+
+        Performance:
+            - Avoids per-symbol Python function-call overhead
+            - Uses raw numpy arrays internally (no Pandas Series conversion)
+            - Pre-computes shared constants (alpha, inv_n) once
+        """
+        n = self.rsi_period
+        alpha = (n - 1) / n
+        inv_n = 1.0 / n
+        min_len = n + 1
+
+        results = {}
+
+        for symbol, prices in symbols_closes.items():
+            close = np.asarray(prices, dtype=np.float64)
+
+            if len(close) < min_len:
+                results[symbol] = (None, None)
+                continue
+
+            delta = np.diff(close)
+            gains = np.where(delta > 0, delta, 0.0)
+            losses = np.where(delta < 0, -delta, 0.0)
+
+            # Seed
+            avg_g = gains[:n].mean()
+            avg_l = losses[:n].mean()
+
+            # Smooth — only need the last 2 RSI values, so we can
+            # run the full loop but only extract the tail.
+            for i in range(n, len(delta)):
+                avg_g = avg_g * alpha + gains[i] * inv_n
+                avg_l = avg_l * alpha + losses[i] * inv_n
+
+            # Current RSI (from the last delta)
+            if avg_l == 0:
+                current_rsi = 100.0
+            else:
+                current_rsi = 100.0 - 100.0 / (1.0 + avg_g / avg_l)
+
+            # Previous RSI: re-run stopping one step earlier
+            if len(delta) >= n + 1:
+                avg_g2 = gains[:n].mean()
+                avg_l2 = losses[:n].mean()
+                for i in range(n, len(delta) - 1):
+                    avg_g2 = avg_g2 * alpha + gains[i] * inv_n
+                    avg_l2 = avg_l2 * alpha + losses[i] * inv_n
+                if avg_l2 == 0:
+                    prev_rsi = 100.0
+                else:
+                    prev_rsi = 100.0 - 100.0 / (1.0 + avg_g2 / avg_l2)
+            else:
+                prev_rsi = None
+
+            results[symbol] = (current_rsi, prev_rsi)
+
+        return results
+
 
     def _calculate_effective_sl(self, symbol, entry_price, alert_low):
         """
