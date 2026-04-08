@@ -553,6 +553,16 @@ class IntradayEngine:
         
         cost = price * total_qty
         
+        # FIX #3: Enforce max_position_pct config guard
+        max_position_pct = self.config['strategy'].get('max_position_pct', 1.0)
+        max_cost = self.capital * max_position_pct
+        if cost > max_cost:
+            self.logger.info(
+                f"Skipping trade {symbol}: Position too large "
+                f"({cost:.0f} > {max_position_pct*100:.0f}% of capital {max_cost:.0f})"
+            )
+            return None
+        
         if self.capital < cost:
             self.logger.info(f"Skipping trade {symbol}: Insufficient capital ({self.capital} < {cost})")
             return None
@@ -648,25 +658,28 @@ class IntradayEngine:
                     return pnl
         
         if sl_triggered:
-            # V10: Intraday gap-down fix
-            # Only the 09:15 market-open candle can have real overnight gaps.
-            # All subsequent intraday candles trade continuously — if OHLC shows
-            # open < SL, the SL order was already filled at the SL price as price
-            # fell through it during the interval. Using min(open, sl) on intraday
-            # candles incorrectly worsens losses.
+            # FIX #5: Gap-below-SL handling for ALL candles (not just 09:15)
+            # If candle opens below SL (overnight gap OR intraday halt/circuit breaker),
+            # the SL-M order fills at the open price (worse), not the SL price.
             candle_time = pd.Timestamp(row['datetime']).time()
             is_opening_candle = candle_time == pd.Timestamp('09:15').time()
             
-            if is_opening_candle and row['open'] < trade['sl']:
-                # Overnight gap: price gapped below SL. Fill at open.
+            if row['open'] < trade['sl']:
                 exit_price = row['open']
-                self.logger.info(
-                    f"OVERNIGHT GAP EXIT: {symbol} | "
-                    f"SL={trade['sl']:.2f} but open={row['open']:.2f} "
-                    f"(gap below SL). Exit at open."
-                )
+                if is_opening_candle:
+                    self.logger.info(
+                        f"OVERNIGHT GAP EXIT: {symbol} | "
+                        f"SL={trade['sl']:.2f} but open={row['open']:.2f} "
+                        f"(gap below SL). Exit at open."
+                    )
+                else:
+                    self.logger.warning(
+                        f"INTRADAY GAP-DOWN EXIT: {symbol} at {row['datetime']} | "
+                        f"SL={trade['sl']:.2f} but open={row['open']:.2f} "
+                        f"(possible halt/circuit breaker). Exit at open."
+                    )
             else:
-                # Intraday: SL order fills AT the SL price.
+                # Normal: SL order fills AT the SL price.
                 exit_price = trade['sl']
             
             pnl = (exit_price - trade['entry_price']) * trade['remaining_qty']

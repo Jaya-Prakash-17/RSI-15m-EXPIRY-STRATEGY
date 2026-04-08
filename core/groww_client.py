@@ -7,7 +7,46 @@ import pandas as pd
 import numpy as np
 import dotenv
 import time
+import threading
 dotenv.load_dotenv()
+
+
+class _RateLimiter:
+    """FIX #4: Thread-safe token-bucket rate limiter.
+    Enforces max N requests per second. Sleeps if budget exhausted."""
+
+    def __init__(self, max_rps: int = 10):
+        self._max_rps = max_rps
+        self._lock = threading.Lock()
+        self._timestamps: list[float] = []  # monotonic timestamps of recent calls
+        self._warned_this_burst = False
+        self.logger = logging.getLogger("RateLimiter")
+
+    def acquire(self):
+        """Block until a request slot is available."""
+        with self._lock:
+            now = time.monotonic()
+            # Prune timestamps older than 1 second
+            self._timestamps = [t for t in self._timestamps if now - t < 1.0]
+
+            if len(self._timestamps) >= self._max_rps:
+                sleep_time = 1.0 - (now - self._timestamps[0])
+                if sleep_time > 0:
+                    if not self._warned_this_burst:
+                        self.logger.warning(
+                            f"API rate limit reached ({self._max_rps}/s). "
+                            f"Throttling for {sleep_time:.2f}s."
+                        )
+                        self._warned_this_burst = True
+                    time.sleep(sleep_time)
+                    now = time.monotonic()
+                    self._timestamps = [t for t in self._timestamps if now - t < 1.0]
+                else:
+                    self._warned_this_burst = False
+            else:
+                self._warned_this_burst = False
+
+            self._timestamps.append(now)
 
 try:
     from growwapi import GrowwAPI
@@ -22,6 +61,7 @@ class GrowwClient:
         self.api_secret = api_secret or os.getenv("GROWW_API_SECRET")
         self.client = None
         self._instrument_cache = {}  # symbol -> instrument dict. Static per session.
+        self._rate_limiter = _RateLimiter(max_rps=10)  # FIX #4: global rate limiter
         
         # NO MOCK MODE - Fail fast if requirements not met
         if not HAS_GROWW_SDK:
@@ -90,6 +130,7 @@ class GrowwClient:
         On any other error, raises normally.
         """
         try:
+            self._rate_limiter.acquire()  # FIX #4: throttle before every API call
             return api_func(*args, **kwargs)
         except Exception as e:
             error_str = str(e).lower()

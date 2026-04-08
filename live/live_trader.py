@@ -172,7 +172,7 @@ class LiveTrader:
             self.logger.info("✅ Expiry calendar assertions passed")
         except AssertionError as e:
             self.logger.critical(f"🚨 Expiry calendar broken: {e}")
-            self.telegram._send(f"🚨 <b>Expiry Calendar Assertion Failed</b>\n{e}\n<i>Do not trade until fixed.</i>")
+            self.telegram._send_to_owner(f"🚨 <b>Expiry Calendar Assertion Failed</b>\n{e}\n<i>Do not trade until fixed.</i>")
             # Don't crash — let user decide if they want to stop, or if it's an old test breaking.
 
         self.underlyings = self._get_tradeable_indices()
@@ -224,7 +224,7 @@ class LiveTrader:
                             f"⚠️ CALENDAR CHECK: {underlying} calendar says expiry today "
                             f"but Groww API disagrees. API expiries: {api_expiries[:3]}"
                         )
-                        self.telegram._send(
+                        self.telegram._send_to_owner(
                             f"⚠️ <b>Expiry Calendar Mismatch</b>\n"
                             f"{underlying}: Calendar expects expiry today, but API disagrees.\n"
                             f"Verify before trading."
@@ -833,7 +833,7 @@ class LiveTrader:
                         f"⚠️ Alert {reason} but order {order_id} already filled "
                         f"at ₹{fill_price}. Activating trade despite negation."
                     )
-                    self.telegram._send(
+                    self.telegram._send_to_owner(
                         f"⚠️ <b>Alert Negated But Order Already Filled</b>\n"
                         f"Symbol: <code>{symbol}</code>\n"
                         f"Fill: ₹{fill_price} | Reason: {reason}\n"
@@ -934,6 +934,13 @@ class LiveTrader:
 
         lot_size = self.config['indices'][underlying]['lot_size']
         lots_per_trade = self.config['strategy'].get('lots_per_trade', 1)
+        
+        # FIX #3: Enforce max_lots config guard
+        max_lots = self.config['strategy'].get('max_lots', 999)
+        if lots_per_trade > max_lots:
+            self.logger.warning(f"lots_per_trade ({lots_per_trade}) > max_lots ({max_lots}). Capping to {max_lots}.")
+            lots_per_trade = max_lots
+        
         qty = lot_size * lots_per_trade
         trigger_price = self._round_to_tick(signal['price'], underlying)
         cost = trigger_price * qty
@@ -943,6 +950,13 @@ class LiveTrader:
             balance = self.client.get_balance()
             if balance is None or balance < cost:
                 self.logger.warning(f"Insufficient Capital: ₹{balance} < ₹{cost}")
+                return
+            
+            # FIX #3: Enforce max_position_pct config guard
+            max_position_pct = self.config['strategy'].get('max_position_pct', 1.0)
+            max_cost = balance * max_position_pct
+            if cost > max_cost:
+                self.logger.warning(f"Position too large: ₹{cost:.0f} > {max_position_pct*100:.0f}% of balance (₹{max_cost:.0f}). Skipping.")
                 return
         
         self.logger.info(f"📌 PLACING PENDING ENTRY ORDER for {symbol} ({underlying}) at ₹{trigger_price}")
@@ -1603,7 +1617,7 @@ class LiveTrader:
                 self.tracker.update_trade(trade_id, {'target_order_ids': target_ids})
             
             # Also send Telegram alert for manual review
-            self.telegram._send(
+            self.telegram._send_to_owner(
                 f"⚠️ <b>TP{tp_level} fill qty unknown</b>\n"
                 f"Trade: <code>{trade.get('symbol', trade_id)}</code>\n"
                 f"Order {tid} shows COMPLETE but qty unknown.\n"
@@ -1614,8 +1628,21 @@ class LiveTrader:
         self.logger.info(f"TP{tp_level} fill: price=₹{fill_price} qty={qty_filled} (from order status)")
 
         # Update trade record
+        # FIX #2: Guard against negative remaining_qty
         current_remaining = trade['remaining_qty']
         new_remaining = current_remaining - qty_filled
+        if new_remaining < 0:
+            self.logger.critical(
+                f"🚨 remaining_qty would go NEGATIVE for {trade_id}: "
+                f"{current_remaining} - {qty_filled} = {new_remaining}. Clamping to 0."
+            )
+            self.telegram._send_to_owner(
+                f"🚨 <b>CRITICAL: Negative Remaining Qty</b>\n"
+                f"Trade: <code>{trade.get('symbol', trade_id)}</code>\n"
+                f"remaining={current_remaining}, filled={qty_filled}\n"
+                f"Clamped to 0. Check Groww app NOW."
+            )
+            new_remaining = 0
         self.tracker.update_trade(trade_id, {'remaining_qty': new_remaining})
         
         # CRITICAL FIX: Calculate and add partial profit to daily P&L
@@ -1670,6 +1697,55 @@ class LiveTrader:
 
 
 
+    def _cancel_with_retry(self, order_id: str, max_retries: int = 3, context: str = "") -> bool:
+        """FIX #1: Cancel an order with retry and verification.
+        
+        After each cancel attempt, verifies the order is actually cancelled
+        by checking order status. Retries up to max_retries times with 1s delay.
+        Sends CRITICAL alert to owner if cancel ultimately fails.
+        
+        Returns True if cancelled, False if all retries exhausted.
+        """
+        if not order_id or (isinstance(order_id, str) and order_id.startswith('PAPER_')):
+            return True  # Paper orders don't need broker cancellation
+        
+        for attempt in range(1, max_retries + 1):
+            try:
+                self.om.cancel_order(order_id)
+                self.logger.info(f"Cancel attempt {attempt}/{max_retries} sent for {order_id} ({context})")
+            except Exception as e:
+                self.logger.error(f"Cancel attempt {attempt}/{max_retries} failed for {order_id}: {e}")
+            
+            # Verify cancellation
+            time.sleep(1)
+            try:
+                status = self.client.get_order_status(order_id)
+                order_status = (status or {}).get('status', '').upper()
+                if order_status in ('CANCELLED', 'REJECTED', 'COMPLETE', 'COMPLETED'):
+                    self.logger.info(f"Order {order_id} confirmed {order_status} ({context})")
+                    return True
+                else:
+                    self.logger.warning(
+                        f"Order {order_id} still {order_status} after cancel attempt "
+                        f"{attempt}/{max_retries} ({context})"
+                    )
+            except Exception as e:
+                self.logger.error(f"Status check failed for {order_id}: {e}")
+        
+        # All retries exhausted — CRITICAL
+        self.logger.critical(
+            f"🚨 CANCEL FAILED after {max_retries} retries: {order_id} ({context}). "
+            f"Order may still be LIVE at broker. CHECK GROWW APP IMMEDIATELY."
+        )
+        self.telegram._send_to_owner(
+            f"🚨 <b>CRITICAL: Cancel Failed</b>\n"
+            f"Order: <code>{order_id}</code>\n"
+            f"Context: {context}\n"
+            f"Order may still be LIVE after {max_retries} retries.\n"
+            f"<b>CHECK GROWW APP NOW.</b>"
+        )
+        return False
+
     def _update_circuit_breaker(self, trade_pnl: float, reason: str) -> None:
         """V11-P-02: Update consecutive loss counter and activate circuit breaker if needed."""
         max_consec = self.config.get('risk', {}).get('max_consecutive_losses', 999)
@@ -1685,7 +1761,7 @@ class LiveTrader:
                     f"[CIRCUIT BREAKER] ACTIVATED after {self.consecutive_losses} consecutive losses. "
                     f"No new trades for rest of session."
                 )
-                self.telegram._send(
+                self.telegram._send_to_owner(
                     f"<b>Circuit Breaker Activated</b>\n"
                     f"{datetime.now().strftime('%H:%M:%S')}\n"
                     f"{self.consecutive_losses} consecutive losses in a row.\n"
@@ -1889,7 +1965,8 @@ class LiveTrader:
                                 try:
                                     self.om.cancel_order(order_id)
                                     self.logger.info(f"Cancelled pending entry: {symbol}")
-                                except: pass
+                                except Exception as e:
+                                    self.logger.error(f"Cancel pending entry failed for {symbol}: {e}")
                         self.pending_entries.clear()
                     
                     # Square off active trades
@@ -1897,15 +1974,13 @@ class LiveTrader:
                     for trade in active_trades:
                         self.logger.info(f"Squaring off: {trade['trade_id']}")
                         
-                        # Cancel SL and target orders
+                        # FIX #1: Cancel SL and target orders with retry verification
                         sl_id = trade.get('sl_order_id')
                         if sl_id:
-                            try: self.om.cancel_order(sl_id)
-                            except: pass
+                            self._cancel_with_retry(sl_id, context=f"SQ_OFF SL for {trade['trade_id']}")
                         for tid in trade.get('target_order_ids', []):
                             if tid:
-                                try: self.om.cancel_order(tid)
-                                except: pass
+                                self._cancel_with_retry(tid, context=f"SQ_OFF TP for {trade['trade_id']}")
                         
                         remaining_qty = TradeTracker.get_remaining_qty(trade)
                         
@@ -1925,7 +2000,8 @@ class LiveTrader:
                                 if exit_status and is_order_filled(exit_status.get('status', '')):
                                     actual_fill = exit_status.get('fill_price')
                                     self.logger.info(f"SQ_OFF filled at \u20b9{actual_fill} via our order")
-                            except: pass
+                            except Exception as e:
+                                self.logger.error(f"SQ_OFF fill check failed: {e}")
                         
                         # --- TIER 2: Retry our exit order after longer wait (market orders take 2-10s) ---
                         if not actual_fill and exit_order_id:
@@ -1976,15 +2052,13 @@ class LiveTrader:
                     for trade in active_trades:
                         remaining_qty = TradeTracker.get_remaining_qty(trade)
 
-                        # Cancel broker SL / target orders first
+                        # FIX #1: Cancel broker SL / target orders with retry verification
                         sl_id = trade.get('sl_order_id')
                         if sl_id:
-                            try: self.om.cancel_order(sl_id)
-                            except: pass
+                            self._cancel_with_retry(sl_id, context=f"DAILY_LOSS SL for {trade['trade_id']}")
                         for tid in trade.get('target_order_ids', []):
                             if tid:
-                                try: self.om.cancel_order(tid)
-                                except: pass
+                                self._cancel_with_retry(tid, context=f"DAILY_LOSS TP for {trade['trade_id']}")
 
                         # Place exit order and capture response
                         exit_resp = self.om.place_exit_order(
@@ -2005,7 +2079,8 @@ class LiveTrader:
                                 if exit_status and is_order_filled(exit_status.get('status', '')):
                                     actual_fill = exit_status.get('fill_price')
                                     self.logger.info(f"DAILY_LOSS_LIMIT filled at ₹{actual_fill} via our order")
-                            except: pass
+                            except Exception as e:
+                                self.logger.error(f"DAILY_LOSS fill check failed: {e}")
 
                         # --- TIER 2: Retry our exit order after longer wait (market orders take 2-10s) ---
                         if not actual_fill and exit_order_id:

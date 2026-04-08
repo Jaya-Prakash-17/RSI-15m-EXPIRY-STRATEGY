@@ -2,9 +2,9 @@
 
 # Backtest Settings
 backtest:
-  start_date: '2025-01-01'           # Backtest start (YYYY-MM-DD)
-  end_date: '2025-12-31'             # Backtest end (YYYY-MM-DD)
-  offline_mode: true                 # Run using local data files
+  start_date: '2026-01-01'           # Backtest start (YYYY-MM-DD)
+  end_date: '2026-04-08'             # Backtest end (YYYY-MM-DD)
+  offline_mode: false                 # Run using local data files
 
 # Capital Configuration
 capital:
@@ -58,14 +58,14 @@ risk:
 strategy:
   alert_validity: 1                  # Alert candle + 1 candle window for entry
   direction_filter_enabled: false    # If true, filters CE on bearish / PE on bullish spot
-  dynamic_sizing_enabled: false      # Placeholder for future capital scaling
   exit_mode: single_lot            # 'single_lot' or 'multi_lot'
   lots_per_trade: 3                 # Number of lots per position
   max_correlated_positions: 2        # Max concurrent trades in same direction (P-09)
   max_lots: 5                        # Global lot limit (hard cap)
   max_position_pct: 0.8              # Max % of capital to use per trade
   min_sl_pct: 0.10                   # Minimum SL % distance (P-27)
-  risk_per_trade_pct: 0.05           # Target risk % per trade relative to initial capital
+  # risk_per_trade_pct removed: risk is controlled by safe_sl_max_loss (Rs. flat cap),
+  # which is more precise than %-based sizing for options with non-linear pricing.
   min_alert_range_points: 0.5       # Skip alerts with candle range < this (V16-P-01 data guard)
   min_volume_candles_pct: 0.5        # Min fraction of expiry-day candles with volume>0 (V16-P-05)
   rsi:

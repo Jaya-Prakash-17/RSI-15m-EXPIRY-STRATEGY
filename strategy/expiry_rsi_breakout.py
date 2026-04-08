@@ -234,9 +234,10 @@ class ExpiryRSIBreakout:
             avg_g = gains[:n].mean()
             avg_l = losses[:n].mean()
 
-            # Smooth — only need the last 2 RSI values, so we can
-            # run the full loop but only extract the tail.
+            # FIX #6: Single-pass smoothing — save prev values during iteration
+            prev_avg_g, prev_avg_l = avg_g, avg_l
             for i in range(n, len(delta)):
+                prev_avg_g, prev_avg_l = avg_g, avg_l  # Save BEFORE update
                 avg_g = avg_g * alpha + gains[i] * inv_n
                 avg_l = avg_l * alpha + losses[i] * inv_n
 
@@ -246,17 +247,12 @@ class ExpiryRSIBreakout:
             else:
                 current_rsi = 100.0 - 100.0 / (1.0 + avg_g / avg_l)
 
-            # Previous RSI: re-run stopping one step earlier
+            # Previous RSI (from saved second-to-last values)
             if len(delta) >= n + 1:
-                avg_g2 = gains[:n].mean()
-                avg_l2 = losses[:n].mean()
-                for i in range(n, len(delta) - 1):
-                    avg_g2 = avg_g2 * alpha + gains[i] * inv_n
-                    avg_l2 = avg_l2 * alpha + losses[i] * inv_n
-                if avg_l2 == 0:
+                if prev_avg_l == 0:
                     prev_rsi = 100.0
                 else:
-                    prev_rsi = 100.0 - 100.0 / (1.0 + avg_g2 / avg_l2)
+                    prev_rsi = 100.0 - 100.0 / (1.0 + prev_avg_g / prev_avg_l)
             else:
                 prev_rsi = None
 
