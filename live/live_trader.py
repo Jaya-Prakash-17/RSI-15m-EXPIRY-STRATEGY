@@ -237,16 +237,15 @@ class LiveTrader:
             self.spot_symbols[underlying] = underlying
             self.tracked_options[underlying] = {}  # Nested dict: {underlying: {symbol: df}}
         
+        # Reconcile positions on startup BEFORE clearing day data
+        # MUST run first so any crashed/open trades from yesterday are detected
+        # and checked before being blindly moved to 'EXPIRED'.
+        self._reconcile_positions()
+
         # Clear stale data from previous sessions to keep bot_trades.json lean
-        # This moves any lingering active trades (from a previous session that
-        # didn't square off cleanly) to closed status before reconciliation.
-        # Must run BEFORE _reconcile_positions() so reconciliation starts clean.
         self.tracker.clear_day_data()
         self.tracker.trim_old_closed_trades(keep_days=30)
         self.logger.info("Session data cleared: previous day's trades archived")
-
-        # Reconcile positions on startup
-        self._reconcile_positions()
         
         # Reset daily P&L
         self.daily_pnl = self.tracker.get_daily_pnl()
@@ -280,8 +279,27 @@ class LiveTrader:
             if active_trades:
                 self.logger.warning(f"Found {len(active_trades)} active trades from previous session:")
                 for trade in active_trades:
-                    self.logger.warning(f"  - {trade['symbol']} | Qty: {TradeTracker.get_remaining_qty(trade)} | Entry: {trade['entry_price']}")
-                self.logger.warning("⚠️  These positions will be managed by the bot")
+                    symbol = trade['symbol']
+                    self.logger.warning(f"  - {symbol} | Qty: {TradeTracker.get_remaining_qty(trade)} | Entry: {trade['entry_price']}")
+                    
+                    # Verify if position still exists (using LTP as a proxy for symbol validity)
+                    # If LTP exists, the option is not expired/delisted.
+                    try:
+                        ltp = self.client.get_ltp(symbol)
+                        if ltp is not None:
+                            self.logger.critical(f"🚨 ACTIVE POSITION CARRIED OVER: {symbol} @ LTP {ltp}. Resuming monitor.")
+                            self.telegram._send_to_owner(
+                                f"🚨 <b>STALE POSITION RECOVERED</b>\n"
+                                f"Symbol: <code>{symbol}</code>\n"
+                                f"Bot crashed mid-trade previously.\n"
+                                f"Resuming tracking. Check Groww app."
+                            )
+                        else:
+                            self.logger.info(f"Symbol {symbol} delisted/expired. Closing stale trade.")
+                            self.tracker.close_trade(trade['trade_id'], float(trade['entry_price']), "STALE_RECOVERY", 0)
+                    except Exception as e:
+                        self.logger.error(f"Error checking LTP for stale trade {symbol}: {e}")
+                
             else:
                 self.logger.info("No active bot trades found. Starting fresh.")
             
@@ -1424,8 +1442,20 @@ class LiveTrader:
                                 if tid:
                                     self.om.cancel_order(tid)
                             
+                            # 2. Guard for SL exit logic: qty mismatch
+                            qty_filled = int(sl_status.get('filled_quantity') or 0)
+                            expected_qty = int(trade.get('remaining_qty', 0))
+                            if qty_filled > 0 and qty_filled != expected_qty:
+                                self.logger.critical(
+                                    f"SL qty mismatch for {trade_id}: Filled {qty_filled} "
+                                    f"but tracked {expected_qty}. Using broker qty."
+                                )
+                                exit_qty = qty_filled
+                            else:
+                                exit_qty = expected_qty
+                            
                             # Close trade
-                            final_pnl = (float(fill_price) - float(trade['entry_price'])) * float(trade['remaining_qty'])
+                            final_pnl = (float(fill_price) - float(trade['entry_price'])) * exit_qty
                             total_pnl = final_pnl + float(trade.get('partial_pnl', 0))
                             self.daily_pnl += final_pnl 
                             trade['exit_price'] = fill_price
@@ -1436,6 +1466,13 @@ class LiveTrader:
                             self.trade_logger.log_exit(trade, self.daily_pnl)
                             continue
                         
+                        elif sl_state == 'PARTIALLY_FILLED':
+                            # 3. SL partially filled
+                            self.logger.critical(f"SL order {sl_order_id} PARTIALLY FILLED for {trade_id}.")
+                            self.telegram._send_to_owner(f"🚨 SL partial fill on {symbol}. Check manually.")
+                            # Do NOT close trade. Re-check next poll cycle.
+                            continue
+
                         elif sl_state in ('CANCELLED', 'REJECTED', 'EXPIRED'):
                             # Exchange cancelled our SL — CRITICAL: re-place immediately
                             self.logger.critical(
@@ -1491,35 +1528,67 @@ class LiveTrader:
                         continue
                         
                     t_status = self.client.get_order_status(tid)
-                    if t_status and is_order_filled(t_status.get('status')):
-                        fill_price = t_status.get('fill_price') or float(trade['entry_price'])
-                        self.logger.info(f"Target Fill price extracted: ₹{fill_price} (reference was: ₹{trade['entry_price']})")
+                    if t_status:
+                        s = t_status.get('status', '').upper()
+                        qty_filled = int(t_status.get('filled_quantity', 0) or 0)
                         
-                        if exit_mode == 'single_lot' or (exit_mode == 'multi_lot' and tp_level == 3):
-                            # Final Exit (Single Lot OR Multi-lot TP3)
-                            self.logger.info(f"🚀 TP{tp_level} HIT (FINAL) for {symbol} - Closing Trade")
+                        if s == 'PARTIALLY_FILLED' and qty_filled > 0:
+                            # 1. Update remaining_qty by ACTUALLY filled amount
+                            current_remaining = TradeTracker.get_remaining_qty(trade)
+                            new_remaining = current_remaining - qty_filled
+                            if new_remaining < 0:
+                                self.logger.critical(f"Remaining qty would go negative for {trade_id}. Clamping to 0.")
+                                new_remaining = 0
                             
-                            if sl_order_id:
-                                self.om.cancel_order(sl_order_id)
-                                self.logger.info(f"🛡️ SL Order Cancelled: {sl_order_id}")
+                            # Record partial PnL
+                            fill_price = float(t_status.get('fill_price') or trade['entry_price'])
+                            partial_profit = (fill_price - float(trade['entry_price'])) * qty_filled
+                            self.daily_pnl += partial_profit
+                            new_partial_pnl = float(trade.get('partial_pnl', 0)) + partial_profit
                             
-                            # Calculate PnL and close trade
-                            final_pnl = (float(fill_price) - float(trade['entry_price'])) * float(trade['remaining_qty'])
-                            total_pnl = final_pnl + float(trade.get('partial_pnl', 0))
-                            self.daily_pnl += final_pnl
-                            reason = f"TP{tp_level}_HIT"
-                            trade['exit_price'] = fill_price
-                            trade['reason'] = reason
-                            trade['pnl'] = total_pnl
-                            self.tracker.close_trade(trade_id, fill_price, reason, total_pnl)
-                            self._update_circuit_breaker(final_pnl, reason)
-                            self.trade_logger.log_exit(trade, self.daily_pnl)
-                            break  # Trade is closed
-                        elif exit_mode == 'multi_lot':
-                            # Partial Exit (TP1 or TP2)
-                            self.logger.info(f"🎯 TP{tp_level} HIT for {symbol}")
-                            self._handle_tp_hit(trade, tp_level, t_status)
-                            trail_state = trade.get('exit_orders', {}).get('trail_state', 0)
+                            self.tracker.update_trade(trade_id, {
+                                'remaining_qty': new_remaining,
+                                'partial_pnl': new_partial_pnl
+                            })
+                            self.trade_logger.log_partial_exit(trade, qty_filled, fill_price,
+                                                               f"TP{tp_level}_PARTIAL", partial_profit, self.daily_pnl)
+                            self.telegram._send(
+                                f"⚠️ <b>Partial Fill TP{tp_level}</b>\n"
+                                f"Symbol: <code>{symbol}</code>\n"
+                                f"Filled: {qty_filled}/{qty_filled + new_remaining} units @ ₹{fill_price}\n"
+                                f"Remaining: {new_remaining} units still live."
+                            )
+                            continue
+                            
+                        if is_order_filled(s):
+                            fill_price = t_status.get('fill_price') or float(trade['entry_price'])
+                            self.logger.info(f"Target Fill price extracted: ₹{fill_price} (reference was: ₹{trade['entry_price']})")
+                            
+                            if exit_mode == 'single_lot' or (exit_mode == 'multi_lot' and tp_level == 3):
+                                # Final Exit (Single Lot OR Multi-lot TP3)
+                                self.logger.info(f"🚀 TP{tp_level} HIT (FINAL) for {symbol} - Closing Trade")
+                                
+                                if sl_order_id:
+                                    self.om.cancel_order(sl_order_id)
+                                    self.logger.info(f"🛡️ SL Order Cancelled: {sl_order_id}")
+                                
+                                # Calculate PnL and close trade
+                                final_pnl = (float(fill_price) - float(trade['entry_price'])) * float(trade['remaining_qty'])
+                                total_pnl = final_pnl + float(trade.get('partial_pnl', 0))
+                                self.daily_pnl += final_pnl
+                                reason = f"TP{tp_level}_HIT"
+                                trade['exit_price'] = fill_price
+                                trade['reason'] = reason
+                                trade['pnl'] = total_pnl
+                                self.tracker.close_trade(trade_id, fill_price, reason, total_pnl)
+                                self._update_circuit_breaker(final_pnl, reason)
+                                self.trade_logger.log_exit(trade, self.daily_pnl)
+                                break  # Trade is closed
+                            elif exit_mode == 'multi_lot':
+                                # Partial Exit (TP1 or TP2)
+                                self.logger.info(f"🎯 TP{tp_level} HIT for {symbol}")
+                                self._handle_tp_hit(trade, tp_level, t_status)
+                                trail_state = trade.get('exit_orders', {}).get('trail_state', 0)
                             
             # End if not self.paper_trading
         # End for trade in active_trades
@@ -1867,6 +1936,7 @@ class LiveTrader:
         while True:
             try:
                 now = datetime.now()
+                warmup_start = self._get_warmup_start_time()
                 
                 # Kill switch check — touch /tmp/rsi_bot_kill to trigger graceful shutdown
                 # To trigger kill switch from another terminal:
@@ -2147,7 +2217,6 @@ class LiveTrader:
                     self._halt_alert_sent = False
 
                 # Process Candle Logic
-                warmup_start = self._get_warmup_start_time()
                 if self._poll_candle_close(warmup_start):
                     self._update_option_universe(warmup_start)
                     self._process_strategy_logic(warmup_start)

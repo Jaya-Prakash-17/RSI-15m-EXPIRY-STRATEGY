@@ -4,11 +4,15 @@ V16-P-02: Out-of-Sample Validation Runner
 Runs backtests for individual years (2022-2025) using the Python backtest engine
 directly — no subprocess, no config.yaml mutation, no API calls.
 
+Runs OOS using production config.yaml by default.
+Use --lots 1 flag for a single-lot comparison run.
+
 Usage: python scripts/run_oos_validation.py
-       python scripts/run_oos_validation.py 2023 2024   # specific years only
+       python scripts/run_oos_validation.py --lots 1 --exit-mode single_lot
 """
 import sys
 import os
+import argparse
 import copy
 import yaml
 import logging
@@ -32,28 +36,34 @@ def load_base_config():
         return yaml.safe_load(f)
 
 
-def make_year_config(base_config, year):
+def make_year_config(base_config, year, lots_override=None, exit_mode_override=None):
     """Create an in-memory config override for a specific year.
     Never touches the config.yaml file on disk."""
     cfg = copy.deepcopy(base_config)
     cfg['backtest']['start_date'] = f'{year}-01-01'
     cfg['backtest']['end_date'] = f'{year}-12-31'
     cfg['backtest']['offline_mode'] = False  # Smart fallback handles it
-    # OOS uses standardised params for fair comparison
-    cfg['strategy']['lots_per_trade'] = 1
-    cfg['strategy']['exit_mode'] = 'single_lot'
+    
+    if lots_override is not None:
+        cfg['strategy']['lots_per_trade'] = lots_override
+    if exit_mode_override is not None:
+        cfg['strategy']['exit_mode'] = exit_mode_override
+        
     return cfg
 
 
-def run_single_year(base_config, year, logger):
+def run_single_year(base_config, year, logger, lots_override=None, exit_mode_override=None):
     """Run a full backtest for one year using the in-process engine.
     Returns (year, trades_df, report_data, elapsed_seconds)."""
-    cfg = make_year_config(base_config, year)
+    cfg = make_year_config(base_config, year, lots_override, exit_mode_override)
     start_date = pd.to_datetime(cfg['backtest']['start_date'])
     end_date = pd.to_datetime(cfg['backtest']['end_date'])
 
     logger.info(f"{'='*60}")
     logger.info(f"  OOS BACKTEST: {year}")
+    logger.info(f"  Config: lots={cfg['strategy'].get('lots_per_trade', 'N/A')}, "
+                f"mode={cfg['strategy'].get('exit_mode', 'N/A')}, "
+                f"target={cfg['strategy'].get('single_lot_exit_target', 'N/A')}")
     logger.info(f"{'='*60}")
 
     t0 = time.time()
@@ -115,11 +125,16 @@ def setup_logging():
 def main():
     logger = setup_logging()
 
-    # Parse optional year arguments
-    if len(sys.argv) > 1:
-        years = [int(y) for y in sys.argv[1:]]
-    else:
-        years = DEFAULT_YEARS
+    parser = argparse.ArgumentParser(description="Run Out-of-Sample Validation")
+    parser.add_argument('years', nargs='*', type=int, default=DEFAULT_YEARS,
+                        help='Specific years to backtest (e.g., 2023 2024)')
+    parser.add_argument('--lots', type=int, default=None,
+                        help='Override lots_per_trade for comparison (default: use config.yaml)')
+    parser.add_argument('--exit-mode', default=None,
+                        help='Override exit_mode (default: use config.yaml)')
+    
+    args = parser.parse_args()
+    years = args.years
 
     logger.info(f"OOS Validation: years={years}")
     logger.info(f"Config file: {os.path.abspath(CONFIG_FILE)} (NOT modified)")
@@ -130,7 +145,9 @@ def main():
 
     for year in years:
         try:
-            yr, trades_df, report_data, elapsed = run_single_year(base_config, year, logger)
+            yr, trades_df, report_data, elapsed = run_single_year(
+                base_config, year, logger, args.lots, args.exit_mode
+            )
             results[yr] = {
                 'trades': len(trades_df) if trades_df is not None else 0,
                 'elapsed': elapsed,

@@ -78,9 +78,15 @@ def print_table(results):
     print("\n" + "=" * 80)
     print(" OUT-OF-SAMPLE VALIDATION TABLE")
     print("=" * 80)
+    
+    # Check config of the first result to contextualize WR expectations
+    exit_target = results[0]['exit_target'] if results else '?'
+    print(f" CONFIG: single_lot_exit_target = {exit_target}")
+    print("-" * 80)
     print(header)
     print("-" * 80)
 
+    # WR thresholds: T2 exit → typical 45-55%; T3 exit → typical 45-65%; >70% = bias flag
     all_pass = True
     for r in sorted(results, key=lambda x: x['year']):
         pf = r['profit_factor']
@@ -89,7 +95,7 @@ def print_table(results):
 
         pf_ok = pf >= 1.1
         dd_ok = dd > -35.0
-        wr_ok = 25 <= wr <= 55
+        wr_ok = 25 <= wr <= 70
 
         verdict = "PASS" if (pf_ok and dd_ok and wr_ok) else "FAIL"
         if not (pf_ok and dd_ok and wr_ok):
@@ -102,10 +108,10 @@ def print_table(results):
         )
 
     print("=" * 80)
-    print(f"\nGO/NO-GO CRITERIA (ALL must pass):")
+    print(f"GO/NO-GO CRITERIA (ALL must pass):")
     print(f"  Profit Factor >= 1.1")
     print(f"  Max Drawdown > -35%")
-    print(f"  Win Rate 25%-55% (strategy behaving as designed)")
+    print(f"  Win Rate 25%-70% (T2 exit: expect 45-55%; T3 exit: expect 45-65%)")
 
     # V16-P-02: Year-over-year consistency checks
     pnls = {r['year']: r['net_pnl'] for r in results if r['year'] != 'unknown'}

@@ -127,12 +127,8 @@ class HistoricalDownloader:
                 # If df is empty but we requested a multi-day range, it might be a transient API glitch.
                 # Retrying 1-2 times before accepting "No Data" as terminal.
                 if df is not None and df.empty:
-                    days_requested = (end_date - start_date).days
-                    if days_requested > 2: # Logic: Weekends exist, but 3+ days should have SOME data
-                        self.logger.warning(f"Attempt {attempt+1}: Suspiciously empty response for {symbol} ({days_requested} days). Retrying...")
-                        time.sleep(2 * (attempt + 1))
-                        continue
-                    return df # Accept empty for < 2 days (often weekend/holiday)
+                    # Do not retry on empty df since it's likely just unavailable historical data.
+                    return df
                 
                 if df is not None and not df.empty:
                     return df

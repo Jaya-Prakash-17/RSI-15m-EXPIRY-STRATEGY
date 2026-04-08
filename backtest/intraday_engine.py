@@ -582,7 +582,9 @@ class IntradayEngine:
             'cost': cost,
             'underlying': underlying,
             'lot_size': lot_size,  # Store lot size for partial exits
-            'running_capital': self.capital # Track capital at entry
+            'running_capital': self.capital, # Track capital at entry
+            'is_safe_sl_applied': (sl != signal.get('raw_sl', sl)) or (sl != self._round_to_tick(signal['sl'], underlying)),
+            'raw_sl': signal.get('raw_sl', signal['sl'])
         }
         self.logger.info(
             f"ENTRY: {symbol} at {price} | Qty: {total_qty} "

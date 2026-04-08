@@ -74,7 +74,7 @@ strategy:
     threshold: 60                    # Breakout threshold (60 for CE calls, 40 for PE puts)
     warmup_periods: 100              # Min history required before scanning (V16 prerequisite)
   rsi_debug: false                   # Verbose RSI value logging
-  safe_sl_max_loss: 6000             # Absolute loss cap per trade (Rs.) (P-23)
+  safe_sl_max_loss: 8000             # Absolute loss cap per trade (Rs.) (P-23)
   safe_sl_mode: true                 # Enforce safe_sl_max_loss guard
   signal_window_start: '10:00'       # Start scanner window (P-30)
   signal_window_end: '13:30'         # End scanner window (P-30)
