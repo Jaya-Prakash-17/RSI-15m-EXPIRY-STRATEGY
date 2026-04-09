@@ -51,6 +51,6 @@ def build_option_symbol(underlying: str, expiry_date, strike: float, opt_type: s
         date_str = expiry_date
     else:
         date_str = expiry_date.strftime("%d%b%y")
-        
+
     exchange = "BSE" if underlying in ("SENSEX", "BANKEX") else "NSE"
     return f"{exchange}-{underlying}-{date_str}-{int(strike)}-{opt_type}"

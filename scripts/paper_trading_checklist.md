@@ -92,7 +92,7 @@ Bot will square off or notify and shut down as configured.
 
 **Step 2 (if bot is unresponsive):** Kill the process via Terminal (Ctrl+C).
 
-**Step 3 (last resort):** 
+**Step 3 (last resort):**
 1. Open Groww app → Portfolio → F&O Positions.
 2. Manually square off any open positions.
 3. Set limit/market sell order for each open option lot.

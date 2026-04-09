@@ -17,7 +17,7 @@ class HistoricalDownloader:
         30: 90,    # Per Groww docs: 30-min = 90 days max per request
         60: 180,   # Per Groww docs: 1-hour = 180 days max per request
     }
-    
+
     def __init__(self, config):
         self.logger = logging.getLogger("HistoricalDownloader")
         self.config = config
@@ -31,7 +31,7 @@ class HistoricalDownloader:
         Path: data/spot/<SYMBOL>_15m.csv
         """
         self.logger.info(f"Downloading spot data for {symbol} from {start_date} to {end_date}")
-        
+
         df = self._download_chunked(symbol, 15, start_date, end_date)
         if df is None or df.empty:
             return False
@@ -46,7 +46,7 @@ class HistoricalDownloader:
         Path: data/derivatives/<UNDERLYING>/<YEAR>/<CONTRACT>_15m.csv
         """
         self.logger.info(f"Downloading derivative data for {contract_name}...")
-        
+
         df = self._download_chunked(contract_name, 15, start_date, end_date)
         if df is None or df.empty:
             return False
@@ -54,7 +54,7 @@ class HistoricalDownloader:
         # Construct path
         directory = os.path.join(self.base_path, "derivatives", symbol, str(year))
         os.makedirs(directory, exist_ok=True)
-        
+
         filepath = os.path.join(directory, f"{contract_name}_15m.csv")
         self._save_dataframe(df, filepath)
         return True
@@ -66,54 +66,54 @@ class HistoricalDownloader:
         """
         # Get max days per chunk for this interval
         max_days = self.MAX_DAYS_PER_CHUNK.get(interval, 30)
-        
+
         # Convert to datetime if needed
         if isinstance(start_date, str):
             start_date = pd.to_datetime(start_date)
         if isinstance(end_date, str):
             end_date = pd.to_datetime(end_date)
-        
+
         # Calculate total days
         total_days = (end_date - start_date).days
-        
+
         if total_days <= max_days:
             # Single request is fine
             return self._download_with_retry(symbol, interval, start_date, end_date)
-        
+
         # Need to chunk
         self.logger.info(f"Large date range ({total_days} days), downloading in {max_days}-day chunks...")
-        
+
         all_dfs = []
         chunk_start = start_date
         chunk_num = 0
-        
+
         while chunk_start < end_date:
             # P-01: Correct chunking - end is start + max_days (not skipping a day)
             chunk_end = min(chunk_start + timedelta(days=max_days), end_date)
             chunk_num += 1
-            
+
             self.logger.info(f"Downloading chunk {chunk_num}: {chunk_start.strftime('%Y-%m-%d')} to {chunk_end.strftime('%Y-%m-%d')}")
-            
+
             df = self._download_with_retry(symbol, interval, chunk_start, chunk_end)
             if df is not None and not df.empty:
                 all_dfs.append(df)
-            
+
             # P-02: Next chunk starts exactly where this one ended (no day skipped)
             # The API and merge logic handle duplicates naturally
             chunk_start = chunk_end
-            
+
             # Small delay between chunks to avoid rate limiting
             time.sleep(1.0)
-        
+
         if not all_dfs:
             self.logger.warning(f"No data downloaded for {symbol}")
             return None
-        
+
         # Combine all chunks
         combined_df = pd.concat(all_dfs, ignore_index=True)
         combined_df['datetime'] = pd.to_datetime(combined_df['datetime'])
         combined_df = combined_df.drop_duplicates(subset=['datetime']).sort_values('datetime')
-        
+
         self.logger.info(f"Combined {len(all_dfs)} chunks: {len(combined_df)} total rows for {symbol}")
         return combined_df
 
@@ -122,21 +122,21 @@ class HistoricalDownloader:
         for attempt in range(self.retry_count):
             try:
                 df = self.client.get_historical_candles(symbol, interval, start_date, end_date)
-                
+
                 # P-03: Suspicious Empty Handle
                 # If df is empty but we requested a multi-day range, it might be a transient API glitch.
                 # Retrying 1-2 times before accepting "No Data" as terminal.
                 if df is not None and df.empty:
                     # Do not retry on empty df since it's likely just unavailable historical data.
                     return df
-                
+
                 if df is not None and not df.empty:
                     return df
-                    
+
             except Exception as e:
                 msg = str(e).lower()
                 is_rate_limit = "429" in msg or "rate limit" in msg
-                
+
                 # Exponential backoff with jitter
                 wait_time = (5 ** attempt) + (random.random() * 5)
                 if is_rate_limit:
@@ -144,35 +144,35 @@ class HistoricalDownloader:
                     self.logger.warning(f"429 Rate Limit hit. Cooling off for {wait_time:.1f}s (Attempt {attempt+1})")
                 else:
                     self.logger.warning(f"Download attempt {attempt+1} failed for {symbol}: {e}. Waiting {wait_time:.1f}s")
-                
+
                 time.sleep(wait_time)
-            
+
         self.logger.warning(f"All download attempts failed for {symbol}")
         return None
 
     def _save_dataframe(self, df, filepath):
         """Saves dataframe to CSV, merging with existing data if present."""
-        
+
         # Ensure directory exists
         os.makedirs(os.path.dirname(filepath), exist_ok=True)
-        
+
         if os.path.exists(filepath):
             try:
                 existing_df = pd.read_csv(filepath)
                 # Convert datetime to ensure proper merging
                 existing_df['datetime'] = pd.to_datetime(existing_df['datetime'])
                 df['datetime'] = pd.to_datetime(df['datetime'])
-                
+
                 # Merge: Concatenate and drop duplicates based on datetime
                 merged_df = pd.concat([existing_df, df])
                 merged_df = merged_df.drop_duplicates(subset=['datetime']).sort_values('datetime')
-                
+
                 merged_df.to_csv(filepath, index=False)
                 self.logger.info(f"Merged and saved {len(merged_df)} rows to {filepath}")
                 return
             except Exception as e:
                 self.logger.error(f"Error merging data for {filepath}: {e}. Overwriting.")
-        
+
         # Fallback or new file
         df['datetime'] = pd.to_datetime(df['datetime'])
         df.sort_values('datetime', inplace=True)

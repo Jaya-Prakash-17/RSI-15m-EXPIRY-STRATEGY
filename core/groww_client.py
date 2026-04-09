@@ -62,7 +62,7 @@ class GrowwClient:
         self.client = None
         self._instrument_cache = {}  # symbol -> instrument dict. Static per session.
         self._rate_limiter = _RateLimiter(max_rps=10)  # FIX #4: global rate limiter
-        
+
         # NO MOCK MODE - Fail fast if requirements not met
         if not HAS_GROWW_SDK:
             error_msg = (
@@ -71,7 +71,7 @@ class GrowwClient:
             )
             self.logger.critical(error_msg)
             raise ImportError(error_msg)
-        
+
         if not self.api_key or not self.api_secret:
             self.logger.warning(
                 "API credentials missing. "
@@ -79,7 +79,7 @@ class GrowwClient:
             )
             # We don't raise here anymore to allow backtests with local data to start.
             return
-        
+
         # Attempt initial authentication but don't crash if it fails (lazy fallback)
         try:
             self._authenticate()
@@ -105,7 +105,7 @@ class GrowwClient:
                     self.logger.warning(f"429 Rate Limit hit during auth. Waiting {wait_time:.1f}s (Attempt {attempt+1}/{retry_count})")
                     time.sleep(wait_time)
                     continue
-                
+
                 if "authorisation failed" in msg or "permissions" in msg:
                     error_msg = (
                         "CRITICAL: Groww Authorisation Failed. "
@@ -114,7 +114,7 @@ class GrowwClient:
                     )
                 else:
                     error_msg = f"CRITICAL: Authentication failed: {e}"
-                
+
                 self.logger.error(error_msg)
                 if attempt == retry_count - 1:
                     raise ConnectionError(error_msg)
@@ -134,8 +134,8 @@ class GrowwClient:
             return api_func(*args, **kwargs)
         except Exception as e:
             error_str = str(e).lower()
-            is_auth_error = ('401' in error_str or 
-                            'unauthorized' in error_str or 
+            is_auth_error = ('401' in error_str or
+                            'unauthorized' in error_str or
                             'token' in error_str or
                             'expired' in error_str)
             if is_auth_error:
@@ -170,7 +170,7 @@ class GrowwClient:
                 1440: GrowwAPI.CANDLE_INTERVAL_DAY
             }
             sdk_interval = interval_map.get(interval, GrowwAPI.CANDLE_INTERVAL_MIN_15)
-            
+
             # Correct Index Symbol Mapping (per Groww API docs)
             # Format: Exchange-TradingSymbol
             index_symbols = {
@@ -178,7 +178,7 @@ class GrowwClient:
                 "BANKNIFTY": "NSE-BANKNIFTY",
                 "SENSEX": "BSE-SENSEX"
             }
-            
+
             # Determine correct symbol and segment
             if symbol in index_symbols:
                 # It's an index
@@ -191,13 +191,13 @@ class GrowwClient:
                 # Determine exchange from symbol prefix (BSE-SENSEX... or NSE-NIFTY...)
                 exchange = GrowwAPI.EXCHANGE_BSE if symbol.startswith("BSE-") else GrowwAPI.EXCHANGE_NSE
                 segment = GrowwAPI.SEGMENT_FNO
-            
+
             if not self.client: self._authenticate()
-            
+
             try:
                 processed_start = start_date.strftime("%Y-%m-%d %H:%M:%S")
                 processed_end = end_date.strftime("%Y-%m-%d %H:%M:%S")
-                
+
                 resp = self._safe_call(
                     self.client.get_historical_candles,
                     exchange=exchange,
@@ -207,7 +207,7 @@ class GrowwClient:
                     end_time=processed_end,
                     candle_interval=sdk_interval
                 )
-                
+
                 # DEBUG: Log response metadata
                 if resp:
                     candles_count = len(resp.get('candles', []))
@@ -217,7 +217,7 @@ class GrowwClient:
                         self.logger.debug(f"API Response for {symbol}: {candles_count} candles returned.")
                 else:
                     self.logger.warning(f"API Response for {symbol} is None.")
-                
+
                 if resp and 'candles' in resp and len(resp['candles']) > 0:
                         data = []
                         for candle in resp['candles']:
@@ -229,7 +229,7 @@ class GrowwClient:
                                 l = float(candle[3] or 0.0)
                                 c = float(candle[4] or 0.0)
                                 v = int(candle[5] or 0)
-                                
+
                                 data.append({
                                     'datetime': dt,
                                     'open': o,
@@ -241,12 +241,12 @@ class GrowwClient:
                             except (ValueError, TypeError, IndexError) as parse_err:
                                 self.logger.warning(f"Skipping malformed candle: {candle} Error: {parse_err}")
                                 continue
-                        
+
                         return pd.DataFrame(data)
-                
+
                 self.logger.warning(f"No candle data returned for {symbol}")
                 return pd.DataFrame()
-                
+
             except Exception as e:
                 self.logger.error(f"Error fetching candles for {symbol}: {e}")
                 return pd.DataFrame()
@@ -278,7 +278,7 @@ class GrowwClient:
 
     def get_ltp(self, symbol):
         """Get Last Traded Price.
-        
+
         For INDEX spot prices: pass just the name ('NIFTY', 'BANKNIFTY', 'SENSEX')
             → queries CASH segment with correct index symbol mapping.
         For OPTION prices: pass the FULL Groww symbol (e.g. 'NSE-NIFTY-25Jan24-21500-CE')
@@ -291,27 +291,27 @@ class GrowwClient:
                 "BANKNIFTY": "NSE_BANKNIFTY",
                 "SENSEX": "BSE_SENSEX"
             }
-            
+
             if symbol in index_map:
                 key = index_map[symbol]
                 segment = GrowwAPI.SEGMENT_CASH
             else:
                 # Option LTP - resolve to compact format via instruments
                 if not self.client: self._authenticate()
-                
+
                 # BUG-008: Use instrument cache to avoid excessive API calls
                 if symbol not in self._instrument_cache:
                     self.logger.debug(f"Cache miss — fetching instrument for {symbol}")
                     instr = self._safe_call(self.client.get_instrument_by_groww_symbol, symbol)
                     if instr:
                         self._instrument_cache[symbol] = instr
-                
+
                 instr = self._instrument_cache.get(symbol)
-                
+
                 if not instr:
                     self.logger.error(f"Could not resolve instrument for option symbol {symbol}")
                     return None
-                
+
                 key = f"{instr['exchange']}_{instr['trading_symbol']}"
                 segment = GrowwAPI.SEGMENT_FNO
 
@@ -322,7 +322,7 @@ class GrowwClient:
                 exchange_trading_symbols=key
             )
             return float(resp[key]) if resp and key in resp else None
-            
+
         except Exception as e:
             self.logger.error(f"Error fetching LTP for {symbol}: {e}")
             return None
@@ -339,28 +339,28 @@ class GrowwClient:
         try:
             groww_side = GrowwAPI.TRANSACTION_TYPE_BUY if side.upper() == "BUY" else GrowwAPI.TRANSACTION_TYPE_SELL
             groww_product = GrowwAPI.PRODUCT_MIS if product.upper() == "MIS" else GrowwAPI.PRODUCT_CNC
-            
+
             groww_order_type = GrowwAPI.ORDER_TYPE_MARKET
             trigger_price = None
             limit_price = price
-            
+
             if order_type.upper() == "LIMIT":
                 groww_order_type = GrowwAPI.ORDER_TYPE_LIMIT
             elif order_type.upper() in ["SL-M", "SL_M"]:
                 groww_order_type = GrowwAPI.ORDER_TYPE_STOP_LOSS_MARKET
                 trigger_price = price
-                limit_price = None 
+                limit_price = None
             elif order_type.upper() == "SL":
                 groww_order_type = GrowwAPI.ORDER_TYPE_STOP_LOSS
                 trigger_price = price
-            
+
             # Determine exchange from symbol/trading_symbol
             # SENSEX options may just be 'SENSEX...' in compact format
             if (trading_symbol and trading_symbol.startswith("SENSEX")) or (symbol and symbol.startswith("BSE-")):
                 exchange = GrowwAPI.EXCHANGE_BSE
             else:
                 exchange = GrowwAPI.EXCHANGE_NSE
-            
+
             if not self.client: self._authenticate()
             resp = self._safe_call(
                 self.client.place_order,
@@ -401,14 +401,14 @@ class GrowwClient:
         """
         Modify an existing open/pending order.
         Used for trailing SL by modifying trigger_price.
-        
+
         Args:
             order_id: groww_order_id returned from place_order
             qty: New quantity (optional)
             order_type: New order type (optional)
             price: New limit price (optional)
             trigger_price: New trigger price for SL orders (optional)
-        
+
         Returns:
             Modified order response or None on failure
         """
@@ -418,10 +418,10 @@ class GrowwClient:
                 'groww_order_id': order_id,
                 'segment': GrowwAPI.SEGMENT_FNO
             }
-            
+
             if qty is not None:
                 modify_params['quantity'] = qty
-            
+
             if order_type is not None:
                 if order_type.upper() == "MARKET":
                     modify_params['order_type'] = GrowwAPI.ORDER_TYPE_MARKET
@@ -431,23 +431,23 @@ class GrowwClient:
                     modify_params['order_type'] = GrowwAPI.ORDER_TYPE_STOP_LOSS_MARKET
                 elif order_type.upper() == "SL":
                     modify_params['order_type'] = GrowwAPI.ORDER_TYPE_STOP_LOSS
-            
+
             if price is not None:
                 modify_params['price'] = price
-            
+
             if trigger_price is not None:
                 modify_params['trigger_price'] = trigger_price
-            
+
             if not self.client: self._authenticate()
             resp = self._safe_call(self.client.modify_order, **modify_params)
-            
+
             if resp and 'groww_order_id' in resp:
                 self.logger.info(f"Order {order_id} modified successfully")
                 return resp
-            
+
             self.logger.error(f"Order modification failed: {resp}")
             return None
-            
+
         except Exception as e:
             self.logger.error(f"Failed to modify order {order_id}: {e}")
             return None
@@ -455,11 +455,11 @@ class GrowwClient:
     def cancel_order(self, order_id, segment=None):
         """
         Cancel a pending/open order.
-        
+
         Args:
             order_id: groww_order_id to cancel
             segment: segment type (defaults to SEGMENT_FNO)
-        
+
         Returns:
             Cancellation response or None on failure
         """
@@ -471,14 +471,14 @@ class GrowwClient:
                 groww_order_id=order_id,
                 segment=seg
             )
-            
+
             if resp:
                 self.logger.info(f"Order {order_id} cancelled successfully")
                 return resp
-            
+
             self.logger.error(f"Order cancellation failed: {resp}")
             return None
-            
+
         except Exception as e:
             self.logger.error(f"Failed to cancel order {order_id}: {e}")
             return None
@@ -487,7 +487,7 @@ class GrowwClient:
         try:
             # Use BSE for SENSEX, NSE for others
             exchange = GrowwAPI.EXCHANGE_BSE if underlying == "SENSEX" else GrowwAPI.EXCHANGE_NSE
-            
+
             if not self.client: self._authenticate()
             resp = self._safe_call(
                 self.client.get_contracts,
@@ -504,7 +504,7 @@ class GrowwClient:
         try:
             # Use BSE for SENSEX, NSE for others
             exchange = GrowwAPI.EXCHANGE_BSE if underlying == "SENSEX" else GrowwAPI.EXCHANGE_NSE
-            
+
             if not self.client: self._authenticate()
             resp = self._safe_call(
                 self.client.get_expiries,

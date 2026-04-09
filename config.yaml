@@ -2,8 +2,8 @@
 
 # Backtest Settings
 backtest:
-  start_date: '2026-01-01'           # Backtest start (YYYY-MM-DD)
-  end_date: '2026-04-08'             # Backtest end (YYYY-MM-DD)
+  start_date: '2026-04-09'           # Backtest start (YYYY-MM-DD)
+  end_date: '2026-04-09'             # Backtest end (YYYY-MM-DD)
   offline_mode: false                 # Run using local data files
 
 # Capital Configuration
@@ -91,4 +91,3 @@ trading:
     start: '09:45'                   # Trading window start (IST)
     end: '13:45'                     # Trading window end (IST)
     auto_square_off: '15:15'         # Force close all positions at this time (IST)
-

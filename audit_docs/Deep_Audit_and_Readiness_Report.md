@@ -1,8 +1,8 @@
 # Deep Audit & Readiness Report — RSI-15m Expiry Breakout Bot (V16)
 
-> **Audit Date:** 2026-04-08  
-> **Auditor Mode:** Senior Quantitative Developer & Algorithmic Trading Auditor  
-> **Codebase:** V16 Final Release  
+> **Audit Date:** 2026-04-08
+> **Auditor Mode:** Senior Quantitative Developer & Algorithmic Trading Auditor
+> **Codebase:** V16 Final Release
 > **Scope:** `strategy/`, `backtest/`, `live/`, `execution/`, `data/`, `reporting/`, `core/`, `utils/`
 
 ---

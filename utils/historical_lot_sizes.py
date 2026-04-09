@@ -33,17 +33,17 @@ def get_historical_lot_size(underlying: str, reference_date) -> int:
     """Find the applicable lot size for the given date."""
     if isinstance(reference_date, datetime):
         reference_date = reference_date.date()
-    
+
     # Boundary check for SENSEX
     if underlying == 'SENSEX' and reference_date < date(2023, 5, 1):
         raise ValueError("SENSEX options did not exist before 2023-05-01.")
-    
+
     if underlying not in LOT_SIZE_HISTORY:
         logging.warning(f"Unknown underlying: {underlying}. No lot size history found.")
         return 0
-    
+
     history = LOT_SIZE_HISTORY[underlying]
-    
+
     # Scan history (sorted chronologically)
     applicable_size = 0
     for start_date, lot_size in history:
@@ -51,7 +51,7 @@ def get_historical_lot_size(underlying: str, reference_date) -> int:
             applicable_size = lot_size
         else:
             break
-            
+
     return applicable_size
 
 def run_startup_assertions():
@@ -77,18 +77,18 @@ def _run_self_test():
         ('SENSEX', date(2023, 5, 1), 10),
         ('SENSEX', date(2024, 11, 20), 20)
     ]
-    
+
     for underlying, ref_date, expected in test_cases:
         actual = get_historical_lot_size(underlying, ref_date)
         assert actual == expected, f"FAILED: {underlying} on {ref_date} expected {expected}, got {actual}"
-    
+
     # Error case
     try:
         get_historical_lot_size('SENSEX', date(2022, 1, 1))
         assert False, "FAILED: SENSEX pre-launch should have raised ValueError"
     except ValueError:
         pass
-        
+
     print("✅ All historical lot size self-test cases passed.")
 
 if __name__ == '__main__':

@@ -29,7 +29,7 @@ def load_summaries(reports_dir):
         try:
             with open(f) as fp:
                 data = json.load(fp)
-            
+
             # Smart year extraction: internal config OR filename segment
             year = extract_year(data)
             if year == 'unknown':
@@ -43,12 +43,12 @@ def load_summaries(reports_dir):
                     match = re.search(r'_(\d{4})_', os.path.basename(f))
                     if match:
                         year = match.group(1)
-            
+
             s = data.get('summary', {})
             # Handle potential index list in config
             indices_cfg = data.get('config', {}).get('indices', {})
             index_list = list(indices_cfg.keys()) if isinstance(indices_cfg, dict) else [str(indices_cfg)]
-            
+
             results.append({
                 'year': year,
                 'file': os.path.basename(f),
@@ -78,7 +78,7 @@ def print_table(results):
     print("\n" + "=" * 80)
     print(" OUT-OF-SAMPLE VALIDATION TABLE")
     print("=" * 80)
-    
+
     # Check config of the first result to contextualize WR expectations
     exit_target = results[0]['exit_target'] if results else '?'
     print(f" CONFIG: single_lot_exit_target = {exit_target}")
@@ -125,12 +125,12 @@ def print_table(results):
         print(f"    PnL Coefficient of Variation: {cv:.2f}")
         if cv > 1.5:
             print(f"    ⚠️  HIGH VARIANCE: strategy performance is regime-dependent")
-        
+
         for yr, pnl in pnls.items():
             share = abs(pnl) / abs(total_pnl) * 100 if total_pnl != 0 else 0
             if share > 40:
                 print(f"    ⚠️  CONCENTRATION: {yr} accounts for {share:.1f}% of total PnL (limit: 40%)")
-        
+
         crash_years_pnl = sum(pnls.get(y, 0) for y in ['2020', '2021'])
         if total_pnl > 0 and crash_years_pnl / total_pnl > 0.5:
             print(f"    ⚠️  REGIME BIAS: 2020+2021 = {crash_years_pnl/total_pnl*100:.1f}% of total PnL (crash-bounce regime)")

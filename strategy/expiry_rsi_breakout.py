@@ -17,19 +17,19 @@ class ExpiryRSIBreakout:
         self.min_candles_for_signal = config['strategy']['rsi'].get(
             'min_candles_for_signal', self.rsi_period * 3
         )
-        
+
         self.logger.info(
             f"RSI({self.rsi_period}) warmup: {self.rsi_warmup} candles "
             f"({self.rsi_warmup * 15} minutes ≈ {self.rsi_warmup * 15 / 375:.1f} trading days) | "
             f"Min signal candles: {self.min_candles_for_signal}"
         )
-        
+
         # Key: symbol, Value: {alert_candle: dict, age: int, alert_time: datetime, last_processed_time: datetime}
         self.state = {}
-        
+
         # Risk management: SL Floor
         self.min_sl_pct = config['strategy'].get('min_sl_pct', 0.08)
-        
+
         # Time-of-day filters
         from datetime import datetime
         self.signal_start_time = datetime.strptime(
@@ -38,17 +38,17 @@ class ExpiryRSIBreakout:
         self.signal_end_time = datetime.strptime(
             config['strategy'].get('signal_window_end', '15:00'), "%H:%M"
         ).time()
-        
+
         # Debug logging for RSI validation
         self.rsi_debug = config['strategy'].get('rsi_debug', False)
-        
+
         # V16-P-01: Minimum alert range guard (data quality)
         self.min_alert_range = config['strategy'].get('min_alert_range_points', 0.5)
-        
+
         # Risk management: SAFE_SL Mode
         self.safe_sl_mode = config['strategy'].get('safe_sl_mode', False)
         self.safe_sl_max_loss = config['strategy'].get('safe_sl_max_loss', 5000)
-        
+
         if self.safe_sl_mode:
             self.logger.info(f"SAFE_SL Mode Enabled | Max Loss Floor: Rs.{self.safe_sl_max_loss}")
 
@@ -87,48 +87,48 @@ class ExpiryRSIBreakout:
         """
         Wilder's RSI — vectorized via numpy for live trading performance.
         Numerically identical to the previous loop-based implementation.
-        
+
         Seeding: SMA of first N price changes (indices 1 to N+1).
         Smoothing: avg[i] = (avg[i-1] * (N-1) + value[i]) / N (Wilder's formula).
         """
         n = self.rsi_period
-        
+
         if len(prices) < n + 1:
             if return_components:
                 return None, None, None, None, None
             return None
-        
+
         # Performance optimization: if already a numpy array, use directly
         close = np.asarray(prices, dtype=np.float64)
         delta = np.diff(close)
-        
+
         gains = np.where(delta > 0, delta, 0.0)
         losses = np.where(delta < 0, -delta, 0.0)
-        
+
         # Seed at position n-1
         seed_gain = gains[:n].mean()
         seed_loss = losses[:n].mean()
-        
+
         alpha = (n - 1) / n
         inv_n = 1.0 / n
-        
+
         avg_gains = np.empty(len(delta), dtype=np.float64)
         avg_losses = np.empty(len(delta), dtype=np.float64)
-        
+
         avg_gains[:n] = np.nan # Match pandas index shift
         avg_losses[:n] = np.nan
         avg_gains[n-1] = seed_gain
         avg_losses[n-1] = seed_loss
-        
+
         # Accelerate the loop for long series (backtesting)
         for i in range(n, len(delta)):
             avg_gains[i] = avg_gains[i-1] * alpha + gains[i] * inv_n
             avg_losses[i] = avg_losses[i-1] * alpha + losses[i] * inv_n
-        
+
         with np.errstate(divide='ignore', invalid='ignore'):
             rs = np.where(avg_losses == 0, np.inf, avg_gains / avg_losses)
             rsi_values = np.where(avg_losses == 0, 100.0, 100.0 - 100.0 / (1.0 + rs))
-        
+
         # Convert back to Series only if needed or keep as array for internal speed
         if isinstance(prices, pd.Series):
             rsi_series = pd.Series(index=prices.index, dtype=float)
@@ -144,17 +144,17 @@ class ExpiryRSIBreakout:
         Calculates the LATEST RSI value from a series of prices.
         If return_prev is True, returns (latest_rsi, prev_rsi).
         Returns None if insufficient data for stable RSI calculation.
-        
+
         This is the main method used by the strategy.
         """
         # Absolute minimum: period + 1 candles (15 for period=14)
         absolute_min = self.rsi_period + 1
-        
+
         if len(prices) < absolute_min:
             # Only block if truly impossible to calculate
             self.logger.error(f"CRITICAL: Only {len(prices)} candles, need minimum {absolute_min} for RSI calculation")
             return None
-        
+
         # Warn if less than ideal, but CONTINUE calculating
         recommended_min = max(self.rsi_warmup, 100)
         if len(prices) < recommended_min:
@@ -162,16 +162,16 @@ class ExpiryRSIBreakout:
                 f"RSI with only {len(prices)} candles (recommended: {recommended_min}+) - "
                 f"may deviate 1-3 points from broker. Trading continues."
             )
-        
+
         # Calculate full RSI series
         rsi_series = self.calculate_wilder_rsi(prices)
-        
+
         if rsi_series is None:
             return None
-        
+
         # Get the latest non-NaN RSI value
         latest_rsi = rsi_series.iloc[-1]
-        
+
         # Debug logging for validation
         if self.rsi_debug and not pd.isna(latest_rsi):
             latest_time = prices.index[-1] if hasattr(prices, 'index') else len(prices)-1
@@ -182,7 +182,7 @@ class ExpiryRSIBreakout:
         if return_prev:
             prev_rsi = rsi_series.iloc[-2] if len(rsi_series) > 1 else np.nan
             return (
-                latest_rsi if not pd.isna(latest_rsi) else None, 
+                latest_rsi if not pd.isna(latest_rsi) else None,
                 prev_rsi if not pd.isna(prev_rsi) else None
             )
 
@@ -264,30 +264,30 @@ class ExpiryRSIBreakout:
     def _calculate_effective_sl(self, symbol, entry_price, alert_low):
         """
         Calculates SL based on Alert Range, SL Floor, and SAFE_SL mode.
-        
+
         Application order (critical for correctness):
           1. Raw distance: entry_price - alert_low + 1.0
           2. SL Floor (min_sl_pct): ensures SL has minimum breathing room
           3. SAFE_SL cap: hard ceiling on loss — ALWAYS wins over floor
-        
+
         Returns: (effective_sl, is_safe_applied, raw_sl)
         """
         # 1. Base distance (High - Low + Rs.1 buffer)
         raw_dist = entry_price - alert_low + 1.0
         raw_sl = round(entry_price - raw_dist, 2)
-        
+
         is_safe_applied = False
-        
+
         # 2. Apply SL Floor FIRST (minimum distance for breathing room)
         min_sl_dist = entry_price * self.min_sl_pct
         effective_dist = max(raw_dist, min_sl_dist)
-        
+
         if effective_dist > raw_dist:
             self.logger.debug(
                 f"[{symbol}] SL floor applied: raw_dist={raw_dist:.2f} "
                 f"-> floor={effective_dist:.2f} (min_sl_pct={self.min_sl_pct})"
             )
-        
+
         # 3. Apply SAFE_SL cap LAST — this is the hard ceiling, always wins
         if self.safe_sl_mode:
             # Pre-initialise qty so post-assertion always has access to it
@@ -296,22 +296,22 @@ class ExpiryRSIBreakout:
                                  if len(symbol.split('-')) > 1 else 'NIFTY')
             _lot_size = self.config['indices'].get(_underlying_guess, {}).get('lot_size', 50)
             qty = _lots * _lot_size  # ← Now always defined before the try block
-            
+
             try:
                 parts = symbol.split('-')
                 underlying = parts[1] if len(parts) > 1 else 'NIFTY'
-                
+
                 lots = self.config['strategy'].get('lots_per_trade', 1)
                 lot_size = self.config['indices'].get(underlying, {}).get('lot_size', 50)
                 qty = lots * lot_size  # ← Overrides with same value (belt + braces)
-                
+
                 self.logger.debug(
                     f"[SAFE_SL CALC] {symbol}: entry={entry_price}, "
                     f"alert_low={alert_low}, raw_dist={raw_dist:.2f}, "
                     f"lots={lots}, lot_size={lot_size}, qty={qty}, "
                     f"max_allowed_dist={self.safe_sl_max_loss/qty:.2f}"
                 )
-                
+
                 if qty > 0:
                     max_allowed_dist = self.safe_sl_max_loss / qty
                     if effective_dist > max_allowed_dist:
@@ -326,9 +326,9 @@ class ExpiryRSIBreakout:
                         is_safe_applied = True
             except Exception as e:
                 self.logger.error(f"Error in SAFE_SL calculation for {symbol}: {e}")
-        
+
         effective_sl = round(entry_price - effective_dist, 2)
-        
+
         # 4. Post-calculation assertion: verify max loss doesn't exceed limit
         if self.safe_sl_mode:
             try:
@@ -345,7 +345,7 @@ class ExpiryRSIBreakout:
                     is_safe_applied = True
             except Exception:
                 pass  # qty may not be defined if safe_sl_mode parsing failed above
-        
+
         return effective_sl, is_safe_applied, raw_sl
 
     def consume_alert(self, symbol):
@@ -360,7 +360,7 @@ class ExpiryRSIBreakout:
         Checks for signals based on candle and RSI.
         STRICTLY separates Alert and Entry.
         Entry cannot happen on the same candle as Alert.
-        
+
         Args:
             symbol: Symbol identifier
             current_candle: The current candle row
@@ -370,17 +370,17 @@ class ExpiryRSIBreakout:
         """
         if symbol not in self.state:
              self.state[symbol] = {
-                 'alert': None, 
+                 'alert': None,
                  'age': 0,
-                 'alert_time': None, 
+                 'alert_time': None,
                  'last_processed_time': None
              }
-        
+
         state = self.state[symbol]
         signal = None
-        
+
         current_time = current_candle['datetime']
-        
+
         # Calculate RSI (gets both current and previous candle's RSI directly from array)
         if rsi_values is not None:
             current_rsi, prev_rsi = rsi_values
@@ -412,23 +412,23 @@ class ExpiryRSIBreakout:
                          state['alert'] = None
                          state['age'] = 0
                          state['alert_time'] = None
-        
+
         # Return EXPIRED signal if alert just expired
         if expired_symbol:
             return {'action': 'EXPIRED', 'symbol': expired_symbol}
-        
+
         # Update processed time
         state['last_processed_time'] = current_time
 
         # 1. Check for Entry (existing code)
         if state['alert'] is not None:
             alert_candle = state['alert']
-            
+
             # Entry condition: Price breaks high of alert candle
             if current_time > state['alert_time'] and current_candle['high'] > alert_candle['high']:
                 # ... breakout logic ...
                 alert_range = alert_candle['high'] - alert_candle['low']
-                
+
                 # Calculate Effective SL (Base, Base + SAFE_SL, and Floor)
                 effective_sl, is_safe_applied, raw_sl = self._calculate_effective_sl(symbol, alert_candle['high'], alert_candle['low'])
 
@@ -483,7 +483,7 @@ class ExpiryRSIBreakout:
                     f"[{symbol}] Insufficient history: {len(price_history)} < {self.min_candles_for_signal}"
                 )
                 return None
-                
+
             is_green_candle = current_candle['close'] > current_candle['open']
             if is_green_candle and prev_rsi is not None and prev_rsi < self.rsi_threshold and current_rsi >= self.rsi_threshold:
                 alert_candle = {
@@ -491,7 +491,7 @@ class ExpiryRSIBreakout:
                     'low': current_candle['low'],
                     'datetime': current_candle['datetime']
                 }
-                
+
                 # V16-P-01: Reject corrupt or flat candles (negative/tiny range)
                 alert_range = alert_candle['high'] - alert_candle['low']
                 if alert_range < self.min_alert_range:
@@ -501,7 +501,7 @@ class ExpiryRSIBreakout:
                         f"low={alert_candle['low']})"
                     )
                     return None
-                
+
                 # Calculate Effective SL (Base, Base + SAFE_SL, and Floor)
                 effective_sl, is_safe_applied, raw_sl = self._calculate_effective_sl(symbol, alert_candle['high'], alert_candle['low'])
 
@@ -509,7 +509,7 @@ class ExpiryRSIBreakout:
                 state['age'] = 0
                 state['alert_time'] = current_time
                 self.logger.info(f"ALERT: RSI Breakout for {symbol} at {current_time} (RSI: {current_rsi:.2f})")
-                
+
                 return {
                     'action': 'ALERT',
                     'price': alert_candle['high'],
@@ -528,5 +528,5 @@ class ExpiryRSIBreakout:
                     'exit_mode': self.config['strategy'].get('exit_mode', 'multi_lot'),
                     'lots_per_trade': self.config['strategy'].get('lots_per_trade', 3)
                 }
-        
+
         return signal

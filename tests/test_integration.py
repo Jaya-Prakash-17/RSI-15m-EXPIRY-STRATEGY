@@ -39,14 +39,14 @@ def test_strategy_fires_on_synthetic_rsi_crossover():
     """RSI strategy should fire ALERT when RSI crosses threshold on green candle."""
     config = load_config()
     strategy = ExpiryRSIBreakout(config)
-    
+
     # Build a price series that will produce RSI crossover above 60
     # 30 rising candles then 5 flat = RSI will rise above 60
     prices = pd.Series(
         [100.0 + i * 2 for i in range(30)] +  # strong uptrend (RSI rises)
         [160.0] * 5                             # consolidation at top
     )
-    
+
     # The last candle should be a green candle with RSI near top
     candle = pd.Series({
         'datetime': pd.Timestamp('2026-03-20 11:00:00'),
@@ -56,12 +56,12 @@ def test_strategy_fires_on_synthetic_rsi_crossover():
         'close': 164.0,  # green candle
         'volume': 500
     })
-    
+
     # Check that RSI is calculated (not None)
     rsi = strategy.calculate_latest_rsi(prices)
     assert rsi is not None, "RSI should be calculable on 35 candles"
     assert rsi > 0, f"RSI should be positive, got {rsi}"
-    
+
     # Note: may or may not be > 60 depending on exact values
     # The key assertion is that the calculation runs without error
 

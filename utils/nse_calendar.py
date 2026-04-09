@@ -80,7 +80,7 @@ NSE_HOLIDAYS = {
         '2025-01-26',  # Republic Day
         '2025-03-14',  # Holi
         '2025-03-31',  # Id-Ul-Fitr
-        '2025-04-10',  # Mahavir Jayanti  
+        '2025-04-10',  # Mahavir Jayanti
         '2025-04-14',  # Dr. Ambedkar Jayanti
         '2025-04-18',  # Good Friday
         '2025-05-01',  # Maharashtra Day
@@ -129,13 +129,13 @@ def is_special_trading_day(date):
     from datetime import datetime
     if isinstance(date, datetime):
         date = date.date()
-    
+
     date_str = date.strftime('%Y-%m-%d')
     year = date.year
-    
+
     if year in SPECIAL_TRADING_DAYS:
         return date_str in SPECIAL_TRADING_DAYS[year]
-    
+
     return False
 
 def is_nse_holiday(date):
@@ -143,23 +143,23 @@ def is_nse_holiday(date):
     from datetime import datetime
     if isinstance(date, datetime):
         date = date.date()
-    
+
     date_str = date.strftime('%Y-%m-%d')
     year = date.year
-    
+
     if year in NSE_HOLIDAYS:
         return date_str in NSE_HOLIDAYS[year]
-    
+
     return False
 
 def is_trading_day(date):
     """
     Check if a date is a trading day.
-    
+
     Returns True if:
     - It's a weekday (Mon-Fri) and not a holiday, OR
     - It's a special trading day (e.g., Budget Day on Sunday)
-    
+
     Returns False if:
     - It's a weekend and NOT a special trading day, OR
     - It's a declared NSE holiday
@@ -167,15 +167,15 @@ def is_trading_day(date):
     from datetime import datetime
     if isinstance(date, datetime):
         date = date.date()
-    
+
     # Check if it's a special trading day first (overrides weekend check)
     if is_special_trading_day(date):
         return True
-    
+
     # Weekend check (Saturday=5, Sunday=6)
     if date.weekday() >= 5:
         return False
-    
+
     # Holiday check
     return not is_nse_holiday(date)
 

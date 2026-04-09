@@ -43,12 +43,12 @@ def make_year_config(base_config, year, lots_override=None, exit_mode_override=N
     cfg['backtest']['start_date'] = f'{year}-01-01'
     cfg['backtest']['end_date'] = f'{year}-12-31'
     cfg['backtest']['offline_mode'] = False  # Smart fallback handles it
-    
+
     if lots_override is not None:
         cfg['strategy']['lots_per_trade'] = lots_override
     if exit_mode_override is not None:
         cfg['strategy']['exit_mode'] = exit_mode_override
-        
+
     return cfg
 
 
@@ -132,7 +132,7 @@ def main():
                         help='Override lots_per_trade for comparison (default: use config.yaml)')
     parser.add_argument('--exit-mode', default=None,
                         help='Override exit_mode (default: use config.yaml)')
-    
+
     args = parser.parse_args()
     years = args.years
 

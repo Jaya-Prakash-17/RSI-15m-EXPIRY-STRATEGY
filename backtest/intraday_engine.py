@@ -13,20 +13,20 @@ class IntradayEngine:
         self.logger = logging.getLogger("BacktestEngine")
         self.dm = data_manager
         self.config = config
-        
+
         from strategy.expiry_rsi_breakout import ExpiryRSIBreakout
-        self.strategy_cls = ExpiryRSIBreakout 
-        
+        self.strategy_cls = ExpiryRSIBreakout
+
         # Issue 4: Capital Isolation
-        self.capital = config['capital']['initial'] 
+        self.capital = config['capital']['initial']
         self.trades = []
-        
+
         self.start_time = datetime.strptime(config['trading']['window']['start'], "%H:%M").time()
         self.end_time = datetime.strptime(config['trading']['window']['end'], "%H:%M").time()
         self.sq_off_time = datetime.strptime(config['trading']['window']['auto_square_off'], "%H:%M").time()
-        
+
         self.max_loss_per_day = config['risk']['max_loss_per_day']
-        self.last_processed_candle_time = {} 
+        self.last_processed_candle_time = {}
 
     def _get_latest_candle(self, df, t):
         """P-19: Get the latest candle at or before time t. O(log n) via searchsorted."""
@@ -53,32 +53,32 @@ class IntradayEngine:
         self.logger.info(f"Starting backtest from {start_date} to {end_date}")
         self.capital = self.config['capital']['initial']
         self.trades = []
-        
+
         trade_only_on_expiry = self.config['strategy'].get('trade_only_on_expiry', True)
         self.day_diagnostics = []  # V6-P-001: Store daily diagnostics
-        
+
         # V6-P-001: Validate data paths once before starting the loop
         for idx in self.config['indices'].keys():
             self._validate_data_paths(idx, start_date)
-        
+
         current_date = start_date
         while current_date <= end_date:
             self.last_processed_candle_time = {}
-            
+
             should_trade = False
             indices_to_trade = []
-            
+
             # Valid trading days (exclude Saturday/Sunday which are used to disable indices)
             valid_days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday']
             current_day_name = current_date.strftime("%A")
-            
+
             # Check if this is a trading day (handles special days like Budget Day on weekends)
             if not is_trading_day(current_date):
                 day_name = current_date.strftime("%A")
                 self.logger.info(f"Skipping {current_date.date()} ({day_name}) - Not a trading day")
                 current_date += pd.Timedelta(days=1)
                 continue
-            
+
             if trade_only_on_expiry:
                 for idx in self.config['indices'].keys():
                     is_expiry = self._is_expiry_day(idx, current_date)
@@ -90,7 +90,7 @@ class IntradayEngine:
                 for idx in self.config['indices'].keys():
                     indices_to_trade.append(idx)
                 should_trade = len(indices_to_trade) > 0
-            
+
             if should_trade and indices_to_trade:
                 self.logger.info(f"Processing {current_date.date()} - Trading {indices_to_trade}")
                 for idx in indices_to_trade:
@@ -98,14 +98,14 @@ class IntradayEngine:
             else:
                 self.logger.info(f"Skipping {current_date.date()} - No indices to trade")
 
-            
+
             self.dm.clear_cache()
             current_date += pd.Timedelta(days=1)
-        
+
         # V10: Post-backtest safe_sl compliance check
         if self.config['strategy'].get('safe_sl_mode', False):
             self._verify_safe_sl_compliance(self.trades)
-        
+
         return self.generate_report()
 
     def print_diagnostic_summary(self):
@@ -114,7 +114,7 @@ class IntradayEngine:
             days_no_data = sum(1 for d in self.day_diagnostics if d['opt_symbols_loaded'] == 0)
             days_no_alerts = sum(1 for d in self.day_diagnostics if d['alerts_fired'] == 0 and d['opt_symbols_loaded'] > 0)
             days_no_entries = sum(1 for d in self.day_diagnostics if d['alerts_fired'] > 0 and d['entries_attempted'] == 0)
-            
+
             self.logger.info(
                 f"\n{'='*60}\n"
                 f"BACKTEST DIAGNOSTIC SUMMARY\n"
@@ -137,21 +137,21 @@ class IntradayEngine:
         from datetime import timedelta
         import glob
         import os
-        
+
         try:
             # Build a sample symbol for a recent date
             sample_expiry = sample_date.date() if hasattr(sample_date, 'date') else sample_date
             sample_symbol = self.dm.build_option_symbol(
                 underlying, sample_expiry, 22500, 'CE', use_historical=True
             )
-            
+
             # Check if the file exists
             year = sample_expiry.year
             expected_path = os.path.join(
                 self.dm.base_path, 'derivatives', underlying,
                 str(year), f"{sample_symbol}_15m.csv"
             )
-            
+
             # Also check what actually exists in that directory
             dir_path = os.path.join(self.dm.base_path, 'derivatives', underlying, str(year))
             if os.path.exists(dir_path):
@@ -159,7 +159,7 @@ class IntradayEngine:
                 sample_existing = os.path.basename(existing[0]) if existing else "NONE"
             else:
                 sample_existing = f"DIRECTORY NOT FOUND: {dir_path}"
-            
+
             if os.path.exists(expected_path):
                 self.logger.info(f"[PATH CHECK] OK {underlying}: symbol format matches files on disk")
             else:
@@ -179,11 +179,11 @@ class IntradayEngine:
         """
         if df is None or df.empty:
             return False, 'empty_df'
-        
+
         warmup_required = self.config['strategy']['rsi'].get('warmup_periods', 100)
         if len(df) < warmup_required + 1:
             return False, f'insufficient_bars_{len(df)}'
-        
+
         # Check volume quality on expiry day only
         try:
             bd = backtest_date.date() if hasattr(backtest_date, 'date') else backtest_date
@@ -193,14 +193,14 @@ class IntradayEngine:
                 zero_vol_pct = (expiry_day_data['volume'] == 0).mean()
                 if zero_vol_pct > min_vol_pct:
                     return False, f'low_volume_{zero_vol_pct:.0%}'
-                
+
                 # Check for data integrity (no high<low candles)
                 corrupt = (expiry_day_data['high'] < expiry_day_data['low']).sum()
                 if corrupt > 0:
                     return False, f'corrupt_candles_{corrupt}'
         except Exception:
             pass  # If date filtering fails, don't reject.
-        
+
         return True, 'ok'
 
     def process_expiry_day(self, underlying, date):
@@ -221,7 +221,7 @@ class IntradayEngine:
 
         from datetime import date as _date
         self.logger.info(f"Processing expiry day: {underlying} on {date.date()}")
-        
+
         # SENSEX weekly options did not exist before May 2023
         SENSEX_WEEKLY_LAUNCH_DATE = _date(2023, 5, 1)
         if underlying == 'SENSEX':
@@ -240,43 +240,43 @@ class IntradayEngine:
         # For stable RSI, fetch at least 100 candles (minimum 10 trading days)
         # This ensures RSI values are more stable and closer to broker values
         warmup_candles = max(warmup_candles, 100)
-        
+
         warmup_minutes = warmup_candles * 15  # 15-min candles
-        
+
         # Start fetching from previous day to ensure warmup data
         warmup_start = date - timedelta(minutes=warmup_minutes, days=3) # Give margin for weekends
-        
+
         self.logger.info(f"Fetching data with {warmup_candles} candle warmup from {warmup_start}")
-        
+
         spot_df = self.dm.get_spot_candles(underlying, warmup_start, date.replace(hour=23, minute=59))
         if spot_df.empty:
             self.logger.warning(f"No spot data for {underlying} on {date.date()}")
             diag['skip_reason'] = 'no_spot_data'
             self._log_day_diagnostic(diag)
             return
-        
+
         spot_df = spot_df.sort_values('datetime').reset_index(drop=True)
 
         start_datetime = datetime.combine(date.date(), self.start_time)
         start_row = self._get_latest_candle(spot_df, start_datetime)
-        
+
         if start_row is None:
             self.logger.warning(f"No spot data available at start time {start_datetime} for {underlying}")
             diag['skip_reason'] = 'no_spot_data_at_start_time'
             self._log_day_diagnostic(diag)
             return
-            
-        universe_ref_price = start_row['open'] 
-        
+
+        universe_ref_price = start_row['open']
+
         strike_step = 50 if underlying == 'NIFTY' else 100
         if underlying == 'SENSEX': strike_step = 100
-        
+
         strike_range = self.config['strategy'].get('strike_range', 4)  # default +/- 4
         center_strike = round(universe_ref_price / strike_step) * strike_step
         min_strike = center_strike - (strike_range * strike_step)
         max_strike = center_strike + (strike_range * strike_step)
         strikes = range(int(min_strike), int(max_strike) + strike_step, strike_step)
-        
+
         option_data = {}
         for strike in strikes:
             for opt_type in ['CE', 'PE']:
@@ -304,7 +304,7 @@ class IntradayEngine:
                     diag['opt_symbols_empty'] += 1
                     # Silently skip missing options (some strikes may not exist)
                     pass
-        
+
         if not option_data:
             diag['skip_reason'] = 'no_option_data_loaded'
             self._log_day_diagnostic(diag)
@@ -312,7 +312,7 @@ class IntradayEngine:
             return
 
         strategy = self.strategy_cls(self.config)
-        
+
         # Performance Upgrade: Pre-calculate RSI for all symbols at once
         # This converts a massive O(N^2) bottleneck into an O(N) operation.
         rsi_cache = {}
@@ -322,29 +322,29 @@ class IntradayEngine:
             rsi_series = strategy.calculate_wilder_rsi(df['close'].values)
             if rsi_series is not None:
                 rsi_cache[symbol] = rsi_series
-        
+
         timestamps = sorted(spot_df['datetime'].unique())
         # CRITICAL FIX: Only process candles from the actual backtest date, not warmup period
         # This prevents signals from warmup days appearing in backtest results
         backtest_date = date.date()
-        timestamps = [t for t in timestamps if t.date() == backtest_date and self.start_time <= t.time()] 
-        diag['timestamps_in_window'] = len(timestamps) 
-        
-        active_trade = None 
+        timestamps = [t for t in timestamps if t.date() == backtest_date and self.start_time <= t.time()]
+        diag['timestamps_in_window'] = len(timestamps)
+
+        active_trade = None
         has_traded_today = False
         daily_pnl = 0
-        
+
         # V10-P-08: Circuit breaker tracking
         consecutive_losses = 0
         cooldown_candles_remaining = 0
         max_consec = self.config.get('risk', {}).get('max_consecutive_losses', 999)
         cooldown_n = self.config.get('risk', {}).get('consecutive_loss_cooldown', 0)
-        
+
         # Debug counter
         debug_count = 0
         max_debug = 3
         self.logger.info(f"DEBUG: Found {len(timestamps)} timestamps to process for {backtest_date}")
-        
+
         for t in timestamps:
             if t.time() >= self.sq_off_time:
                 if active_trade:
@@ -352,7 +352,7 @@ class IntradayEngine:
                     daily_pnl += pnl
                     self.trades.append(active_trade)
                     active_trade = None
-                break 
+                break
 
             current_spot_row = self._get_latest_candle(spot_df, t)
             if current_spot_row is None: continue
@@ -363,7 +363,7 @@ class IntradayEngine:
                 if active_trade['status'] == 'CLOSED':
                     self.trades.append(active_trade)
                     daily_pnl += trade_pnl_realized
-                    
+
                     # V10-P-08: Track consecutive losses for circuit breaker
                     if trade_pnl_realized < 0:
                         consecutive_losses += 1
@@ -376,61 +376,61 @@ class IntradayEngine:
                             consecutive_losses = 0  # Reset after triggering
                     else:
                         consecutive_losses = 0  # Reset on any win
-                    
-                    active_trade = None
-                continue 
 
-            if has_traded_today: continue 
+                    active_trade = None
+                continue
+
+            if has_traded_today: continue
             if daily_pnl <= -self.max_loss_per_day: break
             if t.time() > self.end_time: continue
-            
+
             # V10-P-08: Circuit breaker cooldown
             if cooldown_candles_remaining > 0:
                 cooldown_candles_remaining -= 1
                 continue  # Skip this candle, no new signals
-            
+
             # V10-P-08: Hard stop if consecutive losses hit max with no cooldown
             if consecutive_losses >= max_consec and cooldown_n == 0:
                 self.logger.info(f"[CIRCUIT BREAKER] {consecutive_losses} losses in a row. No new trades today.")
                 break
 
             candidates = []
-            
+
             for symbol, df in option_data.items():
                 # t is the NEW spot candle timestamp - subtract 1s to get the JUST-CLOSED candle
                 row = self._get_latest_candle(df, t - timedelta(seconds=1))
                 if row is None: continue
-                
+
                 # Issue 5: Duplicate Candle Check
                 last_time = self.last_processed_candle_time.get(symbol)
                 current_candle_time = row['datetime']
-                
+
                 if last_time and current_candle_time <= last_time:
                     continue
-                
+
                 self.last_processed_candle_time[symbol] = current_candle_time
-                
+
                 # Performance Upgrade: Use pre-calculated RSI values
                 symbol_rsis = rsi_cache.get(symbol)
                 if symbol_rsis is None: continue
-                
+
                 # Get index of current candle in its own dataframe to pull RSI
                 # row.name is its index in df
                 curr_idx = row.name
                 if curr_idx < 1 or curr_idx >= len(symbol_rsis): continue
-                
+
                 curr_rsi = symbol_rsis[curr_idx]
                 prev_rsi = symbol_rsis[curr_idx - 1]
-                
+
                 if np.isnan(curr_rsi): continue
-                
+
                 signal = strategy.check_signal(symbol, row, rsi_values=(curr_rsi, prev_rsi))
                 diag['rsi_checks'] += 1
-                
+
                 # Debug signal result
                 if debug_count < max_debug and signal:
                     self.logger.info(f"DEBUG: {symbol} signal: {signal.get('action', 'None')}")
-                
+
                 if signal and signal['action'] == 'ALERT':
                     diag['alerts_fired'] += 1
 
@@ -449,7 +449,7 @@ class IntradayEngine:
                         })
                     except (ValueError, IndexError) as e:
                         self.logger.warning(f"Symbol parse failed: {symbol} - {e}")
-            
+
             if candidates:
                 candidates.sort(key=lambda x: (x['dist'], -x['volume']))
                 best = candidates[0]
@@ -491,7 +491,7 @@ class IntradayEngine:
             return None
         alert_high = signal['price']  # Intended trigger price
         entry_candle_open = candidate.get('entry_candle_open', alert_high)
-        
+
         if entry_candle_open > alert_high:
             # Gap-up: SL-M fills at open price
             actual_fill = entry_candle_open
@@ -501,11 +501,11 @@ class IntradayEngine:
             )
         else:
             actual_fill = alert_high  # Normal fill at trigger
-            
+
         price = self._round_to_tick(actual_fill, underlying)
         sl = self._round_to_tick(signal['sl'], underlying)
         targets = [self._round_to_tick(tgt, underlying) for tgt in signal['targets']]
-        
+
         # Try historical lot size first (correct for backtesting)
         date_of_trade = time.date() if hasattr(time, 'date') else time
         try:
@@ -523,15 +523,15 @@ class IntradayEngine:
                 f"Historical lot size lookup failed for {underlying}: {e}. "
                 f"Falling back to config value {lot_size}."
             )
-            
+
         if not lot_size:
             self.logger.warning(f"No lot_size for {underlying} on {date_of_trade}. Skipping.")
             return None
-        
+
         # Get lots_per_trade from config (for multi-lot mode)
         lots_per_trade = self.config['strategy'].get('lots_per_trade', 1)
         total_qty = lot_size * lots_per_trade
-        
+
         # V10: CRITICAL FIX — Re-enforce safe_sl using ACTUAL historical qty
         # The strategy computed SL using config lot_size (e.g. 65), but the engine
         # trades historical lot_size (e.g. 75 for NIFTY in 2025). This mismatch
@@ -550,9 +550,9 @@ class IntradayEngine:
                     f"SL adjusted: {old_sl:.2f} -> {sl:.2f} "
                     f"(max_loss capped at Rs.{safe_sl_max_loss})"
                 )
-        
+
         cost = price * total_qty
-        
+
         # FIX #3: Enforce max_position_pct config guard
         max_position_pct = self.config['strategy'].get('max_position_pct', 1.0)
         max_cost = self.capital * max_position_pct
@@ -562,13 +562,13 @@ class IntradayEngine:
                 f"({cost:.0f} > {max_position_pct*100:.0f}% of capital {max_cost:.0f})"
             )
             return None
-        
+
         if self.capital < cost:
             self.logger.info(f"Skipping trade {symbol}: Insufficient capital ({self.capital} < {cost})")
             return None
-            
+
         self.capital -= cost
-        
+
         trade = {
             'symbol': symbol,
             'entry_time': time,
@@ -603,21 +603,21 @@ class IntradayEngine:
         """
         symbol = trade['symbol']
         if symbol not in option_data: return 0
-        
+
         df = option_data[symbol]
         row = self._get_latest_candle(df, time)
         if row is None: return 0
-        
+
         # CRITICAL FIX (V12-P-01): Define underlying from trade dict here so it is
         # available in BOTH multi-lot and single-lot branches below.
         underlying = trade.get('underlying', 'NIFTY')
-        
+
         # V16-P-06: Management starts at T+2 by design (entry sets active_trade at the END
         # of the T+1 loop iteration, so management loop runs from T+2 onwards).
         # No same-candle SL risk exists in this architecture.
-        
+
         realized_pnl = 0
-        
+
         # Initialize partial exit tracking if not present
         if 'remaining_qty' not in trade:
             trade['remaining_qty'] = trade['qty']
@@ -625,20 +625,20 @@ class IntradayEngine:
             trade['partial_pnl'] = 0  # Track realized PnL from partial exits
             trade['original_sl'] = trade['sl']
             trade['alert_range'] = trade['targets'][0] - trade['entry_price']  # Range for trailing
-        
+
         # Get exit mode from config
         exit_mode = self.config['strategy'].get('exit_mode', 'multi_lot')
         lots_per_trade = self.config['strategy'].get('lots_per_trade', 3)
-        
+
         # Check SL condition (strategy-defined: alert candle low - 1)
         sl_triggered = row['low'] <= trade['sl']
-        
+
         # V16-P-08: If SL has been trailed ABOVE entry (profitable trail),
         # check final target FIRST. Price must pass through target to hit
         # trailed SL from below, so TP takes priority.
         trailed_sl_above_entry = trade.get('sl', 0) > trade.get('entry_price', 0)
         exit_mode = self.config['strategy'].get('exit_mode', 'multi_lot')
-        
+
         if trailed_sl_above_entry and sl_triggered:
             # Check if final target was ALSO hit on this candle
             if exit_mode == 'single_lot' or (exit_mode == 'multi_lot' and self.config['strategy'].get('lots_per_trade', 3) < 3):
@@ -658,14 +658,14 @@ class IntradayEngine:
                         f"SL was {trade['sl']:.2f} > entry {trade['entry_price']:.2f} | PnL: {pnl:.2f}"
                     )
                     return pnl
-        
+
         if sl_triggered:
             # FIX #5: Gap-below-SL handling for ALL candles (not just 09:15)
             # If candle opens below SL (overnight gap OR intraday halt/circuit breaker),
             # the SL-M order fills at the open price (worse), not the SL price.
             candle_time = pd.Timestamp(row['datetime']).time()
             is_opening_candle = candle_time == pd.Timestamp('09:15').time()
-            
+
             if row['open'] < trade['sl']:
                 exit_price = row['open']
                 if is_opening_candle:
@@ -683,13 +683,13 @@ class IntradayEngine:
             else:
                 # Normal: SL order fills AT the SL price.
                 exit_price = trade['sl']
-            
+
             pnl = (exit_price - trade['entry_price']) * trade['remaining_qty']
             realized_pnl = pnl + trade['partial_pnl']
-            
+
             credit = exit_price * trade['remaining_qty']
             self.capital += credit
-            
+
             trade['exit_time'] = time
             trade['exit_price'] = exit_price
             trade['reason'] = 'SL'
@@ -698,15 +698,15 @@ class IntradayEngine:
             trade['running_capital'] = self.capital
             self.logger.info(f"EXIT SL: {symbol} at {exit_price:.2f} | Remaining Qty: {trade['remaining_qty']} | PnL: {realized_pnl:.2f}")
             return realized_pnl
-        
+
         # V10-P-03: Sequential TP chain — handles single-candle multi-target fills
         # On expiry days, a single candle can spike from below T1 to above T3.
         # With limit sell orders at T1, T2, T3, all three fill in that candle.
-        
+
         # Multi-lot mode: check each TP level sequentially
         if exit_mode == 'multi_lot' and lots_per_trade >= 3:
             underlying = trade.get('underlying', 'NIFTY')
-            
+
             # Use lot_size stored in trade or look up historically
             if trade.get('lot_size'):
                 lot_size = trade['lot_size']
@@ -716,17 +716,17 @@ class IntradayEngine:
                     lot_size = get_historical_lot_size(underlying, entry_date)
                 except Exception:
                     lot_size = self.config['indices'].get(underlying, {}).get('lot_size', 1)
-            
+
             if lot_size == 1 and underlying not in ('UNKNOWN',):
                 self.logger.warning(f"lot_size for {underlying} defaulted to 1 - check config.yaml or history")
-            
+
             # Sequential loop through TP levels in one candle
             for tp_level in range(trade.get('tp_hits', 0), 3):
                 target_price = trade['targets'][tp_level]
-                
+
                 if row['high'] < target_price:
                     break  # price didn't reach this TP, stop
-                
+
                 if tp_level < 2:
                     # Partial exit (TP1 or TP2)
                     exit_qty = lot_size
@@ -768,7 +768,7 @@ class IntradayEngine:
                         f"FINAL EXIT TP3: {symbol} at {exit_price:.2f} | Total PnL: {realized_pnl:.2f}"
                     )
                     return realized_pnl
-        
+
         else:
             # Single lot mode (or multi_lot with insufficient lots)
             if exit_mode == 'multi_lot' and lots_per_trade < 3:
@@ -778,7 +778,7 @@ class IntradayEngine:
                 )
             # Single lot mode: trail SL at intermediate TPs, full exit at configured target
             target_idx = self.config['strategy'].get('single_lot_exit_target', 2) - 1
-            
+
             # Sequential TP trail: process each intermediate TP in order,
             # even if price passed through multiple in the same candle
             for tp in range(trade.get('tp_hits', 0), target_idx):
@@ -801,7 +801,7 @@ class IntradayEngine:
                     )
                 else:
                     break  # price didn't reach this TP, stop checking
-            
+
             # Now check if final configured target was breached
             if row['high'] >= trade['targets'][target_idx]:
                 exit_price = max(row['open'], trade['targets'][target_idx])
@@ -817,7 +817,7 @@ class IntradayEngine:
                     f"EXIT TP{target_idx+1}: {symbol} at {exit_price:.2f} | PnL: {pnl:.2f}"
                 )
                 return pnl
-        
+
         return 0
 
     def _close_trade(self, trade, time, reason, option_data, price_override=None):
@@ -831,7 +831,7 @@ class IntradayEngine:
                 exit_price = row['close']
             else:
                 exit_price = trade['entry_price']
-        
+
         # BUG-001 FIX: Use remaining_qty (not original qty) to avoid
         # inflated P&L after partial exits at TP1/TP2
         remaining = TradeTracker.get_remaining_qty(trade)
@@ -839,7 +839,7 @@ class IntradayEngine:
         credit = exit_price * remaining
         self.capital += credit
         pnl = (exit_price - trade['entry_price']) * remaining + partial_pnl
-        
+
         trade['exit_time'] = time
         trade['exit_price'] = exit_price
         trade['reason'] = reason
@@ -847,7 +847,7 @@ class IntradayEngine:
         trade['pnl'] = pnl
         trade['remaining_qty'] = 0  # Fully closed
         trade['running_capital'] = self.capital
-        
+
         self.logger.info(f"EXIT: {symbol} at {exit_price} | Exited Qty: {remaining} | PnL: {pnl} | Reason: {reason}")
         return pnl
 
@@ -855,10 +855,10 @@ class IntradayEngine:
         """V10: Post-backtest check that no trade exceeded safe_sl_max_loss."""
         safe_sl_max = self.config['strategy'].get('safe_sl_max_loss', float('inf'))
         safe_sl_mode = self.config['strategy'].get('safe_sl_mode', False)
-        
+
         if not safe_sl_mode or safe_sl_max == float('inf'):
             return
-        
+
         breaches = []
         for trade in trades:
             gross_loss = trade.get('pnl', 0)
@@ -875,9 +875,9 @@ class IntradayEngine:
                     'limit': safe_sl_max,
                     'excess': abs(gross_loss) - safe_sl_max
                 })
-        
+
         losing_trades = [t for t in trades if t.get('pnl', 0) < 0]
-        
+
         if breaches:
             self.logger.warning(
                 f"\n{'='*60}\n"

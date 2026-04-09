@@ -10,7 +10,7 @@ def run_tests():
     print("="*60)
     print(" V E R I F Y I N G   F I X E S ")
     print("="*60)
-    
+
     passed = 0
     failed = 0
 
@@ -66,11 +66,11 @@ def run_tests():
     try:
         from execution.order_manager import OrderManager
         om = OrderManager(dummy_config)
-        assert_test("AUDIT-004: BANKNIFTY Lot Size == 30", 
+        assert_test("AUDIT-004: BANKNIFTY Lot Size == 30",
                     om._resolve_lot_size('NSE-BANKNIFTY-27Jan26-59700-PE', '') == 30, "Should be 30")
-        assert_test("AUDIT-004: NIFTY Lot Size == 65", 
+        assert_test("AUDIT-004: NIFTY Lot Size == 65",
                     om._resolve_lot_size('NSE-NIFTY-27Jan26-22500-CE', '') == 65, "Should be 65")
-        assert_test("AUDIT-004: SENSEX Lot Size == 20", 
+        assert_test("AUDIT-004: SENSEX Lot Size == 20",
                     om._resolve_lot_size('BSE-SENSEX-27Jan26-79500-PE', '') == 20, "Should be 20")
     except Exception as e:
         assert_test("AUDIT-003/004: Lot size resolution", False, str(e))
@@ -87,7 +87,7 @@ def run_tests():
     try:
         from strategy.expiry_rsi_breakout import ExpiryRSIBreakout
         strategy = ExpiryRSIBreakout(dummy_config)
-        assert_test("BUG-016: RSI Warmup extracted from config correctly", 
+        assert_test("BUG-016: RSI Warmup extracted from config correctly",
                     strategy.rsi_warmup == 100, f"Expected 100, got {strategy.rsi_warmup}")
     except Exception as e:
         assert_test("BUG-016: RSI Warmup", False, str(e))
@@ -115,7 +115,7 @@ def run_tests():
     try:
         with open('run_live.py', 'r', encoding='utf-8') as f:
             content = f.read()
-            assert_test("NEW-003: Single instance lock mechanism is present", 
+            assert_test("NEW-003: Single instance lock mechanism is present",
                         'fcntl' in content or 'msvcrt' in content)
     except Exception as e:
         assert_test("NEW-003: Single instance lock", False, str(e))

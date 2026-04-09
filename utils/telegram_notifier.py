@@ -49,7 +49,7 @@ class TelegramNotifier:
         import os
         from dotenv import load_dotenv
         load_dotenv()
-        
+
         self.token = os.environ.get("TELEGRAM_BOT_TOKEN")
         raw_ids = str(os.environ.get("TELEGRAM_CHAT_ID", ""))
         self.chat_ids = [cid.strip() for cid in raw_ids.split(",") if cid.strip()]
@@ -73,7 +73,7 @@ class TelegramNotifier:
         """Send a message. Handles 429 rate limiting with a single retry."""
         if not self.enabled:
             return
-            
+
         url = f"https://api.telegram.org/bot{self.token}/sendMessage"
         for chat_id in self.chat_ids:
             try:
@@ -86,7 +86,7 @@ class TelegramNotifier:
                     },
                     timeout=5,
                 )
-                
+
                 if resp.status_code == 429:
                     # Rate limited — wait and retry once
                     retry_after = int(resp.json().get('parameters', {}).get('retry_after', 5))
@@ -104,7 +104,7 @@ class TelegramNotifier:
                         },
                         timeout=5,
                     )
-                
+
                 if not resp.ok:
                     self.logger.error(f"Telegram error {resp.status_code} for chat {chat_id}: {resp.text[:200]}")
             except requests.exceptions.Timeout:
@@ -116,7 +116,7 @@ class TelegramNotifier:
         """Send a message ONLY to the owner chat ID."""
         if not self.enabled or not self.owner_id:
             return
-            
+
         url = f"https://api.telegram.org/bot{self.token}/sendMessage"
         try:
             resp = requests.post(
@@ -172,7 +172,7 @@ class TelegramNotifier:
         """
         alert_range = round(alert_high - alert_low, 2)
         sl_points = round(alert_high - sl, 2)
-        
+
         # SL display logic for SAFE_SL mode
         sl_text = f"🔴 Stop Loss:  <b>₹{sl:.2f}</b>  ({sl_points:.2f} pts below entry)\n"
         if is_safe_sl_applied and raw_sl:
@@ -181,7 +181,7 @@ class TelegramNotifier:
                 f"🛡️ <b>SAFE SL:  ₹{sl:.2f}</b>  ({sl_points:.2f} pts)\n"
                 f"🔴 Normal SL:  ₹{raw_sl:.2f}  ({raw_sl_points:.2f} pts)\n"
             )
-        
+
         t1_r = round((t1 - alert_high) / sl_points, 1) if sl_points else 0
         t2_r = round((t2 - alert_high) / sl_points, 1) if sl_points else 0
         t3_r = round((t3 - alert_high) / sl_points, 1) if sl_points else 0
@@ -408,7 +408,7 @@ class TelegramNotifier:
             f"Close any open positions manually."
         )
         self._send_to_owner(msg)
-    
+
     def alert_manual_shutdown(self):
         """Send when bot is manually shut down (Ctrl+C). Only to owner."""
         msg = (

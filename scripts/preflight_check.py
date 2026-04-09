@@ -33,9 +33,9 @@ try:
     with open('config.yaml') as f:
         config = yaml.safe_load(f)
         ok("config.yaml loaded")
-        
+
         # DEBUG: print(f"DEBUG: config keys: {list(config.keys())}")
-        
+
         rsi      = config.get('strategy', {}).get('rsi', {})
         warmup   = rsi.get('warmup_periods', 0)
         min_c    = rsi.get('min_candles_for_signal', 0)
@@ -43,29 +43,29 @@ try:
         lots     = config.get('strategy', {}).get('lots_per_trade', 0)
         max_loss = config.get('risk', {}).get('max_loss_per_day', 0)
         paper    = config.get('trading', {}).get('paper_trading', True)
-    
+
     if paper:
         ok("paper_trading: true (safe mode)")
     else:
         warn("paper_trading: false — REAL MONEY")
-    
+
     if warmup >= 100:
         ok(f"warmup_periods: {warmup} ✓")
     else:
         fail(f"warmup_periods: {warmup} — signals will never fire! Set to 100+")
-    
+
     if min_c <= warmup:
         ok(f"min_candles_for_signal: {min_c} ✓")
     else:
         fail(f"min_candles_for_signal ({min_c}) > warmup ({warmup}) — impossible!")
-    
+
     if 1 <= lots <= 3:
         ok(f"lots_per_trade: {lots}")
     else:
         warn(f"lots_per_trade: {lots} — verify this is intentional")
-    
+
     ok(f"max_loss_per_day: ₹{max_loss:,}")
-    
+
 except FileNotFoundError:
     fail("config.yaml not found")
 except Exception as e:

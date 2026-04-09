@@ -75,15 +75,15 @@ class TestBatchRSIEquivalence:
     def test_single_symbol_equivalence(self, strategy):
         """Batch with 1 symbol must match individual calculation exactly."""
         prices = pd.Series(generate_realistic_prices(200))
-        
+
         # Individual path
         individual = strategy.calculate_latest_rsi(prices, return_prev=True)
         curr_individual, prev_individual = individual
-        
+
         # Batch path
         batch = strategy.batch_calculate_rsi({'SYM_A': prices.values})
         curr_batch, prev_batch = batch['SYM_A']
-        
+
         assert curr_batch == pytest.approx(curr_individual, abs=1e-10), \
             f"Current RSI mismatch: batch={curr_batch} vs individual={curr_individual}"
         assert prev_batch == pytest.approx(prev_individual, abs=1e-10), \
@@ -92,15 +92,15 @@ class TestBatchRSIEquivalence:
     def test_multi_symbol_equivalence(self, strategy):
         """Batch with multiple symbols must match individual calculation for each."""
         symbols = {f'SYM_{i}': generate_realistic_prices(200, seed=i) for i in range(10)}
-        
+
         batch_results = strategy.batch_calculate_rsi(symbols)
-        
+
         for sym, prices in symbols.items():
             series = pd.Series(prices)
             individual = strategy.calculate_latest_rsi(series, return_prev=True)
             curr_ind, prev_ind = individual
             curr_batch, prev_batch = batch_results[sym]
-            
+
             assert curr_batch == pytest.approx(curr_ind, abs=1e-10), \
                 f"{sym}: Current RSI mismatch"
             assert prev_batch == pytest.approx(prev_ind, abs=1e-10), \
@@ -111,14 +111,14 @@ class TestBatchRSIEquivalence:
         """Must be equivalent for all commonly used RSI periods."""
         strategy = ExpiryRSIBreakout(make_config(period=period))
         prices = generate_realistic_prices(200, seed=99)
-        
+
         series = pd.Series(prices)
         individual = strategy.calculate_latest_rsi(series, return_prev=True)
         batch = strategy.batch_calculate_rsi({'TEST': prices})
-        
+
         curr_ind, prev_ind = individual
         curr_batch, prev_batch = batch['TEST']
-        
+
         assert curr_batch == pytest.approx(curr_ind, abs=1e-10)
         assert prev_batch == pytest.approx(prev_ind, abs=1e-10)
 
@@ -237,15 +237,15 @@ class TestCheckSignalIntegration:
 
         # Path A: price_history
         result_a = strategy.check_signal(symbol, candle, prices, is_tradable=True)
-        
+
         # Reset state for fair comparison
         strategy.state.pop(symbol, None)
-        
+
         # Path B: rsi_values
         rsi_pair = strategy.calculate_latest_rsi(prices, return_prev=True)
         result_b = strategy.check_signal(symbol, candle, price_history=None,
                                           is_tradable=True, rsi_values=rsi_pair)
-        
+
         assert result_a == result_b, f"Mismatch: A={result_a}, B={result_b}"
 
     def test_alert_signal_equivalence(self, strategy):
@@ -253,7 +253,7 @@ class TestCheckSignalIntegration:
         # Create prices that trigger a crossover at threshold=60
         config = make_config(period=11, threshold=60)
         strategy = ExpiryRSIBreakout(config)
-        
+
         # Build prices where prev_rsi < 60 and current_rsi >= 60
         # Use a series with a clear upward spike at the end
         base = np.concatenate([
@@ -261,35 +261,35 @@ class TestCheckSignalIntegration:
             np.linspace(95, 120, 49),   # Sharp recovery
         ])
         spike = np.append(base, 125.0)  # Final candle pushes RSI over
-        
+
         prices = pd.Series(spike)
         symbol = 'NSE-NIFTY-20Mar26-22500-CE'
-        
+
         # Check if this actually creates the crossover
         rsi_result = strategy.calculate_latest_rsi(prices, return_prev=True)
         if rsi_result is None:
             pytest.skip("Price series didn't create valid RSI crossover")
-        
+
         curr_rsi, prev_rsi = rsi_result
         if curr_rsi is None or prev_rsi is None:
             pytest.skip("RSI values are None")
-        
+
         # Only test if crossover actually happens
         if prev_rsi < 60 and curr_rsi >= 60:
             candle = self._make_candle(
                 '2026-03-20 10:30:00',
                 o=spike[-2], h=spike[-1] + 2, l=spike[-2] - 1, c=spike[-1]
             )
-            
+
             # Path A
             result_a = strategy.check_signal(symbol, candle, prices, is_tradable=True)
             strategy.state.pop(symbol, None)
-            
+
             # Path B
             rsi_pair = (curr_rsi, prev_rsi)
             result_b = strategy.check_signal(symbol, candle, price_history=None,
                                               is_tradable=True, rsi_values=rsi_pair)
-            
+
             if result_a and result_b:
                 assert result_a['action'] == result_b['action']
                 assert result_a['price'] == pytest.approx(result_b['price'])
@@ -309,10 +309,10 @@ class TestCheckSignalIntegration:
                 o=prices[-2], h=max(prices[-3:]) + 1,
                 l=min(prices[-3:]) - 1, c=prices[-1]
             )
-        
+
         # Batch compute
         batch_rsi = strategy.batch_calculate_rsi(symbols_data)
-        
+
         # Feed into check_signal
         for sym in symbols_data:
             rsi_pair = batch_rsi[sym]
@@ -343,25 +343,25 @@ class TestBatchPerformance:
             f'SYM_{i}': generate_realistic_prices(200, seed=i)
             for i in range(n_symbols)
         }
-        
+
         # Warm up JIT/cache
         strategy.batch_calculate_rsi(symbols)
         for prices in symbols.values():
             strategy.calculate_latest_rsi(pd.Series(prices), return_prev=True)
-        
+
         # Time batch
         t0 = time.perf_counter()
         for _ in range(100):
             strategy.batch_calculate_rsi(symbols)
         batch_time = time.perf_counter() - t0
-        
+
         # Time individual
         t0 = time.perf_counter()
         for _ in range(100):
             for prices in symbols.values():
                 strategy.calculate_latest_rsi(pd.Series(prices), return_prev=True)
         individual_time = time.perf_counter() - t0
-        
+
         # Batch should be faster (it avoids Pandas overhead)
         speedup = individual_time / batch_time
         print(f"\n  Batch: {batch_time:.3f}s | Individual: {individual_time:.3f}s | Speedup: {speedup:.1f}x")
@@ -392,15 +392,15 @@ class TestExistingRSIRegression:
         s = ExpiryRSIBreakout(make_config(period=11))
         prices_arr = generate_realistic_prices(200)
         prices_series = pd.Series(prices_arr)
-        
+
         result_arr = s.calculate_wilder_rsi(prices_arr)
         result_series = s.calculate_wilder_rsi(prices_series)
-        
+
         # Array returns raw values, Series returns pd.Series
         # Compare the valid (non-NaN) tail
         arr_tail = result_arr[-10:]
         series_tail = result_series.iloc[-10:].values
-        
+
         np.testing.assert_allclose(arr_tail, series_tail, atol=1e-10)
 
     def test_check_signal_with_rsi_values_parameter(self):

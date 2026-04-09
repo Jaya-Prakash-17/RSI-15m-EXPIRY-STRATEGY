@@ -1,6 +1,6 @@
 # Fix Prompt Guide — RSI-15m Expiry Breakout Bot (V16)
 
-> **Generated from:** Deep Audit & Readiness Report  
+> **Generated from:** Deep Audit & Readiness Report
 > **Priority System:** P0 = Must-fix before real money. P1 = Fix before scaling capital. P2 = Nice-to-have hardening.
 
 ---
@@ -27,12 +27,12 @@
 ```
 You are a Senior Quant Developer. Fix the following in live/live_trader.py:
 
-PROBLEM: The SQ_OFF block (lines ~1871-1957) and DAILY_LOSS_LIMIT block 
-(lines ~1959-2037) use bare `except: pass` when cancelling SL and target 
+PROBLEM: The SQ_OFF block (lines ~1871-1957) and DAILY_LOSS_LIMIT block
+(lines ~1959-2037) use bare `except: pass` when cancelling SL and target
 orders before placing the exit market order.
 
-If the cancel fails silently (e.g., network timeout, broker already processing 
-the SL order), the broker still has a live SL-M SELL order AND the bot places 
+If the cancel fails silently (e.g., network timeout, broker already processing
+the SL order), the broker still has a live SL-M SELL order AND the bot places
 a new MARKET SELL order. Both fill → net short position → catastrophic loss.
 
 FIX REQUIREMENTS:
@@ -58,10 +58,10 @@ Do NOT change any other logic. Do NOT modify the backtest engine.
 ```
 You are a Senior Quant Developer. Fix partial fill handling in live/live_trader.py.
 
-PROBLEM: In `_handle_tp_hit` (line ~1554), `qty_filled` is read from the 
-broker's order status. If the order is PARTIALLY_FILLED (e.g., 10 of 30 units 
-sold at TP1), the code treats it as if nothing happened (qty_filled could be 
-non-zero but not the full expected amount). The remaining unfilled units 
+PROBLEM: In `_handle_tp_hit` (line ~1554), `qty_filled` is read from the
+broker's order status. If the order is PARTIALLY_FILLED (e.g., 10 of 30 units
+sold at TP1), the code treats it as if nothing happened (qty_filled could be
+non-zero but not the full expected amount). The remaining unfilled units
 are not re-tracked.
 
 FIX REQUIREMENTS:
@@ -84,10 +84,10 @@ Do NOT change backtest engine. Do NOT change strategy logic.
 ### FIX #3 (P1): Enforce Config Safety Guards
 
 ```
-You are a Senior Quant Developer. Implement the following unenforced config 
+You are a Senior Quant Developer. Implement the following unenforced config
 guards in the RSI-15m bot:
 
-PROBLEM: config.yaml defines `max_position_pct: 0.8`, `max_lots: 5`, and 
+PROBLEM: config.yaml defines `max_position_pct: 0.8`, `max_lots: 5`, and
 `risk_per_trade_pct: 0.05` — but NO code reads or enforces them.
 
 FIX REQUIREMENTS:
@@ -96,12 +96,12 @@ FIX REQUIREMENTS:
       and cap to `max_lots`.
    b. Read `max_position_pct` from config. Calculate `max_cost = balance * max_position_pct`.
       If `cost > max_cost`, log WARNING and skip trade.
-   
+
 2. In `backtest/intraday_engine.py → _enter_trade()`:
    a. Apply the same `max_position_pct` guard using `self.capital` instead of broker balance.
 
-3. REMOVE `risk_per_trade_pct` from config.yaml and add a comment explaining 
-   that risk per trade is controlled by `safe_sl_max_loss` (Rs. amount) which 
+3. REMOVE `risk_per_trade_pct` from config.yaml and add a comment explaining
+   that risk per trade is controlled by `safe_sl_max_loss` (Rs. amount) which
    is more precise than percentage-based sizing for options.
 
 4. REMOVE `dynamic_sizing_enabled` placeholder from config.yaml (dead code).
@@ -116,14 +116,14 @@ Do NOT change strategy logic or reporting.
 ```
 You are a Senior Quant Developer. Add a global API rate limiter to core/groww_client.py.
 
-PROBLEM: No global rate limiting exists. During peak activity (16+ symbols, 
+PROBLEM: No global rate limiting exists. During peak activity (16+ symbols,
 order polling, LTP checks), the bot could exceed Groww's rate limits.
 
 FIX REQUIREMENTS:
 1. Add a `RateLimiter` class (or use `time.monotonic()` tracking) in groww_client.py.
-2. Enforce a maximum of 10 requests per second (configurable via config.yaml 
+2. Enforce a maximum of 10 requests per second (configurable via config.yaml
    under a new `api.max_requests_per_second` key, default 10).
-3. Apply the rate limiter inside `_safe_call()` — before every API call, 
+3. Apply the rate limiter inside `_safe_call()` — before every API call,
    check if we're within budget. If not, `time.sleep()` the minimum required.
 4. Log a WARNING when rate limiting kicks in (but only once per burst, not every call).
 5. The rate limiter must be thread-safe (use threading.Lock).
@@ -139,8 +139,8 @@ Do NOT change any business logic. Keep the change minimal and surgical.
 You are a Senior Quant Developer. Fix the intraday gap-down SL assumption in
 backtest/intraday_engine.py.
 
-PROBLEM: At line ~668, the code assumes all intraday (non-09:15) candles 
-fill SL at the exact SL price. But if a trading halt/circuit breaker causes 
+PROBLEM: At line ~668, the code assumes all intraday (non-09:15) candles
+fill SL at the exact SL price. But if a trading halt/circuit breaker causes
 the candle to open BELOW the SL, the real fill would be at the open price (worse).
 
 FIX:
@@ -158,10 +158,10 @@ Do NOT change live trader logic (live uses broker SL-M which fills at market).
 ### FIX #6 (P2): Optimize batch_calculate_rsi
 
 ```
-You are a Senior Quant Developer. Optimize `batch_calculate_rsi` in 
+You are a Senior Quant Developer. Optimize `batch_calculate_rsi` in
 strategy/expiry_rsi_breakout.py.
 
-PROBLEM: At lines 249-261, the previous RSI is calculated by re-running 
+PROBLEM: At lines 249-261, the previous RSI is calculated by re-running
 the ENTIRE smoothing loop stopping one step earlier. This doubles computation.
 
 FIX:
@@ -172,7 +172,7 @@ FIX:
    avg_g = avg_g * alpha + gains[i] * inv_n
    avg_l = avg_l * alpha + losses[i] * inv_n
    ```
-2. After the loop, compute both current_rsi (from avg_g, avg_l) and prev_rsi 
+2. After the loop, compute both current_rsi (from avg_g, avg_l) and prev_rsi
    (from prev_avg_g, prev_avg_l) in one pass.
 3. Remove the second loop entirely (lines 250-261).
 
@@ -187,9 +187,9 @@ Do NOT change `calculate_wilder_rsi` (used for backtesting).
 ```
 You are a Senior Quant Developer. Fix Telegram routing in live/live_trader.py.
 
-PROBLEM: Several calls use `self.telegram._send()` directly instead of 
-routing through `send_to_owner()` or the broadcast method. This causes 
-infrastructure alerts (expiry calendar failures, cancel failures, gap fill 
+PROBLEM: Several calls use `self.telegram._send()` directly instead of
+routing through `send_to_owner()` or the broadcast method. This causes
+infrastructure alerts (expiry calendar failures, cancel failures, gap fill
 aborts) to go to ALL chat IDs instead of only the owner.
 
 FIX:
@@ -197,7 +197,7 @@ FIX:
 2. Classify each as either:
    a. INFRA alert (calendar, auth, cancel fail, halt) → route to owner only
    b. TRADE alert (entry, exit, TP hit, SL hit) → route to all chat IDs
-3. Replace `self.telegram._send()` with `self.telegram.send_to_owner()` for 
+3. Replace `self.telegram._send()` with `self.telegram.send_to_owner()` for
    all infra alerts.
 4. Ensure `TelegramNotifier` has a `send_to_owner()` method that only sends
    to `self.owner_id`.

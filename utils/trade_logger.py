@@ -14,16 +14,16 @@ class TradeLogger:
     Logs all trades to a CSV file for audit and analysis.
     Thread-safe implementation for live trading.
     """
-    
+
     # CSV headers for trade log
     HEADERS = [
-        'timestamp', 'trade_id', 'mode', 'symbol', 'trading_symbol', 
-        'side', 'entry_time', 'entry_price', 'qty', 
-        'exit_time', 'exit_price', 'sl', 'target', 
+        'timestamp', 'trade_id', 'mode', 'symbol', 'trading_symbol',
+        'side', 'entry_time', 'entry_price', 'qty',
+        'exit_time', 'exit_price', 'sl', 'target',
         'reason', 'pnl', 'pnl_if_sl_hit', 'max_loss_savings',
         'remaining_qty', 'partial_pnl', 'daily_pnl', 'capital'
     ]
-    
+
     def __init__(self, config):
         self.logger = logging.getLogger("TradeLogger")
         self.config = config
@@ -31,17 +31,17 @@ class TradeLogger:
         self.lock = Lock()
         self.mode = 'PAPER' if config['trading'].get('paper_trading', True) else 'LIVE'
         self._ensure_file_exists()
-    
+
     def _ensure_file_exists(self):
         """Create log file with headers if it doesn't exist."""
         os.makedirs(os.path.dirname(self.filepath), exist_ok=True)
-        
+
         if not os.path.exists(self.filepath):
             with open(self.filepath, 'w', newline='') as f:
                 writer = csv.writer(f)
                 writer.writerow(self.HEADERS)
             self.logger.info(f"Created trade log file: {self.filepath}")
-    
+
     def log_entry(self, trade, daily_pnl=0, capital=0):
         """Log trade entry."""
         with self.lock:
@@ -69,10 +69,10 @@ class TradeLogger:
                 'capital': capital
             }
             self._write_row(row)
-    
+
     def log_exit(self, trade, daily_pnl=0, capital=0):
         """Log trade exit.
-        
+
         Args:
             trade: Trade dict with exit_price, exit_time, reason, pnl fields
             daily_pnl: Running daily P&L total
@@ -109,7 +109,7 @@ class TradeLogger:
                 'capital': capital
             }
             self._write_row(row)
-            
+
             # Log MAX_LOSS comparison
             if reason == 'MAX_LOSS':
                 self.logger.info(
@@ -118,7 +118,7 @@ class TradeLogger:
                     f"If SL hit: ₹{trade.get('pnl_if_sl_hit', 0):.2f} | "
                     f"Saved: ₹{trade.get('max_loss_savings', 0):.2f}"
                 )
-    
+
     def log_partial_exit(self, trade, exit_qty, exit_price, reason, partial_pnl, daily_pnl=0, capital=0):
         """Log partial exit."""
         with self.lock:
@@ -146,7 +146,7 @@ class TradeLogger:
                 'capital': capital
             }
             self._write_row(row)
-    
+
     def _write_row(self, row_dict):
         """Write a row to the CSV file."""
         try:
@@ -161,7 +161,7 @@ class BacktestTradeLogger(TradeLogger):
     """
     Trade logger for backtesting - logs all trades to a date-prefixed file.
     """
-    
+
     def __init__(self, config, backtest_date=None):
         # Override filepath for backtest
         date_str = backtest_date or datetime.now().strftime("%Y%m%d")

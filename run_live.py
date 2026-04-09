@@ -27,13 +27,13 @@ def acquire_single_instance_lock():
         # Create directory if it doesn't exist (handle non-standard systems)
         os.makedirs(os.path.dirname(LOCK_FILE), exist_ok=True)
         _lock_fd = open(LOCK_FILE, 'w')
-        
+
         if fcntl:
             fcntl.flock(_lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         else:
             import msvcrt
             msvcrt.locking(_lock_fd.fileno(), msvcrt.LK_NBLCK, 1)
-            
+
         _lock_fd.write(f"{os.getpid()}\n")
         _lock_fd.flush()
 
@@ -51,7 +51,7 @@ def acquire_single_instance_lock():
             if os.path.exists(LOCK_FILE):
                 try: os.unlink(LOCK_FILE)
                 except Exception: pass
-        
+
         atexit.register(release_lock)
         return _lock_fd
     except (IOError, OSError) as e:
@@ -61,7 +61,7 @@ def acquire_single_instance_lock():
                 existing_pid = f.read().strip()
         except Exception:
             existing_pid = "unknown"
-            
+
         print(
             f"\n❌ ERROR: Another instance of the RSI bot is already running (PID: {existing_pid}).\n"
             f"   If you are sure no other instance is running, delete the lock file:\n"
@@ -78,9 +78,9 @@ def setup_logging(log_file="live_trading.log"):
     log_dir = os.path.dirname(log_file)
     if log_dir:
         os.makedirs(log_dir, exist_ok=True)
-    
+
     fmt = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    
+
     # Rotating file handler: 50 MB per file, keep last 10 = 500 MB max
     file_handler = RotatingFileHandler(
         log_file,
@@ -89,10 +89,10 @@ def setup_logging(log_file="live_trading.log"):
         encoding='utf-8'
     )
     file_handler.setFormatter(fmt)
-    
+
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setFormatter(fmt)
-    
+
     root_logger = logging.getLogger()
     root_logger.setLevel(logging.INFO)
     root_logger.addHandler(file_handler)
@@ -101,20 +101,20 @@ def setup_logging(log_file="live_trading.log"):
 def validate_environment():
     """Validate environment before starting live trading."""
     logger = logging.getLogger("LiveRunner")
-    
+
     # Check for .env file
     if not os.path.exists(".env"):
         logger.critical("CRITICAL: .env file not found! Create .env with GROWW_API_KEY and GROWW_API_SECRET")
         return False
-    
+
     # Check for required environment variables
     api_key = os.getenv("GROWW_API_KEY")
     api_secret = os.getenv("GROWW_API_SECRET")
-    
+
     if not api_key or not api_secret:
         logger.critical("CRITICAL: GROWW_API_KEY and GROWW_API_SECRET must be set in .env file")
         return False
-    
+
     logger.info("✓ Environment validation passed")
     return True
 
@@ -187,14 +187,14 @@ def validate_config(config):
 
         sq_off_hard_limit = datetime.strptime("15:30", "%H:%M")  # market close
         sq_off_warn_limit = datetime.strptime("15:20", "%H:%M")  # Groww MIS cutoff
-        
+
         if sq_off > sq_off_hard_limit:
             logger.critical(
                 f"CRITICAL: auto_square_off ({win['auto_square_off']}) "
                 f"is after market close (15:30). This is invalid."
             )
             return False
-        
+
         if sq_off > sq_off_warn_limit:
             logger.warning(
                 f"WARNING: auto_square_off ({win['auto_square_off']}) is after "
@@ -236,14 +236,14 @@ def validate_config(config):
     # Uses a conservative premium of ₹200 (covers ATM options across NIFTY/BNF/SENSEX)
     CONSERVATIVE_PREMIUM = 200  # ₹ — conservative ATM option premium estimate
     lots_per_trade = config['strategy'].get('lots_per_trade', 1)
-    
+
     max_position_cost = 0
     for idx, details in config.get('indices', {}).items():
         ls = details.get('lot_size', 1)
         position_cost = lots_per_trade * ls * CONSERVATIVE_PREMIUM
         if position_cost > max_position_cost:
             max_position_cost = position_cost
-    
+
     if capital > 0 and max_position_cost > 0:
         position_cost_pct = (max_position_cost / capital) * 100
         if position_cost_pct > 30.0:
@@ -338,36 +338,36 @@ def signal_handler(sig, frame):
     """Handle Ctrl+C gracefully."""
     logger = logging.getLogger("LiveRunner")
     logger.info("Interrupted by user (Ctrl+C). Shutting down...")
-    
+
     # Notify owner via Telegram
     global trader_instance
     if trader_instance and hasattr(trader_instance, 'telegram'):
         trader_instance.telegram.alert_manual_shutdown()
-    
+
     logger.info("Alert sent to owner. Trades remain OPEN for manual management. Exiting.")
     sys.exit(0)
 
 def main():
     global trader_instance
-    
+
     # Ensure only one instance runs
     acquire_single_instance_lock()
-    
+
     # Setup signal handler
     signal.signal(signal.SIGINT, signal_handler)
-    
+
     setup_logging()
     logger = logging.getLogger("LiveRunner")
-    
+
     logger.info("=" * 60)
     logger.info(" LIVE TRADING BOT - STARTING")
     logger.info("=" * 60)
-    
+
     # Validate environment
     if not validate_environment():
         logger.critical("Environment validation failed. Exiting.")
         sys.exit(1)
-    
+
     # Load configuration
     try:
         with open("config.yaml", "r") as f:
@@ -375,7 +375,7 @@ def main():
     except Exception as e:
         logger.critical(f"Failed to load config.yaml: {e}")
         sys.exit(1)
-    
+
     # Validate configuration
     if not validate_config(config):
         logger.critical("Configuration validation failed. Exiting.")
@@ -419,7 +419,7 @@ def main():
     logger.warning(f" Max Loss Per Day: ₹{config['risk']['max_loss_per_day']}")
     logger.warning(f" Capital: ₹{config['capital']['initial']}")
     logger.warning("=" * 60)
-    
+
     # Run trading bot
     try:
         logger.info("Starting trading loop...")

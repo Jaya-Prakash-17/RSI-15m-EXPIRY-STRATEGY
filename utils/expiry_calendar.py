@@ -359,14 +359,14 @@ def run_startup_assertions():
     Called at bot startup. Raises AssertionError if calendar is broken.
     """
     from datetime import date
-    
+
     # NIFTY Tuesday era (Post Sep 2025)
     assert is_expiry_day('NIFTY', date(2026, 1, 6)) == True, "NIFTY Tue Jan 2026 should be expiry"
     assert is_expiry_day('NIFTY', date(2026, 1, 7)) == False, "NIFTY Wed Jan 2026 should not be expiry"
-    
+
     # SENSEX Thursday era (Post Sep 2025)
     assert is_expiry_day('SENSEX', date(2026, 3, 5)) == True, "SENSEX Thu Mar 2026 should be expiry"
-    
+
     # BANKNIFTY Last Tuesday (Post Sep 2025)
     assert is_expiry_day('BANKNIFTY', date(2026, 1, 27)) == True, "BANKNIFTY Last Tue Jan 2026 should be expiry"
 

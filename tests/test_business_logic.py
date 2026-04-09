@@ -187,7 +187,7 @@ def test_effective_sl_assertion_runs_on_malformed_symbol():
     config['strategy']['safe_sl_max_loss'] = 2000
     config['strategy']['lots_per_trade'] = 1
     s = ExpiryRSIBreakout(config)
-    
+
     # Use a valid symbol to confirm normal calculation works
     sl, is_safe, raw_sl = s._calculate_effective_sl(
         'NSE-NIFTY-25Mar26-22500-CE', 150.0, 135.0
