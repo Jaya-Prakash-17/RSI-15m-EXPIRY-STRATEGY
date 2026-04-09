@@ -46,20 +46,14 @@ class TelegramNotifier:
     """
 
     def __init__(self, config=None):
-        import yaml
-        if config is None:
-            config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config.yaml")
-            try:
-                with open(config_path, "r") as f:
-                    config = yaml.safe_load(f)
-            except Exception:
-                config = {}
-                
-        tele_cfg = config.get("telegram", {})
-        self.token = tele_cfg.get("bot_token")
-        raw_ids = str(tele_cfg.get("chat_ids", ""))
+        import os
+        from dotenv import load_dotenv
+        load_dotenv()
+        
+        self.token = os.environ.get("TELEGRAM_BOT_TOKEN")
+        raw_ids = str(os.environ.get("TELEGRAM_CHAT_ID", ""))
         self.chat_ids = [cid.strip() for cid in raw_ids.split(",") if cid.strip()]
-        self.owner_id = str(tele_cfg.get("owner_id", "")).strip()
+        self.owner_id = str(os.environ.get("TELEGRAM_OWNER_ID", "")).strip()
         self.logger = logging.getLogger("TelegramNotifier")
 
         self.enabled = bool(self.token and self.chat_ids)
@@ -67,8 +61,8 @@ class TelegramNotifier:
             self.logger.info(f"✅ Telegram notifications enabled for {len(self.chat_ids)} chat(s)")
         else:
             self.logger.warning(
-                "⚠️  Telegram not configured — add bot_token and "
-                "chat_ids to your config.yaml file under 'telegram'"
+                "⚠️  Telegram not configured — add TELEGRAM_BOT_TOKEN and "
+                "TELEGRAM_CHAT_ID to your .env file"
             )
 
     # ─────────────────────────────────────────────

@@ -92,7 +92,3 @@ trading:
     end: '13:45'                     # Trading window end (IST)
     auto_square_off: '15:15'         # Force close all positions at this time (IST)
 
-telegram:
-  bot_token: '***REDACTED_TOKEN***'
-  chat_ids: '***REDACTED_CHAT_IDS***'
-  owner_id: '***REDACTED_OWNER_ID***'
