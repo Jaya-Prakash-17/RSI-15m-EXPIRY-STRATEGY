@@ -2,8 +2,8 @@
 
 # Backtest Settings
 backtest:
-  start_date: '2026-04-09'           # Backtest start (YYYY-MM-DD)
-  end_date: '2026-04-09'             # Backtest end (YYYY-MM-DD)
+  start_date: '2020-01-10'           # Backtest start (YYYY-MM-DD)
+  end_date: '2020-12-31'             # Backtest end (YYYY-MM-DD)
   offline_mode: false                 # Run using local data files
 
 # Capital Configuration
@@ -34,10 +34,10 @@ indices:
     expiry_day: Tuesday
     lot_size: 65
     tick_size: 0.05
-  # SENSEX:
-  #   expiry_day: Thursday
-  #   lot_size: 20
-  #   tick_size: 0.05
+  SENSEX:
+    expiry_day: Thursday
+    lot_size: 20
+    tick_size: 0.05
 
 # Performance Reporting
 reporting:
