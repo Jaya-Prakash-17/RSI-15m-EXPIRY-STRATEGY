@@ -1,0 +1,46 @@
+# .antigravityignore — antigravity engine ignore file
+# Place at: PROJECT ROOT
+# Same rules as .graphignore — antigravity checks this filename specifically.
+
+# DATA (kills performance — thousands of CSV files)
+data/spot/
+data/derivatives/
+data/**/*.csv
+data/**/*.tmp
+data/*.json
+
+# REPORTS (generated artifacts)
+reports/
+*.html
+*.png
+*.jpg
+
+# LOGS
+logs/
+*.log
+
+# PYTHON ARTIFACTS
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+
+# ENVIRONMENTS & SECRETS
+venv/
+env/
+.venv/
+.env
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+.pytest_cache/
+.coverage
+htmlcov/
+.agent/
+.gemini/

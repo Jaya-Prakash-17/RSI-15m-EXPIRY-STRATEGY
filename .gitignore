@@ -31,3 +31,5 @@ compare_output.txt
 .vscode/
 .idea/
 .pytest_cache/
+node-local/
+scratch/

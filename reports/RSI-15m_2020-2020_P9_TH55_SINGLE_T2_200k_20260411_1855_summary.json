@@ -1,0 +1,187 @@
+{
+  "config": {
+    "backtest": {
+      "start_date": "2020-01-01",
+      "end_date": "2020-01-10",
+      "offline_mode": true
+    },
+    "capital": {
+      "initial": 200000
+    },
+    "charges": {
+      "brokerage_per_trade": 20,
+      "exchange_txn_fee": 0.0006,
+      "gst": 0.2,
+      "sebi_charges": 3e-06,
+      "stamp_duty": 6e-05,
+      "stt": 0.001
+    },
+    "data": {
+      "download_retry_count": 3,
+      "storage_path": "data"
+    },
+    "indices": {
+      "BANKNIFTY": {
+        "expiry_day": "Tuesday",
+        "lot_size": 30,
+        "tick_size": 0.05
+      },
+      "NIFTY": {
+        "expiry_day": "Tuesday",
+        "lot_size": 65,
+        "tick_size": 0.05
+      },
+      "SENSEX": {
+        "expiry_day": "Thursday",
+        "lot_size": 20,
+        "tick_size": 0.05
+      }
+    },
+    "reporting": {
+      "slippage_buffer_enabled": true,
+      "slippage_buffer_per_trade": 65,
+      "slippage_model": "position_scaled",
+      "slippage_ticks_per_side": 1,
+      "slippage_min_per_trade": 50,
+      "slippage_max_per_trade": 500
+    },
+    "risk": {
+      "consecutive_loss_cooldown": 2,
+      "max_consecutive_losses": 3,
+      "max_loss_per_day": 6000
+    },
+    "strategy": {
+      "alert_validity": 1,
+      "direction_filter_enabled": false,
+      "exit_mode": "single_lot",
+      "lots_per_trade": 3,
+      "max_correlated_positions": 2,
+      "max_lots": 5,
+      "max_position_pct": 0.8,
+      "min_sl_pct": 0.1,
+      "min_alert_range_points": 0.5,
+      "min_volume_candles_pct": 0.0,
+      "rsi": {
+        "min_candles_for_signal": 33,
+        "period": 9,
+        "threshold": 55,
+        "warmup_periods": 100
+      },
+      "rsi_debug": false,
+      "safe_sl_max_loss": 8000,
+      "safe_sl_mode": true,
+      "signal_window_start": "10:00",
+      "signal_window_end": "13:30",
+      "single_lot_exit_target": 2,
+      "strike_range": 3,
+      "trade_only_on_expiry": false
+    },
+    "trading": {
+      "order_poll_interval_seconds": 5,
+      "paper_trading": true,
+      "trade_log_file": "logs/PAPER_TRADES_LOG.csv",
+      "window": {
+        "start": "09:45",
+        "end": "13:45",
+        "auto_square_off": "15:15"
+      }
+    }
+  },
+  "summary": {
+    "total_trades": 2,
+    "winning_trades": 2,
+    "losing_trades": 0,
+    "win_rate": 100.0,
+    "total_pnl": 5330.04,
+    "avg_pnl_per_trade": 2665.02,
+    "avg_win": 2665.02,
+    "avg_loss": 0,
+    "largest_win": 3663.93,
+    "largest_loss": 1666.11,
+    "profit_factor": 5330.04,
+    "risk_reward_ratio": 0,
+    "expectancy": 2665.02,
+    "max_drawdown": 0.0,
+    "max_drawdown_pct": 0.0,
+    "sharpe_ratio": 42.18,
+    "sortino_ratio": 0,
+    "calmar_ratio": 0,
+    "max_win_streak": 2,
+    "max_loss_streak": 0,
+    "avg_holding_mins": 15.0,
+    "avg_capital_deployed": 22291.88,
+    "max_capital_deployed": 31500.0,
+    "pnl_std_dev": 1412.67
+  },
+  "charges_total": 217.46,
+  "trades": [
+    {
+      "symbol": "NSE-BANKNIFTY-30Jan20-32100-PE",
+      "entry_time": "2020-01-10 13:45:00",
+      "entry_candle_datetime": "2020-01-10 13:30:00",
+      "entry_price": 420.0,
+      "sl": 420.0,
+      "targets": [
+        440.0,
+        460.0,
+        480.0
+      ],
+      "qty": 75,
+      "status": "CLOSED",
+      "pnl": 3847.500000000001,
+      "cost": 31500.0,
+      "underlying": "BANKNIFTY",
+      "lot_size": 25,
+      "running_capital": 203847.5,
+      "is_safe_sl_applied": true,
+      "raw_sl": 399.0,
+      "remaining_qty": 75,
+      "tp_hits": 1,
+      "partial_pnl": 0,
+      "original_sl": 378.0,
+      "alert_range": 20.0,
+      "exit_time": "2020-01-10 14:00:00",
+      "exit_price": 471.3,
+      "reason": "TP2",
+      "charges": 133.5682425,
+      "pnl_gross": 3847.500000000001,
+      "slippage": 50.0,
+      "pnl_net": 3663.931757500001,
+      "duration": 15.0
+    },
+    {
+      "symbol": "NSE-NIFTY-16Jan20-12250-PE",
+      "entry_time": "2020-01-10 13:45:00",
+      "entry_candle_datetime": "2020-01-10 13:30:00",
+      "entry_price": 58.150000000000006,
+      "sl": 58.150000000000006,
+      "targets": [
+        62.150000000000006,
+        66.15,
+        70.15
+      ],
+      "qty": 225,
+      "status": "CLOSED",
+      "pnl": 1800.0,
+      "cost": 13083.750000000002,
+      "underlying": "NIFTY",
+      "lot_size": 75,
+      "running_capital": 205647.5,
+      "is_safe_sl_applied": true,
+      "raw_sl": 53.15,
+      "remaining_qty": 225,
+      "tp_hits": 1,
+      "partial_pnl": 0,
+      "original_sl": 52.35,
+      "alert_range": 4.0,
+      "exit_time": "2020-01-10 14:00:00",
+      "exit_price": 66.15,
+      "reason": "TP2",
+      "charges": 83.8892775,
+      "pnl_gross": 1800.0,
+      "slippage": 50.0,
+      "pnl_net": 1666.1107225,
+      "duration": 15.0
+    }
+  ]
+}

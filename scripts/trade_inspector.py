@@ -9,9 +9,14 @@ from datetime import datetime, timedelta
 
 def calculate_rsi(series, period=11):
     delta = series.diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-    rs = gain / loss
+    gain = delta.where(delta > 0, 0)
+    loss = -delta.where(delta < 0, 0)
+
+    # Wilder's smoothing Parity
+    avg_gain = gain.ewm(alpha=1/period, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1/period, adjust=False).mean()
+
+    rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
 
 def generate_inspector_dashboard(summary_json_path):
@@ -81,6 +86,8 @@ def generate_inspector_dashboard(summary_json_path):
             x=plot_df['datetime'], open=plot_df['open'], high=plot_df['high'],
             low=plot_df['low'], close=plot_df['close'],
             increasing_line_color='#089981', decreasing_line_color='#f23645',
+            increasing_fillcolor='#089981', decreasing_fillcolor='#f23645',
+            line=dict(width=1),
             name="Price"
         ), row=1, col=1)
 
@@ -126,9 +133,14 @@ def generate_inspector_dashboard(summary_json_path):
                           bgcolor="#f23645", font=dict(color="white"), row=1, col=1)
 
         # RSI
-        fig.add_trace(go.Scatter(x=plot_df['datetime'], y=plot_df['RSI'], line=dict(color='#7e57c2')), row=2, col=1)
+        fig.add_trace(go.Scatter(x=plot_df['datetime'], y=plot_df['RSI'],
+                                 line=dict(color='#7e57c2', width=1.5),
+                                 name="RSI"), row=2, col=1)
         for lvl in [30, 40, 50, 60, 70]:
             fig.add_hline(y=lvl, line=dict(color='#2a2e39', width=1, dash='dot'), row=2, col=1)
+
+        # RSI range coloring
+        fig.add_hrect(y0=40, y1=60, fillcolor="rgba(126, 87, 194, 0.05)", line_width=0, row=2, col=1)
 
         fig.update_layout(
             template="plotly_dark", paper_bgcolor="#131722", plot_bgcolor="#131722",
@@ -140,14 +152,39 @@ def generate_inspector_dashboard(summary_json_path):
         chart_html = fig.to_html(full_html=False, include_plotlyjs='cdn' if i == 0 else False)
         pnl_class = "pnl-pos" if trade.get('pnl_net', 0) >= 0 else "pnl-neg"
 
+        # Format targets if multi-lot
+        target_html = ""
+        if 'targets' in trade and isinstance(trade['targets'], list):
+            for j, t in enumerate(trade['targets']):
+                target_html += f'<div class="stat-item"><span class="stat-label">Target {j+1}</span><span class="stat-value">₹{t:.2f}</span></div>'
+
         trade_html = f"""
         <div class="trade-row">
             <div class="chart-col">{chart_html}</div>
             <div class="stats-col">
-                <h3 style="margin-top:0">{symbol}</h3>
-                <div class="stat-item"><span class="stat-label">Alert Candle</span><span class="stat-value">{trade['entry_candle_datetime']}</span></div>
-                <div class="stat-item"><span class="stat-label">Entry Fill</span><span class="stat-value">{trade['entry_time']}</span></div>
-                <div class="stat-item"><span class="stat-label">Net PnL</span><span class="stat-value {pnl_class}">₹{trade.get('pnl_net', 0):.2f}</span></div>
+                <h2 style="margin-top:0; color:#ffd700;">{symbol}</h2>
+                <div style="margin-bottom:15px; font-size:12px; color:#8892b0;">Trade #{i+1}</div>
+
+                <div class="stat-item"><span class="stat-label">Alert Candle</span><span class="stat-value">{trade.get('entry_candle_datetime', 'N/A')}</span></div>
+                <div class="stat-item"><span class="stat-label">Entry Time</span><span class="stat-value">{trade.get('entry_time', 'N/A')}</span></div>
+                <div class="stat-item"><span class="stat-label">Entry Price</span><span class="stat-value">₹{trade.get('entry_price', 0):.2f}</span></div>
+
+                <div style="margin: 10px 0; border-top: 1px dashed #2a2e39;"></div>
+
+                <div class="stat-item"><span class="stat-label">Stop Loss</span><span class="stat-value" style="color:#ff4757;">₹{trade.get('sl', 0):.2f}</span></div>
+                {target_html}
+
+                <div style="margin: 10px 0; border-top: 1px dashed #2a2e39;"></div>
+
+                <div class="stat-item"><span class="stat-label">Exit Time</span><span class="stat-value">{trade.get('exit_time', 'N/A')}</span></div>
+                <div class="stat-item"><span class="stat-label">Exit Price</span><span class="stat-value">₹{trade.get('exit_price', 0):.2f}</span></div>
+                <div class="stat-item"><span class="stat-label">Reason</span><span class="stat-value">{trade.get('reason', 'N/A')}</span></div>
+                <div class="stat-item"><span class="stat-label">Quantity</span><span class="stat-value">{trade.get('qty', 0)}</span></div>
+
+                <div style="margin: 15px 0; padding:10px; background:#0f3460; border-radius:4px; text-align:center;">
+                    <div class="stat-label" style="font-size:11px; margin-bottom:5px;">NET PNL</div>
+                    <div class="stat-value {pnl_class}" style="font-size:20px;">₹{trade.get('pnl_net', 0):,.2f}</div>
+                </div>
             </div>
         </div>
         """
@@ -157,6 +194,7 @@ def generate_inspector_dashboard(summary_json_path):
     with open(output_html, 'w', encoding='utf-8') as f:
         f.write("\n".join(html_content))
     print(f"DONE: Inspection report saved to {output_html}")
+    return output_html
 
 if __name__ == "__main__":
     report = None

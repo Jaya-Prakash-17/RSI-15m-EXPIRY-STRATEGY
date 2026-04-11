@@ -449,7 +449,27 @@ class PerformanceReporter:
 
             # Generate interactive HTML report
             html_filename = os.path.join(self.reports_dir, f"{prefix}.html")
-            self._generate_html_report(trades_df, stats, html_filename)
+
+            # Generate Visual Trade Inspection Report (Detailed Charts)
+            inspection_url = None
+            try:
+                # Dynamic import to avoid circular dependency or path issues
+                import sys
+                from pathlib import Path
+                root = str(Path(__file__).parent.parent)
+                if root not in sys.path: sys.path.append(root)
+
+                from scripts.trade_inspector import generate_inspector_dashboard
+                # The inspector expects the JSON path
+                inspection_path = generate_inspector_dashboard(json_filename)
+                if inspection_path:
+                    # Create relative path for HTML linking (force forward slashes for web compatibility)
+                    rel_path = os.path.relpath(inspection_path, self.reports_dir)
+                    inspection_url = rel_path.replace("\\", "/")
+            except Exception as e:
+                self.logger.warning(f"Trade Inspector failed: {e}")
+
+            self._generate_html_report(trades_df, stats, html_filename, inspection_url=inspection_url)
             self.logger.info(f"HTML report saved to: {html_filename}")
 
             print(f"\n Reports saved to '{self.reports_dir}' directory")
@@ -679,7 +699,8 @@ class PerformanceReporter:
         self,
         trades_df: pd.DataFrame,
         stats: dict,
-        filepath: str
+        filepath: str,
+        inspection_url: str = None
     ) -> str:
         """
         Generate an interactive HTML dashboard using Plotly.
@@ -888,6 +909,8 @@ class PerformanceReporter:
             )
         ), row=4, col=1)
 
+        # (Note: Deep Inspection button is injected as raw HTML later in this function)
+
         # Layout styling
         pnl_sign = '+' if net_pnl >= 0 else ''
         fig.update_layout(
@@ -908,8 +931,44 @@ class PerformanceReporter:
             barmode='overlay'
         )
 
-        # Write HTML
-        fig.write_html(filepath, include_plotlyjs='cdn', full_html=True)
+        # Save the figure to HTML
+        fig.write_html(filepath, include_plotlyjs='cdn')
+
+        # Robust Inject: If inspection_url is provided, inject a real HTML button at the top
+        if inspection_url:
+            try:
+                with open(filepath, 'r', encoding='utf-8') as f:
+                    content = f.read()
+
+                # Floating button style
+                button_html = f"""
+                <div style="position: fixed; top: 20px; right: 20px; z-index: 9999;">
+                    <a href="{inspection_url}" target="_blank" style="
+                        background-color: #ffd700;
+                        color: #1a1a2e;
+                        padding: 12px 24px;
+                        border-radius: 8px;
+                        text-decoration: none;
+                        font-weight: bold;
+                        font-family: sans-serif;
+                        box-shadow: 0 4px 15px rgba(0,0,0,0.5);
+                        border: 2px solid #fff;
+                        display: block;
+                        transition: transform 0.2s;
+                    " onmouseover="this.style.transform='scale(1.05)'" onmouseout="this.style.transform='scale(1)'">
+                        🔥 Deep Inspect Individual Trades
+                    </a>
+                </div>
+                """
+
+                # Insert right after <body>
+                if '<body>' in content:
+                    new_content = content.replace('<body>', f'<body>{button_html}')
+                    with open(filepath, 'w', encoding='utf-8') as f:
+                        f.write(new_content)
+                self.logger.info(f"Injected Deep Inspect button into {filepath}")
+            except Exception as e:
+                self.logger.warning(f"Failed to inject button: {e}")
 
         # Auto-open in browser
         try:

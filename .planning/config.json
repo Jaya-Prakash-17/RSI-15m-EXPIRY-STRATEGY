@@ -1,0 +1,10 @@
+{
+  "project_name": "RSI Expiry Trading Bot",
+  "milestone_version": "1.0",
+  "workflow": {
+    "discuss_mode": "power"
+  },
+  "intel": {
+    "enabled": true
+  }
+}

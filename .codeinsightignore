@@ -1,0 +1,19 @@
+# .codeinsightignore
+# Place at: PROJECT ROOT
+# Used by some AI code analysis tools as a fallback ignore filename.
+
+data/
+reports/
+logs/
+venv/
+env/
+__pycache__/
+*.pyc
+*.log
+*.csv
+*.html
+*.png
+.env
+.vscode/
+.idea/
+.pytest_cache/
