@@ -8,11 +8,16 @@ def is_order_filled(status: str) -> bool:
     """
     Unified order fill check.
     Covers all Groww API status string variants.
-    Use this everywhere instead of inline status string comparisons.
     """
     if not status:
         return False
     return status.upper() in {'COMPLETE', 'FILLED', 'EXECUTED', 'COMPLETED'}
+
+def is_partially_filled(status: str) -> bool:
+    """Check for partial fill status."""
+    if not status:
+        return False
+    return status.upper() in {'PARTIALLY_FILLED', 'PARTIAL'}
 
 class OrderManager:
     def __init__(self, config):
@@ -115,7 +120,7 @@ class OrderManager:
                 self.logger.info(f"Order {order_id} FILLED: Qty={filled_qty}, Price=₹{fill_price}")
                 return fill_price  # Returning just price for backward compatibility
 
-            elif s == 'PARTIALLY_FILLED':
+            elif is_partially_filled(s):
                 # For options, partial fills are rare, but handle it
                 self.logger.warning(f"Order {order_id} PARTIALLY FILLED: {filled_qty} filled")
                 # Wait a bit more to see if it completes
@@ -182,15 +187,6 @@ class OrderManager:
     def place_partial_exits(self, symbol, trading_symbol, signal, entry_price):
         """
         Place partial exit orders for multi-lot mode.
-
-        Args:
-            symbol: Base symbol (e.g., 'NSE-BANKNIFTY-27Jan26-59700-PE')
-            trading_symbol: Broker trading symbol
-            signal: Entry signal with targets and exit config
-            entry_price: Actual entry fill price
-
-        Returns:
-            dict: Exit orders info with order IDs and tracking state
         """
         exit_mode = signal.get('exit_mode', 'multi_lot')
         lots = signal.get('lots_per_trade', 3)
@@ -252,7 +248,7 @@ class OrderManager:
                 })
 
         elif exit_mode == 'single_lot':
-            # CRITICAL FIX #4: Use config-driven target, aligned with _handle_single_lot_exits
+            # CRITICAL FIX #4: Use config-driven target
             target_idx = self.config.get('strategy', {}).get('single_lot_exit_target', 2) - 1
             target_price = targets[target_idx] if target_idx < len(targets) else targets[-1]
             tp_level = target_idx + 1
@@ -284,31 +280,12 @@ class OrderManager:
     def execute_partial_exit(self, symbol, trading_symbol, quantity, reason="TARGET"):
         """
         Execute a partial exit (market order).
-
-        Args:
-            symbol: Symbol to exit
-            trading_symbol: Trading symbol for API
-            quantity: Number of lots to exit
-            reason: Exit reason for logging
-
-        Returns:
-            Order response or None
         """
         return self.place_exit_order(symbol, quantity, trading_symbol, reason)
 
     def place_sl_order(self, symbol, qty, trigger_price, trading_symbol):
         """
         Place a broker-side Stop Loss order.
-        This order persists with the broker even if bot crashes.
-
-        Args:
-            symbol: Option symbol
-            qty: Quantity to sell on SL trigger
-            trigger_price: Price at which SL triggers
-            trading_symbol: Trading symbol for API
-
-        Returns:
-            Order response with groww_order_id for tracking
         """
         self.logger.info(f"Placing SL Order: {symbol} | Trigger: ₹{trigger_price} | Qty: {qty}")
 
@@ -341,14 +318,6 @@ class OrderManager:
     def modify_sl_order(self, order_id, new_trigger_price, new_qty=None):
         """
         Modify an existing SL order (for trailing SL).
-
-        Args:
-            order_id: groww_order_id of the SL order
-            new_trigger_price: New trigger price for trailing
-            new_qty: New quantity (optional, for partial exits)
-
-        Returns:
-            Modified order response or None
         """
         self.logger.info(f"Modifying SL Order {order_id} → New Trigger: ₹{new_trigger_price}")
 
@@ -372,13 +341,6 @@ class OrderManager:
     def cancel_sl_order(self, order_id):
         """
         Cancel an existing SL order.
-        Called when target is hit or position is closed manually.
-
-        Args:
-            order_id: groww_order_id of the SL order to cancel
-
-        Returns:
-            Cancellation response or None
         """
         self.logger.info(f"Cancelling SL Order: {order_id}")
 
@@ -399,16 +361,6 @@ class OrderManager:
     def place_target_order(self, symbol, qty, target_price, trading_symbol):
         """
         Place a broker-side Target (limit sell) order.
-        This order remains pending until price reaches target.
-
-        Args:
-            symbol: Option symbol
-            qty: Quantity to sell at target
-            target_price: Price at which to sell (limit price)
-            trading_symbol: Trading symbol for API
-
-        Returns:
-            Order response with groww_order_id for tracking
         """
         self.logger.info(f"Placing Target Order: {symbol} | Target: ₹{target_price} | Qty: {qty}")
 
@@ -441,12 +393,6 @@ class OrderManager:
     def cancel_order(self, order_id):
         """
         Cancel any pending order by its order ID.
-
-        Args:
-            order_id: groww_order_id of the order to cancel
-
-        Returns:
-            Cancellation response or None
         """
         self.logger.info(f"Cancelling Order: {order_id}")
 

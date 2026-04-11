@@ -5,6 +5,8 @@ scattered across backtest/intraday_engine.py, execution/order_manager.py, and li
 """
 
 
+from datetime import datetime
+
 def detect_underlying(symbol: str) -> str:
     """
     Detect underlying index from a Groww option symbol.
@@ -46,7 +48,6 @@ def build_option_symbol(underlying: str, expiry_date, strike: float, opt_type: s
     Constructs a standardized option symbol used across backtesting, live trading, and data files.
     Format: {EXCHANGE}-{UNDERLYING}-{DDMMMyy}-{STRIKE}-{OPT_TYPE}
     """
-    from datetime import datetime
     if isinstance(expiry_date, str):
         date_str = expiry_date
     else:

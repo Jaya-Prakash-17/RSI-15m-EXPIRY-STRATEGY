@@ -25,8 +25,8 @@ MARKET_OPEN_IST = datetime_time(9, 15)    # 9:15 AM IST
 MARKET_CLOSE_IST = datetime_time(15, 30)  # 3:30 PM IST
 
 # Operational Kill Switch — Touch this file to force graceful shutdown
-# e.g., touch /tmp/rsi_bot_kill
-KILL_SWITCH_FILE = '/tmp/rsi_bot_kill'
+# e.g., touch /tmp/rsi_bot_kill (Linux) or %TEMP%\rsi_bot_kill (Windows)
+KILL_SWITCH_FILE = os.path.join(tempfile.gettempdir(), 'rsi_bot_kill')
 
 # ─── P-18: Named constants (no more magic numbers in loops) ──
 MAIN_LOOP_SLEEP_SECONDS    = 1   # Main while-True polling cadence
@@ -463,8 +463,9 @@ class LiveTrader:
             expiry_date = self.expiry_dates.get(underlying, datetime.now().date())
 
             try:
-                # Fetch spot data with warmup
-                spot_df = self.dm.get_spot_candles(spot_symbol, warmup_start, now, refresh=True)
+                # V16-BUG-002: Use refresh=True ONLY on the first underlying or a global sync
+                # Passing refresh=True on every call re-parses CSV and checks gaps unnecessarily.
+                spot_df = self.dm.get_spot_candles(spot_symbol, warmup_start, now, refresh=(underlying == self.underlyings[0]))
             except Exception as e:
                 self.logger.error(f"Failed to fetch spot data for {underlying}: {e}")
                 continue
@@ -1019,7 +1020,7 @@ class LiveTrader:
     # Superseded by _place_pending_entry() + _activate_trade_from_pending().
     # The old method used a global trade guard that blocked multi-index trading.
 
-    def _activate_trade_from_pending(self, pending, fill_price):
+    def _activate_trade_from_pending(self, pending, fill_price, override_qty=None):
         """Activate a trade after pending entry order is filled.
 
         Includes a GAP-FILL guard to protect against excessive slippage on open.
@@ -1027,7 +1028,7 @@ class LiveTrader:
         order_id = pending['order_id']
         underlying = pending['underlying']
         signal = pending['signal']
-        qty = pending['qty']
+        qty = override_qty if override_qty is not None else pending['qty']
         trading_symbol = pending['trading_symbol']
         original_symbol = pending.get('original_symbol', trading_symbol)
         trigger_price = float(pending['trigger_price'])
@@ -1248,10 +1249,20 @@ class LiveTrader:
                     self._save_strategy_state()
 
                 elif status in ('CANCELLED', 'REJECTED', 'EXPIRED'):
-                    self.logger.warning(
-                        f"⚠️ Pending entry {order_id} was {status} for {symbol}. "
-                        f"No position opened."
-                    )
+                    # BUG-001: Check for partial fill before total cleanup
+                    filled_qty = int(order_status.get('filled_quantity', 0))
+                    if filled_qty > 0:
+                        self.logger.warning(
+                            f"🔔 Partial Entry detected for {symbol} ({filled_qty} units). "
+                            f"Order was {status}, but partial fill occurred. Activating Stub Trade."
+                        )
+                        fill_price = order_status.get('fill_price') or pending['trigger_price']
+                        self._activate_trade_from_pending(pending, fill_price=fill_price, override_qty=filled_qty)
+                    else:
+                        self.logger.warning(
+                            f"⚠️ Pending entry {order_id} was {status} for {symbol}. "
+                            f"No position opened."
+                        )
                     # Notify trader
                     self.telegram._send(
                         f"⚠️ <b>Entry Order {status}</b>\n"
@@ -1975,13 +1986,12 @@ class LiveTrader:
                             'paper_trading': self.paper_trading,
                             'uptime_seconds': (now - session_start_time).total_seconds()
                         }
-                        # Create /tmp directory if it doesn't exist (e.g. on Windows)
-                        import os
-                        os.makedirs('/tmp', exist_ok=True)
-                        with open('/tmp/rsi_bot_heartbeat.json', 'w') as hf:
+                        # Use cross-platform temporary directory
+                        heartbeat_path = os.path.join(tempfile.gettempdir(), 'rsi_bot_heartbeat.json')
+                        with open(heartbeat_path, 'w') as hf:
                             json.dump(heartbeat_data, hf)
-                    except Exception:
-                        pass  # Heartbeat write failure is never fatal
+                    except Exception as e:
+                        self.logger.debug(f"Heartbeat write failed: {e}")
 
                     # Circuit breaker awareness
                     if not self._is_market_open():

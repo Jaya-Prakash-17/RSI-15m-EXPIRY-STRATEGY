@@ -1,0 +1,41 @@
+{
+  "include": [
+    "strategy",
+    "backtest",
+    "live",
+    "core",
+    "data",
+    "execution",
+    "reporting",
+    "utils",
+    "scripts",
+    "tests",
+    "run_backtest.py",
+    "run_live.py",
+    "daily_reconcile.py"
+  ],
+  "exclude": [
+    "venv",
+    "env",
+    ".venv",
+    "build",
+    "dist",
+    "__pycache__",
+    "data/spot",
+    "data/derivatives",
+    "reports",
+    "logs"
+  ],
+  "ignore": [
+    "data/spot",
+    "data/derivatives",
+    "reports",
+    "logs"
+  ],
+  "pythonVersion": "3.11",
+  "pythonPlatform": "Linux",
+  "typeCheckingMode": "basic",
+  "useLibraryCodeForTypes": true,
+  "reportMissingImports": "warning",
+  "reportMissingModuleSource": "none"
+}

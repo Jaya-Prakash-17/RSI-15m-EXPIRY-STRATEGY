@@ -47,7 +47,7 @@ class DataManager:
 
         df = df.copy()
         df['date'] = df['datetime'].dt.date
-        actual_days = sorted(df['date'].unique())
+        actual_days = set(df['date'].unique())
 
         # Determine expected trading days (Monday-Friday)
         expected_days = pd.date_range(start=start_date, end=end_date, freq='B').date
@@ -170,6 +170,8 @@ class DataManager:
                 self.logger.warning(f"CSV file is empty: {filepath}")
                 return pd.DataFrame()  # Not cached — retry on next call
             df['datetime'] = pd.to_datetime(df['datetime'])
+            if not df.empty:
+                df = df.sort_values('datetime').reset_index(drop=True)
             self.data_cache[filepath] = df
             return df
         except pd.errors.EmptyDataError:
@@ -183,8 +185,11 @@ class DataManager:
             return pd.DataFrame()  # Not cached — retry on next call
 
     def _filter_date_range(self, df, start, end):
-        mask = (df['datetime'] >= start) & (df['datetime'] <= end)
-        return df.loc[mask].copy().reset_index(drop=True)
+        if df.empty: return df
+        # P-22: O(log n) filtering using searchsorted
+        start_idx = df['datetime'].searchsorted(pd.Timestamp(start), side='left')
+        end_idx = df['datetime'].searchsorted(pd.Timestamp(end), side='right')
+        return df.iloc[start_idx:end_idx].copy().reset_index(drop=True)
 
     def get_expiries(self, underlying):
         today = datetime.now().date()

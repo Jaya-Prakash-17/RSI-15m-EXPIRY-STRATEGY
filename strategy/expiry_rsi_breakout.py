@@ -20,7 +20,7 @@ class ExpiryRSIBreakout:
 
         self.logger.info(
             f"RSI({self.rsi_period}) warmup: {self.rsi_warmup} candles "
-            f"({self.rsi_warmup * 15} minutes ≈ {self.rsi_warmup * 15 / 375:.1f} trading days) | "
+            f"({self.rsi_warmup * 15} minutes ~ {self.rsi_warmup * 15 / 375:.1f} trading days) | "
             f"Min signal candles: {self.min_candles_for_signal}"
         )
 
@@ -76,7 +76,11 @@ class ExpiryRSIBreakout:
                     restored['alert_time'] = None
             if 'last_processed_time' in restored and isinstance(restored['last_processed_time'], str):
                 try:
-                    restored['last_processed_time'] = datetime.fromisoformat(restored['last_processed_time'])
+                    # Support multiple formats for robustness
+                    if 'T' in restored['last_processed_time']:
+                         restored['last_processed_time'] = datetime.fromisoformat(restored['last_processed_time'])
+                    else:
+                         restored['last_processed_time'] = datetime.strptime(restored['last_processed_time'], "%Y-%m-%d %H:%M:%S")
                 except (ValueError, TypeError):
                     restored['last_processed_time'] = None
             self.state[symbol] = restored
@@ -109,21 +113,32 @@ class ExpiryRSIBreakout:
         seed_gain = gains[:n].mean()
         seed_loss = losses[:n].mean()
 
-        alpha = (n - 1) / n
-        inv_n = 1.0 / n
+        # Vectorized Wilder's Smoothing via pandas EWM
+        # Wilder's smoothing is an EMA with alpha = 1 / period.
+        # adjust=False ensures it uses the first value as-is and smooths recursively.
 
-        avg_gains = np.empty(len(delta), dtype=np.float64)
-        avg_losses = np.empty(len(delta), dtype=np.float64)
+        # We need to construct a series where the first valid value is the seed
+        # at index n-1, and subsequent values are the raw gains/losses.
+        g_series = pd.Series(gains)
+        l_series = pd.Series(losses)
 
-        avg_gains[:n] = np.nan # Match pandas index shift
-        avg_losses[:n] = np.nan
-        avg_gains[n-1] = seed_gain
-        avg_losses[n-1] = seed_loss
+        # Override values before the seed to 0 so they don't affect cumulative EWM
+        g_series.iloc[:n-1] = 0
+        l_series.iloc[:n-1] = 0
 
-        # Accelerate the loop for long series (backtesting)
-        for i in range(n, len(delta)):
-            avg_gains[i] = avg_gains[i-1] * alpha + gains[i] * inv_n
-            avg_losses[i] = avg_losses[i-1] * alpha + losses[i] * inv_n
+        # Set the seed value
+        g_series.iloc[n-1] = seed_gain
+        l_series.iloc[n-1] = seed_loss
+
+        avg_gains_series = g_series.ewm(alpha=1/n, adjust=False).mean()
+        avg_losses_series = l_series.ewm(alpha=1/n, adjust=False).mean()
+
+        avg_gains = avg_gains_series.values
+        avg_losses = avg_losses_series.values
+
+        # Mark leads as NaN to match previous behavior
+        avg_gains[:n-1] = np.nan
+        avg_losses[:n-1] = np.nan
 
         with np.errstate(divide='ignore', invalid='ignore'):
             rs = np.where(avg_losses == 0, np.inf, avg_gains / avg_losses)
@@ -216,47 +231,23 @@ class ExpiryRSIBreakout:
         alpha = (n - 1) / n
         inv_n = 1.0 / n
         min_len = n + 1
-
         results = {}
-
         for symbol, prices in symbols_closes.items():
-            close = np.asarray(prices, dtype=np.float64)
+            # BUG-004: Direct reuse of calculate_wilder_rsi for parity
+            rsi_data = self.calculate_wilder_rsi(prices)
 
-            if len(close) < min_len:
-                results[symbol] = (None, None)
-                continue
+            if rsi_data is not None and len(rsi_data) > 0:
+                 # BUG: Series[-1] fails if index is numeric. Convert to array for position indexing.
+                 rsi_arr = np.asarray(rsi_data)
+                 curr = float(rsi_arr[-1])
+                 prev = float(rsi_arr[-2]) if len(rsi_arr) > 1 else None
 
-            delta = np.diff(close)
-            gains = np.where(delta > 0, delta, 0.0)
-            losses = np.where(delta < 0, -delta, 0.0)
-
-            # Seed
-            avg_g = gains[:n].mean()
-            avg_l = losses[:n].mean()
-
-            # FIX #6: Single-pass smoothing — save prev values during iteration
-            prev_avg_g, prev_avg_l = avg_g, avg_l
-            for i in range(n, len(delta)):
-                prev_avg_g, prev_avg_l = avg_g, avg_l  # Save BEFORE update
-                avg_g = avg_g * alpha + gains[i] * inv_n
-                avg_l = avg_l * alpha + losses[i] * inv_n
-
-            # Current RSI (from the last delta)
-            if avg_l == 0:
-                current_rsi = 100.0
+                 results[symbol] = (
+                      curr if not np.isnan(curr) else None,
+                      prev if prev is not None and not np.isnan(prev) else None
+                 )
             else:
-                current_rsi = 100.0 - 100.0 / (1.0 + avg_g / avg_l)
-
-            # Previous RSI (from saved second-to-last values)
-            if len(delta) >= n + 1:
-                if prev_avg_l == 0:
-                    prev_rsi = 100.0
-                else:
-                    prev_rsi = 100.0 - 100.0 / (1.0 + prev_avg_g / prev_avg_l)
-            else:
-                prev_rsi = None
-
-            results[symbol] = (current_rsi, prev_rsi)
+                 results[symbol] = (None, None)
 
         return results
 
@@ -479,12 +470,19 @@ class ExpiryRSIBreakout:
         if state['alert'] is None and is_tradable:
             # Minimum candle quality guard
             if price_history is not None and len(price_history) < self.min_candles_for_signal:
-                self.logger.debug(
-                    f"[{symbol}] Insufficient history: {len(price_history)} < {self.min_candles_for_signal}"
-                )
+                if self.rsi_debug:
+                    self.logger.debug(
+                        f"[{symbol}] Insufficient history: {len(price_history)} < {self.min_candles_for_signal}"
+                    )
                 return None
 
             is_green_candle = current_candle['close'] > current_candle['open']
+
+            # DIAGNOSTIC: Log proximity to threshold if rsi_debug is on
+            if self.rsi_debug and current_rsi is not None:
+                if (self.rsi_threshold - 5) <= current_rsi < self.rsi_threshold:
+                    self.logger.info(f"[{symbol}] RSI Proximity: {current_rsi:.2f} (Target: {self.rsi_threshold})")
+
             if is_green_candle and prev_rsi is not None and prev_rsi < self.rsi_threshold and current_rsi >= self.rsi_threshold:
                 alert_candle = {
                     'high': current_candle['high'],

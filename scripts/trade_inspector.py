@@ -1,0 +1,169 @@
+
+import os
+import sys
+import json
+import pandas as pd
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+from datetime import datetime, timedelta
+
+def calculate_rsi(series, period=11):
+    delta = series.diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+    rs = gain / loss
+    return 100 - (100 / (1 + rs))
+
+def generate_inspector_dashboard(summary_json_path):
+    """
+    Builds a Visual Trade Inspector Dashboard with Boxes and Line Segments.
+    """
+    if not os.path.exists(summary_json_path):
+        print(f"Error: Summary file {summary_json_path} not found.")
+        return
+
+    base_name = os.path.basename(summary_json_path).replace(".json", "")
+    output_dir = os.path.join("reports", "inspection")
+    os.makedirs(output_dir, exist_ok=True)
+    output_html = os.path.join(output_dir, f"inspection-{base_name}.html")
+
+    with open(summary_json_path, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+
+    trades = data.get('trades', [])
+    if not trades:
+        print("No trades found in summary.")
+        return
+
+    html_content = [
+        "<html><head><title>Visual Trade Inspector</title>",
+        "<style>",
+        "body { font-family: 'Inter', sans-serif; background-color: #0c0d10; color: #d1d4dc; padding: 20px; }",
+        ".trade-row { display: flex; gap: 20px; margin-bottom: 50px; background: #131722; border: 1px solid #2a2e39; border-radius: 8px; padding: 15px; }",
+        ".chart-col { flex: 3; }",
+        ".stats-col { flex: 1; padding: 20px; background: #1e222d; border-radius: 6px; }",
+        ".stat-item { display: flex; justify-content: space-between; font-size: 13px; border-bottom: 1px solid #2a2e39; padding: 8px 0; }",
+        ".stat-label { color: #787b86; } .stat-value { color: #f2f3f5; font-weight: 600; }",
+        ".pnl-pos { color: #089981; } .pnl-neg { color: #f23645; }",
+        "</style></head><body>",
+        f"<h1>Inspection: {base_name}</h1>"
+    ]
+
+    for i, trade in enumerate(trades):
+        symbol = trade['symbol']
+        underlying = trade['underlying']
+        alert_time = pd.to_datetime(trade['entry_candle_datetime'])
+        entry_time = pd.to_datetime(trade['entry_time'])
+        exit_time = pd.to_datetime(trade['exit_time'])
+
+        csv_path = f"data/derivatives/{underlying}/{entry_time.year}/{symbol}_15m.csv"
+        if not os.path.exists(csv_path):
+            html_content.append(f"<div class='trade-row'>Error: Data for {symbol} missing</div>")
+            continue
+
+        df = pd.read_csv(csv_path)
+        df['datetime'] = pd.to_datetime(df['datetime'])
+        df = df.sort_values('datetime').reset_index(drop=True)
+        df['RSI'] = calculate_rsi(df['close'], period=11)
+
+        idx_alert = df[df['datetime'] <= alert_time].index.max()
+        idx_entry = df[df['datetime'] <= entry_time].index.max()
+        idx_exit = df[df['datetime'] >= exit_time].index.min()
+
+        start_idx = max(0, idx_alert - 20)
+        end_idx = min(len(df) - 1, idx_exit + 10)
+        plot_df = df.iloc[start_idx:end_idx+1].copy()
+
+        fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.75, 0.25])
+
+        # Candles
+        fig.add_trace(go.Candlestick(
+            x=plot_df['datetime'], open=plot_df['open'], high=plot_df['high'],
+            low=plot_df['low'], close=plot_df['close'],
+            increasing_line_color='#089981', decreasing_line_color='#f23645',
+            name="Price"
+        ), row=1, col=1)
+
+        # 1. Alert Highlight (Orange Box)
+        alert_candle = df.loc[idx_alert]
+        fig.add_shape(
+            type="rect", x0=alert_time - timedelta(minutes=7), x1=alert_time + timedelta(minutes=7),
+            y0=alert_candle['low'], y1=alert_candle['high'],
+            line=dict(color="#fb923c", width=2), fillcolor="rgba(251, 146, 60, 0.1)",
+            row=1, col=1
+        )
+
+        # 2. Entry Line Segment (Connecting Alert High to Entry Fill)
+        fig.add_shape(
+            type="line", x0=alert_time, x1=entry_time,
+            y0=alert_candle['high'], y1=trade['entry_price'],
+            line=dict(color="#4ade80", width=2, dash="dot"),
+            row=1, col=1
+        )
+
+        # 3. SL/TP Line Segments (Duration of trade)
+        # SL
+        fig.add_shape(
+            type="line", x0=entry_time, x1=exit_time,
+            y0=trade['sl'], y1=trade['sl'],
+            line=dict(color="#f23645", width=2, dash="dash"),
+            row=1, col=1
+        )
+        # TPs
+        if 'targets' in trade:
+            for tgt in trade['targets']:
+                fig.add_shape(
+                    type="line", x0=entry_time, x1=exit_time,
+                    y0=tgt, y1=tgt,
+                    line=dict(color="#089981", width=2, dash="dash"),
+                    row=1, col=1
+                )
+
+        # Annotations
+        fig.add_annotation(x=entry_time, y=trade['entry_price'], text="ENTRY",
+                          bgcolor="#089981", font=dict(color="white"), row=1, col=1)
+        fig.add_annotation(x=exit_time, y=trade['exit_price'], text=f"EXIT ({trade['reason']})",
+                          bgcolor="#f23645", font=dict(color="white"), row=1, col=1)
+
+        # RSI
+        fig.add_trace(go.Scatter(x=plot_df['datetime'], y=plot_df['RSI'], line=dict(color='#7e57c2')), row=2, col=1)
+        for lvl in [30, 40, 50, 60, 70]:
+            fig.add_hline(y=lvl, line=dict(color='#2a2e39', width=1, dash='dot'), row=2, col=1)
+
+        fig.update_layout(
+            template="plotly_dark", paper_bgcolor="#131722", plot_bgcolor="#131722",
+            height=600, margin=dict(l=10, r=40, t=10, b=10),
+            xaxis_rangeslider_visible=False, xaxis_type='category', showlegend=False
+        )
+        fig.update_yaxes(side="right", gridcolor='#2a2e39')
+
+        chart_html = fig.to_html(full_html=False, include_plotlyjs='cdn' if i == 0 else False)
+        pnl_class = "pnl-pos" if trade.get('pnl_net', 0) >= 0 else "pnl-neg"
+
+        trade_html = f"""
+        <div class="trade-row">
+            <div class="chart-col">{chart_html}</div>
+            <div class="stats-col">
+                <h3 style="margin-top:0">{symbol}</h3>
+                <div class="stat-item"><span class="stat-label">Alert Candle</span><span class="stat-value">{trade['entry_candle_datetime']}</span></div>
+                <div class="stat-item"><span class="stat-label">Entry Fill</span><span class="stat-value">{trade['entry_time']}</span></div>
+                <div class="stat-item"><span class="stat-label">Net PnL</span><span class="stat-value {pnl_class}">₹{trade.get('pnl_net', 0):.2f}</span></div>
+            </div>
+        </div>
+        """
+        html_content.append(trade_html)
+
+    html_content.append("</body></html>")
+    with open(output_html, 'w', encoding='utf-8') as f:
+        f.write("\n".join(html_content))
+    print(f"DONE: Inspection report saved to {output_html}")
+
+if __name__ == "__main__":
+    report = None
+    if len(sys.argv) > 1:
+        arg = sys.argv[1]
+        report = arg if os.path.exists(arg) else os.path.join("reports", arg)
+    if not report:
+        files = [os.path.join("reports", f) for f in os.listdir("reports") if f.endswith("_summary.json")]
+        if files: report = max(files, key=os.path.getctime)
+    if report: generate_inspector_dashboard(report)

@@ -321,7 +321,13 @@ class GrowwClient:
                 segment=segment,
                 exchange_trading_symbols=key
             )
-            return float(resp[key]) if resp and key in resp else None
+            # BUG-003: Guard against empty response or missing key
+            if resp and isinstance(resp, dict) and key in resp:
+                val = resp[key]
+                return float(val) if val is not None else None
+
+            self.logger.warning(f"LTP response for {symbol} ({key}) was invalid or missing key: {resp}")
+            return None
 
         except Exception as e:
             self.logger.error(f"Error fetching LTP for {symbol}: {e}")
