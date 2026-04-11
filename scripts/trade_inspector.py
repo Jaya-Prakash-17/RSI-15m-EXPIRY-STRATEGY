@@ -94,24 +94,41 @@ def generate_inspector_dashboard(summary_json_path):
         # 1. Alert Highlight (Orange Box)
         alert_candle = df.loc[idx_alert]
         fig.add_shape(
-            type="rect", x0=alert_time - timedelta(minutes=7), x1=alert_time + timedelta(minutes=7),
+            type="rect",
+            x0=alert_candle['datetime'], x1=alert_candle['datetime'],
             y0=alert_candle['low'], y1=alert_candle['high'],
-            line=dict(color="#fb923c", width=2), fillcolor="rgba(251, 146, 60, 0.1)",
+            line=dict(color="#fb923c", width=3), fillcolor="rgba(251, 146, 60, 0.2)",
             row=1, col=1
         )
 
-        # 2. Entry Line Segment (Connecting Alert High to Entry Fill)
-        fig.add_shape(
-            type="line", x0=alert_time, x1=entry_time,
-            y0=alert_candle['high'], y1=trade['entry_price'],
-            line=dict(color="#4ade80", width=2, dash="dot"),
-            row=1, col=1
-        )
+        # Formatting for categoric axis alignment
+        entry_ts = entry_time.strftime('%Y-%m-%d %H:%M:%S')
+        exit_ts = exit_time.strftime('%Y-%m-%d %H:%M:%S')
 
-        # 3. SL/TP Line Segments (Duration of trade)
+        # 2. Entry Point (Green Vector)
+        fig.add_trace(go.Scatter(
+            x=[entry_ts], y=[trade['entry_price']],
+            mode="markers+text",
+            marker=dict(symbol="triangle-up", size=15, color="#4ade80", line=dict(width=1, color="white")),
+            text=["ENTRY"], textposition="bottom center",
+            name="Entry"
+        ), row=1, col=1)
+
+        # 3. Exit Point (Red/Golden Vector)
+        exit_color = "goldenrod" if trade.get('pnl_net', 0) > 0 else "#f23645"
+        fig.add_trace(go.Scatter(
+            x=[exit_ts], y=[trade['exit_price']],
+            mode="markers+text",
+            marker=dict(symbol="triangle-down", size=15, color=exit_color, line=dict(width=1, color="white")),
+            text=[f"EXIT ({trade['reason']})"], textposition="top center",
+            name="Exit"
+        ), row=1, col=1)
+
+        # 4. SL/TP Support Lines (Visualizing the Guardrails)
+
         # SL
         fig.add_shape(
-            type="line", x0=entry_time, x1=exit_time,
+            type="line", x0=entry_ts, x1=exit_ts,
             y0=trade['sl'], y1=trade['sl'],
             line=dict(color="#f23645", width=2, dash="dash"),
             row=1, col=1
@@ -120,17 +137,19 @@ def generate_inspector_dashboard(summary_json_path):
         if 'targets' in trade:
             for tgt in trade['targets']:
                 fig.add_shape(
-                    type="line", x0=entry_time, x1=exit_time,
+                    type="line", x0=entry_ts, x1=exit_ts,
                     y0=tgt, y1=tgt,
                     line=dict(color="#089981", width=2, dash="dash"),
                     row=1, col=1
                 )
 
-        # Annotations
-        fig.add_annotation(x=entry_time, y=trade['entry_price'], text="ENTRY",
-                          bgcolor="#089981", font=dict(color="white"), row=1, col=1)
-        fig.add_annotation(x=exit_time, y=trade['exit_price'], text=f"EXIT ({trade['reason']})",
-                          bgcolor="#f23645", font=dict(color="white"), row=1, col=1)
+        # 5. Connecting Line (The Trade Duration Flow)
+        fig.add_shape(
+            type="line", x0=entry_ts, x1=exit_ts,
+            y0=trade['entry_price'], y1=trade['exit_price'],
+            line=dict(color="rgba(255,255,255,0.2)", width=1, dash="dot"),
+            row=1, col=1
+        )
 
         # RSI
         fig.add_trace(go.Scatter(x=plot_df['datetime'], y=plot_df['RSI'],
@@ -166,6 +185,7 @@ def generate_inspector_dashboard(summary_json_path):
                 <div style="margin-bottom:15px; font-size:12px; color:#8892b0;">Trade #{i+1}</div>
 
                 <div class="stat-item"><span class="stat-label">Alert Candle</span><span class="stat-value">{trade.get('entry_candle_datetime', 'N/A')}</span></div>
+                <div class="stat-item"><span class="stat-label">Alert Range</span><span class="stat-value" style="color:#fb923c;">₹{alert_candle['low']:.2f} - ₹{alert_candle['high']:.2f}</span></div>
                 <div class="stat-item"><span class="stat-label">Entry Time</span><span class="stat-value">{trade.get('entry_time', 'N/A')}</span></div>
                 <div class="stat-item"><span class="stat-label">Entry Price</span><span class="stat-value">₹{trade.get('entry_price', 0):.2f}</span></div>
 

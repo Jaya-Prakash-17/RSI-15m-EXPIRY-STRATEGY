@@ -2,8 +2,8 @@
 
 # Backtest Settings
 backtest:
-  start_date: '2020-01-01'           # Backtest start (YYYY-MM-DD)
-  end_date: '2025-01-01'             # Backtest end (YYYY-MM-DD)
+  start_date: '2026-01-01'           # Backtest start (YYYY-MM-DD)
+  end_date: '2026-04-11'             # Backtest end (YYYY-MM-DD)
   offline_mode: true                 # Run using local data files
 
 # Capital Configuration
@@ -34,10 +34,10 @@ indices:
     expiry_day: Tuesday
     lot_size: 65
     tick_size: 0.05
-  SENSEX:
-    expiry_day: Thursday
-    lot_size: 20
-    tick_size: 0.05
+  # SENSEX:
+  #   expiry_day: Thursday
+  #   lot_size: 20
+  #   tick_size: 0.05
 
 # Performance Reporting
 reporting:
@@ -71,14 +71,14 @@ strategy:
   rsi:
     min_candles_for_signal: 33       # Min candles required to validate RSI signal (V16-P-03: 11*3)
     period: 11                        # RSI Lookback period
-    threshold: 55                    # Breakout threshold
+    threshold: 60                 # Breakout threshold
     warmup_periods: 100              # Min history required before scanning (V16 prerequisite)
   rsi_debug: false                   # Verbose RSI value logging
-  safe_sl_max_loss: 8000             # Absolute loss cap per trade (Rs.) (P-23)
+  safe_sl_max_loss: 6000             # Absolute loss cap per trade (Rs.) (P-23)
   safe_sl_mode: true                 # Enforce safe_sl_max_loss guard
   signal_window_start: '10:00'       # Start scanner window (P-30)
-  signal_window_end: '13:30'         # End scanner window (P-30)
-  single_lot_exit_target: 2       # Target index for exit (1=T1, 2=T2, 3=T3)
+  signal_window_end: '13:45'         # End scanner window (P-30)
+  single_lot_exit_target: 3     # Target index for exit (1=T1, 2=T2, 3=T3)
   strike_range: 3                    # Number of strikes to scan around ATM
   trade_only_on_expiry: false        # If true, scans only indices expiring TODAY
 
