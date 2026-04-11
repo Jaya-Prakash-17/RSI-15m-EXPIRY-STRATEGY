@@ -248,7 +248,7 @@ def test_valid_candle_with_good_range_accepted():
         'NSE-NIFTY-20Mar26-22500-CE', candle,
         price_history=None,
         is_tradable=True,
-        rsi_values=(65.0, 55.0)
+        rsi_values=(65.0, 50.0)  # Crossover: 50 < threshold (55 or 60) and 65 >= threshold
     )
     assert result is not None, "Valid candle should generate a signal"
     assert result['action'] == 'ALERT'

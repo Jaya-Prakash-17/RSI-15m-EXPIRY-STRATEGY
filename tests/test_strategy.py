@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 def config():
     return {
         'strategy': {
-            'rsi': {'period': 14, 'threshold': 60, 'warmup_periods': 100},
+            'rsi': {'period': 11, 'threshold': 60, 'warmup_periods': 100},
             'alert_validity': 2,
             'alert_negation': True,
             'lots_per_trade': 3,

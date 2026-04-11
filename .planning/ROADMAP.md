@@ -1,13 +1,22 @@
 # Project Roadmap — RSI Expiry Trading Bot
 
-## Milestone 1: Production Hardening & Diagnostics (Current)
+## Milestone 1: Production Hardening & Diagnostics
 
-| Phase | Description | Status |
-|-------|-------------|--------|
-| 1 | Diagnostic Audit of 2020 Backtest Gap | [x] |
-| 2 | Implementation of Atomic Live State Persistence | [ ] |
-| 3 | Performance Optimization & Asyncio Refactor | [x] |
-| 4 | Final Production Validation & Stress Test | [ ] |
+### Phase 1: Diagnostic Audit of 2020 Backtest Gap (COMPLETED)
+**Goal:** Resolve the lack of trades in 2020 backtests and fix diagnostic tool gaps.
+**Status:** [x]
+
+### Phase 2: Implementation of Atomic Live State Persistence
+**Goal:** Implement robust state persistence for live trading to handle crashes and restarts safely.
+**Status:** [x]
+
+### Phase 3: Performance Optimization & Asyncio Refactor (COMPLETED)
+**Goal:** Optimize poll loops and core calculations for lower latency.
+**Status:** [x]
+
+### Phase 4: Final Production Validation & Stress Test
+**Goal:** Execute full OOS validation and stress test the bot before deployment.
+**Status:** [ ]
 
 ## Backlog
 

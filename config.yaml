@@ -70,7 +70,7 @@ strategy:
   min_volume_candles_pct: 0.0        # Skip fraction of expiry-day candles with volume>0 (set to 0 for historical)
   rsi:
     min_candles_for_signal: 33       # Min candles required to validate RSI signal (V16-P-03: 11*3)
-    period: 9                        # RSI Lookback period
+    period: 11                        # RSI Lookback period
     threshold: 55                    # Breakout threshold
     warmup_periods: 100              # Min history required before scanning (V16 prerequisite)
   rsi_debug: false                   # Verbose RSI value logging

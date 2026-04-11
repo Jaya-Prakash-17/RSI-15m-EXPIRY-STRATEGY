@@ -420,6 +420,11 @@ class ExpiryRSIBreakout:
                 # ... breakout logic ...
                 alert_range = alert_candle['high'] - alert_candle['low']
 
+                # V16-P-01: Redundant guard for corrupt state
+                if alert_range < self.min_alert_range:
+                    self.logger.warning(f"[{symbol}] Entry rejected: corrupt alert_range ({alert_range:.2f})")
+                    return None
+
                 # Calculate Effective SL (Base, Base + SAFE_SL, and Floor)
                 effective_sl, is_safe_applied, raw_sl = self._calculate_effective_sl(symbol, alert_candle['high'], alert_candle['low'])
 

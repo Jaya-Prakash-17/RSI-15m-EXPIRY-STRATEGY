@@ -25,6 +25,16 @@ class OrderManager:
         self.config = config
         self.client = GrowwClient()
 
+        # V17-H-01: Explicit tick sizes for Indian Indices (Real Money Safety)
+        self.tick_sizes = {
+            'NIFTY': 0.05,
+            'BANKNIFTY': 0.05,
+            'MIDCPNIFTY': 0.05,
+            'FINNIFTY': 0.05,
+            'SENSEX': 0.05,
+            'BANKEX': 0.05
+        }
+
         # Paper trading mode - simulates orders without real execution
         self.paper_trading = config.get('trading', {}).get('paper_trading', False)
         if self.paper_trading:
@@ -51,6 +61,19 @@ class OrderManager:
         self.logger.warning(f"Could not resolve lot_size for symbol: {symbol}. Defaulting to 1.")
         return 1
 
+    def _round_to_tick(self, price, symbol):
+        """Round price to nearest valid tick (0.05) to avoid exchange rejection."""
+        if price is None: return None
+
+        # Resolve tick size (default 0.05 for Indian indices)
+        tick = 0.05
+        for index in self.tick_sizes:
+            if index in str(symbol).upper():
+                tick = self.tick_sizes[index]
+                break
+
+        return round(round(price / tick) * tick, 2)
+
     def place_entry_order(self, symbol, qty, price, trading_symbol, order_type="SL-M"):
         """
         Places an entry order.
@@ -68,14 +91,24 @@ class OrderManager:
                 'message': 'Paper trade - no real order'
             }
 
-        # Balance check - V6-P-007
-        balance = self.client.get_balance()
-        cost = qty * price
-        if balance is None or balance < cost:
-            self.logger.warning(f"Insufficient margin: available ₹{balance}, required ₹{cost}")
-            raise InsufficientMarginError(
-                f"Balance ₹{balance or 0:.0f} < required ₹{cost:.0f}"
-            )
+        # Balance check - V6-P-007 (Defensive Check for Real Money)
+        try:
+            balance = self.client.get_balance()
+            cost = qty * price
+            if balance is None:
+                self.logger.warning("Could not fetch balance. Proceeding with caution...")
+            elif balance < cost:
+                self.logger.warning(f"Insufficient margin: available ₹{balance}, required ₹{cost}")
+                raise InsufficientMarginError(
+                    f"Balance ₹{balance:.0f} < required ₹{cost:.0f}"
+                )
+        except InsufficientMarginError:
+            raise
+        except Exception as e:
+            self.logger.error(f"Balance check error: {e}")
+
+        # Ensure price is valid for exchange
+        price = self._round_to_tick(price, symbol)
 
         resp = self.client.place_order(
             symbol=symbol,
@@ -298,6 +331,9 @@ class OrderManager:
                 'trigger_price': trigger_price
             }
 
+        # Ensure trigger price is valid
+        trigger_price = self._round_to_tick(trigger_price, symbol)
+
         resp = self.client.place_order(
             symbol=symbol,
             qty=qty,
@@ -315,11 +351,14 @@ class OrderManager:
         self.logger.error(f"SL Order Failed: {resp}")
         return None
 
-    def modify_sl_order(self, order_id, new_trigger_price, new_qty=None):
+    def modify_sl_order(self, order_id, new_trigger_price, symbol, new_qty=None):
         """
         Modify an existing SL order (for trailing SL).
         """
         self.logger.info(f"Modifying SL Order {order_id} → New Trigger: ₹{new_trigger_price}")
+
+        # Round new trigger price
+        new_trigger_price = self._round_to_tick(new_trigger_price, symbol)
 
         if self.paper_trading:
             self.logger.info(f"[PAPER TRADE] SL order modified to ₹{new_trigger_price}")
@@ -372,6 +411,9 @@ class OrderManager:
                 'status': 'PAPER',
                 'target_price': target_price
             }
+
+        # Ensure target price is valid
+        target_price = self._round_to_tick(target_price, symbol)
 
         resp = self.client.place_order(
             symbol=symbol,

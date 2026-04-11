@@ -13,7 +13,7 @@ No filler. No re-explaining settled decisions. Just precise, surgical code.
 ## PROJECT STATE (UPDATE AFTER EACH SESSION)
 
 ```
-Audit:       V15 complete ✅ | V16 IN PROGRESS
+Audit:       V15 complete ✅ | V16 complete ✅
 Deployment:  NOT READY — gates below
 OOS:         2026 YTD positive (73 trades, PF 4.27, +15.9%) ✅
 Paper:       Partially done (need 20 full sessions)
@@ -22,14 +22,14 @@ Paper:       Partially done (need 20 full sessions)
 ### V16 Outstanding Tasks
 | ID | Task | Status |
 |----|------|--------|
-| V16-P-01 | Negative `alert_range` guard in `check_signal()` | ❌ |
-| V16-P-02 | 4-year OOS backtest (2022/23/24/25 via `run_oos_validation.py`) | ❌ |
-| V16-P-03 | Test config RSI period = 11 (matches production) | ❌ |
-| V16-P-04 | Position-scaled slippage (config: `position_scaled`) | ❌ |
-| V16-P-05 | Option data quality guard | ❌ |
-| V16-P-06 | Remove dead `same_candle_guard` code | ❌ |
-| V16-P-07 | `avg_capital_deployed` in stats | ❌ |
-| V16-P-08 | TP-before-SL when SL trailed above entry | ❌ |
+| V16-P-01 | Negative `alert_range` guard in `check_signal()` | ✅ |
+| V16-P-02 | 4-year OOS backtest (2022/23/24/25 via `run_oos_validation.py`) | ⏳ |
+| V16-P-03 | Test config RSI period = 11 (matches production) | ✅ |
+| V16-P-04 | Position-scaled slippage (config: `position_scaled`) | ✅ |
+| V16-P-05 | Option data quality guard | ✅ |
+| V16-P-06 | Remove dead `same_candle_guard` code | ✅ |
+| V16-P-07 | `avg_capital_deployed` in stats | ✅ |
+| V16-P-08 | TP-before-SL when SL trailed above entry | ✅ |
 | V16-P-09 | `verify_v16.py` regression test | ❌ |
 
 **Priority:** P-01 → P-03 → P-02 (OOS run) → P-04..P-08 → P-09 → paper → live
@@ -40,7 +40,7 @@ Paper:       Partially done (need 20 full sessions)
 ✅ 2026 OOS: positive
 ✅ Infrastructure: SL, SQ_OFF, crash recovery, circuit breaker
 ❌ compare_years.py: 2022/2023/2024/2025 NOT yet run
-❌ V16-P-01: negative alert_range bug NOT patched
+✅ V16-P-01: negative alert_range bug FIXED
 ❌ Paper trading: need 20 full sessions
 ```
 
@@ -61,15 +61,12 @@ Paper:       Partially done (need 20 full sessions)
 
 ---
 
-## CRITICAL KNOWN BUG (V16-P-01, UNPATCHED)
-```
-Location: strategy/expiry_rsi_breakout.py → check_signal()
-Bug:      alert_range not validated → 8 trades with high < low (corrupt data)
-          produced inverted targets (T1 < entry_price)
-Fix:      Add BEFORE alert state is set:
-            if alert_range < self.min_alert_range:
-                return None
-```
+## SESSION STATUS (2026-04-11)
+- [x] Integrate `CandleBuilder` to replace derivative API polling.
+- [x] Harden `live_trader.py` with 2s LTP polling loop.
+- [x] Standardize RSI(11) across codebase and tests.
+- [x] Patch all V16 series bugs found during audit.
+- [ ] Run 2020-2025 OOS validation.
 
 ---
 
@@ -216,42 +213,3 @@ python run_live.py
 # Check bot health
 bash scripts/check_bot.sh
 ```
-
-<!-- code-review-graph MCP tools -->
-## MCP Tools: code-review-graph
-
-**IMPORTANT: This project has a knowledge graph. ALWAYS use the
-code-review-graph MCP tools BEFORE using Grep/Glob/Read to explore
-the codebase.** The graph is faster, cheaper (fewer tokens), and gives
-you structural context (callers, dependents, test coverage) that file
-scanning cannot.
-
-### When to use graph tools FIRST
-
-- **Exploring code**: `semantic_search_nodes` or `query_graph` instead of Grep
-- **Understanding impact**: `get_impact_radius` instead of manually tracing imports
-- **Code review**: `detect_changes` + `get_review_context` instead of reading entire files
-- **Finding relationships**: `query_graph` with callers_of/callees_of/imports_of/tests_for
-- **Architecture questions**: `get_architecture_overview` + `list_communities`
-
-Fall back to Grep/Glob/Read **only** when the graph doesn't cover what you need.
-
-### Key Tools
-
-| Tool | Use when |
-|------|----------|
-| `detect_changes` | Reviewing code changes — gives risk-scored analysis |
-| `get_review_context` | Need source snippets for review — token-efficient |
-| `get_impact_radius` | Understanding blast radius of a change |
-| `get_affected_flows` | Finding which execution paths are impacted |
-| `query_graph` | Tracing callers, callees, imports, tests, dependencies |
-| `semantic_search_nodes` | Finding functions/classes by name or keyword |
-| `get_architecture_overview` | Understanding high-level codebase structure |
-| `refactor_tool` | Planning renames, finding dead code |
-
-### Workflow
-
-1. The graph auto-updates on file changes (via hooks).
-2. Use `detect_changes` for code review.
-3. Use `get_affected_flows` to understand impact.
-4. Use `query_graph` pattern="tests_for" to check coverage.

@@ -19,6 +19,7 @@ from utils.telegram_notifier import TelegramNotifier
 from utils.symbol_parser import detect_underlying
 from core.exceptions import InsufficientMarginError
 from utils.expiry_calendar import get_expiry_for_date
+from utils.candle_builder import CandleBuilder
 
 IST = pytz.timezone('Asia/Kolkata')
 MARKET_OPEN_IST = datetime_time(9, 15)    # 9:15 AM IST
@@ -110,6 +111,10 @@ class LiveTrader:
 
         # Configuration
         self.trade_only_on_expiry = config['strategy'].get('trade_only_on_expiry', True)
+
+        # Candle Builder for local option candles (P-21)
+        self.candle_builder = CandleBuilder(interval_minutes=15)
+        self._pending_closed_bars = {}  # symbol -> bar dict
 
     def _get_tradeable_indices(self):
         """
@@ -378,29 +383,34 @@ class LiveTrader:
             self._ltp_cache[symbol] = (price, now)
         return price
 
-    def _get_option_candles_incremental(
+    def _get_candles_incremental(
         self, underlying: str, symbol: str, year: int,
-        warmup_start, now
+        warmup_start, now, is_spot=False
     ):
-        """P-08: Full download on first call; incremental (new candles only) thereafter."""
+        """P-08: Full download on first call; incremental thereafter."""
         if symbol not in self._candle_cache or self._candle_cache[symbol].empty:
-            df = self.dm.get_derivative_candles(
-                underlying, symbol, year, warmup_start, now, refresh=True
-            )
+            if is_spot:
+                df = self.dm.get_spot_candles(symbol, warmup_start, now, refresh=True)
+            else:
+                df = self.dm.get_derivative_candles(
+                    underlying, symbol, year, warmup_start, now, refresh=True
+                )
             self._candle_cache[symbol] = df
             return df
 
         cached = self._candle_cache[symbol]
         last_known = cached['datetime'].max()
 
-        new_df = self.dm.get_derivative_candles(
-            underlying, symbol, year, last_known, now, refresh=True
-        )
+        if is_spot:
+            new_df = self.dm.get_spot_candles(symbol, last_known, now, refresh=True)
+        else:
+            new_df = self.dm.get_derivative_candles(
+                underlying, symbol, year, last_known, now, refresh=True
+            )
 
         if not new_df.empty:
             combined = pd.concat([cached, new_df]).drop_duplicates(subset=['datetime'])
             combined = combined.sort_values('datetime').reset_index(drop=True)
-            # Trim to warmup window to prevent unbounded memory growth (using rows, not elapsed time which breaks on weekends)
             max_rows = max(200, self.strategy.rsi_warmup + 50)
             if len(combined) > max_rows:
                 combined = combined.tail(max_rows).reset_index(drop=True)
@@ -512,6 +522,38 @@ class LiveTrader:
                         self.logger.info(f"Adding {symbol} to tracking for {underlying}.")
                         self.tracked_options[underlying][symbol] = pd.DataFrame()
 
+                        # Warm up local candle builder with Gap Filling (Phase 2 Refinement)
+                        try:
+                            cached_bars = self.tracker.load_candle_state(symbol)
+                            last_cached_time = warmup_start
+
+                            if cached_bars:
+                                self.logger.info(f"Restoring {len(cached_bars)} bars from candle cache for {symbol}")
+                                self.candle_builder.restore_state(symbol, cached_bars)
+                                # Infer last time to fetch gap
+                                last_dt_str = cached_bars[-1].get('datetime')
+                                if last_dt_str:
+                                    try:
+                                        last_cached_time = datetime.fromisoformat(last_dt_str).replace(tzinfo=None)
+                                    except:
+                                        pass
+
+                            # Always fetch the gap from last known bar to NOW
+                            # If no cache, last_cached_time is warmup_start (full download)
+                            # If cache is old, this fetches everything in between.
+                            if (now - last_cached_time).total_seconds() > (self.candle_builder.interval_minutes * 60):
+                                self.logger.info(f"Filling candle gap for {symbol} from {last_cached_time} to {now}")
+                                hist_df = self.dm.get_derivative_candles(
+                                    underlying, symbol, now.year, last_cached_time, now, refresh=False
+                                )
+                                if not hist_df.empty:
+                                    self.candle_builder.warm_up_from_df(symbol, hist_df)
+                            else:
+                                self.logger.debug(f"No gap filling required for {symbol} (last update: {last_cached_time})")
+
+                        except Exception as e:
+                            self.logger.warning(f"Warmup/Restore failed for {symbol}: {e}")
+
     def _poll_candle_close(self, warmup_start=None):
         """Poll latest spot candle to detect 15-min period close."""
         if warmup_start is None:
@@ -545,6 +587,26 @@ class LiveTrader:
         except Exception as e:
             self.logger.error(f"Error polling candle: {e}")
         return False
+
+    def _poll_option_ltps(self):
+        """
+        Poll LTP for all tracked options and feed to CandleBuilder.
+        Throttled to run every ~2 seconds in main loop.
+        """
+        for underlying in self.underlyings:
+            symbols = list(self.tracked_options.get(underlying, {}).keys())
+            for symbol in symbols:
+                try:
+                    ltp = self._get_ltp_cached(symbol)
+                    if ltp:
+                        closed_bar = self.candle_builder.feed(symbol, ltp)
+                        if closed_bar:
+                            self._pending_closed_bars[symbol] = closed_bar
+                            self.logger.debug(f"Local bar closed for {symbol} at {closed_bar['datetime']}")
+                            # Save state immediately on closure (Phase 2 atomic persistence)
+                            self.tracker.save_candle_state(symbol, self.candle_builder.get_history(symbol))
+                except Exception as e:
+                    self.logger.error(f"Error polling LTP/feeding CandleBuilder for {symbol}: {e}")
 
     def _round_to_tick(self, price, underlying=None):
         """Round price to tick size for given underlying."""
@@ -661,13 +723,18 @@ class LiveTrader:
 
             for symbol in list(self.tracked_options[underlying].keys()):
                 try:
-                    year = now.year
-                    # P-08: incremental fetch (full download first time, append-only after)
-                    df = self._get_option_candles_incremental(
-                        underlying, symbol, year, warmup_start, now
-                    )
-                    last_row = self._get_latest_candle(df, closed_candle_cutoff)
-                    if last_row is None:
+                    # REPLACE API FETCH WITH LOCAL CANDLE BUILDER (P-21)
+                    df = self.candle_builder.get_closed_df(symbol)
+                    if df.empty:
+                        continue
+
+                    last_row_data = df.iloc[-1].to_dict()
+                    last_row = pd.Series(last_row_data)
+
+                    # Thin Bar Guard
+                    min_range = self.config['strategy'].get('min_alert_range_points', 0)
+                    if (last_row.get('high', 0) - last_row.get('low', 0)) < min_range:
+                        self.logger.debug(f"[{symbol}] Skipping: thin bar range < {min_range}")
                         continue
 
                     current_candle_time = last_row['datetime']
@@ -679,10 +746,8 @@ class LiveTrader:
 
                     self.tracked_options[underlying][symbol] = df
 
-                    # Extract close prices as numpy array (fast path — no Pandas filter)
-                    dt_arr = df['datetime'].values
-                    mask = dt_arr <= np.datetime64(current_candle_time)
-                    close_arr = df['close'].values[mask]
+                    # RSI calculation from builder close series
+                    close_arr = df['close'].values
 
                     symbol_candle_data[symbol] = (df, last_row, current_candle_time)
                     symbols_closes[symbol] = close_arr
@@ -1283,6 +1348,36 @@ class LiveTrader:
             except Exception as e:
                 self.logger.error(f"Error monitoring pending entry for {symbol}: {e}")
 
+    def _close_paper_trade_hit_target(self, trade, target_idx, target_price, ltp):
+        """Helper to close a paper trade when a target is hit."""
+        symbol = trade['symbol']
+        trade_id = trade['trade_id']
+        fill_price = target_price  # Limit sell fills at target price
+
+        self.logger.info(f"🎯 [PAPER] TARGET HIT (FINAL) for {symbol} @ ₹{fill_price} (LTP: ₹{ltp:.2f}) - Closing Trade")
+
+        final_pnl = (fill_price - float(trade['entry_price'])) * float(trade['remaining_qty'])
+        total_pnl = final_pnl + float(trade.get('partial_pnl', 0))
+        self.daily_pnl += final_pnl
+
+        reason = f"TP{target_idx+1}_HIT"
+        trade['exit_price'] = ltp
+        trade['reason'] = reason
+        trade['pnl'] = total_pnl
+
+        self.tracker.close_trade(trade_id, ltp, reason, total_pnl)
+        self._update_circuit_breaker(final_pnl, reason)
+        self.trade_logger.log_exit(trade, self.daily_pnl)
+
+        self.telegram.target_hit(
+            symbol=symbol,
+            tp_num=target_idx+1,
+            price=fill_price,
+            entry_price=float(trade['entry_price']),
+            qty_exited=float(trade['remaining_qty']),
+            new_sl=None
+        )
+
     def _monitor_active_trades(self):
         """Monitor active trades by checking broker order statuses (or LTP for paper trading)."""
         active_trades = self.tracker.get_active_trades()
@@ -1324,7 +1419,7 @@ class LiveTrader:
                                     self.logger.info(f"📈 TRAILING SL to ₹{new_sl_price} (TP{tp+1} crossed @ ₹{ltp})")
                                     # Modified actual SL order if live
                                     if sl_order_id and not (self.paper_trading and sl_order_id.startswith('PAPER_')):
-                                        self.om.modify_sl_order(sl_order_id, new_sl_price, new_qty=trade['remaining_qty'])
+                                        self.om.modify_sl_order(sl_order_id, new_sl_price, symbol, new_qty=trade['remaining_qty'])
 
                                     exit_orders['current_sl'] = new_sl_price
                                     exit_orders['trail_state'] = tp + 1
@@ -1349,9 +1444,21 @@ class LiveTrader:
 
 
 
-                # Check SL condition (strategy-defined: alert candle low - 1)
-                sl_triggered = ltp <= current_sl
+                # V16-P-08: TP-before-SL when SL trailed above entry (profitable trail)
+                # Check for target hit FIRST if the SL is in profit territory.
+                trailed_sl_above_entry = current_sl > float(trade['entry_price'])
 
+                if trailed_sl_above_entry:
+                    if exit_mode == 'single_lot':
+                        target_idx = self.config.get('strategy', {}).get('single_lot_exit_target', 2) - 1
+                        target_price = targets[target_idx] if target_idx < len(targets) else targets[-1]
+                        if ltp >= target_price:
+                            # Target takes priority
+                            self._close_paper_trade_hit_target(trade, target_idx, target_price, ltp)
+                            continue
+
+                # Normal SL Check
+                sl_triggered = ltp <= current_sl
                 if sl_triggered:
                     exit_price = current_sl
                     exit_reason = "SL_HIT"
@@ -1369,32 +1476,12 @@ class LiveTrader:
                     self.telegram.sl_hit(symbol, exit_price, float(trade['entry_price']), float(trade['remaining_qty']), self.daily_pnl)
                     continue
 
-                # Check single lot final target first
+                # Check single lot final target
                 if exit_mode == 'single_lot':
                     target_idx = self.config.get('strategy', {}).get('single_lot_exit_target', 2) - 1
                     target_price = targets[target_idx] if target_idx < len(targets) else targets[-1]
                     if ltp >= target_price:
-                        fill_price = target_price  # Limit sell fills at target price
-                        self.logger.info(f"🎯 [PAPER] TARGET HIT (FINAL) for {symbol} @ ₹{fill_price} (LTP: ₹{ltp:.2f}) - Closing Trade")
-                        final_pnl = (fill_price - float(trade['entry_price'])) * float(trade['remaining_qty'])
-                        total_pnl = final_pnl + float(trade.get('partial_pnl', 0))
-                        self.daily_pnl += final_pnl
-                        reason = f"TP{target_idx+1}_HIT"
-                        trade['exit_price'] = ltp
-                        trade['reason'] = reason
-                        trade['pnl'] = total_pnl
-                        self.tracker.close_trade(trade_id, ltp, reason, total_pnl)
-                        self._update_circuit_breaker(final_pnl, reason)
-                        self.trade_logger.log_exit(trade, self.daily_pnl)
-
-                        self.telegram.target_hit(
-                            symbol=symbol,
-                            tp_num=target_idx+1,
-                            price=fill_price,
-                            entry_price=float(trade['entry_price']),
-                            qty_exited=float(trade['remaining_qty']),
-                            new_sl=None
-                        )
+                        self._close_paper_trade_hit_target(trade, target_idx, target_price, ltp)
                     continue
 
                 # Check TP1 (multi-lot only - trail SL)
@@ -1448,10 +1535,10 @@ class LiveTrader:
                             fill_price = sl_status.get('fill_price') or float(trade['sl'])
                             self.logger.info(f"SL Fill price extracted: \u20b9{fill_price} (reference was: \u20b9{trade['sl']})")
 
-                            # Cancel all pending target orders
+                            # Cancel all pending target orders with verification (Real Money Safety)
                             for tid in target_ids:
                                 if tid:
-                                    self.om.cancel_order(tid)
+                                    self._cancel_with_retry(tid, context=f"SL_HIT Target Cancel for {trade_id}")
 
                             # 2. Guard for SL exit logic: qty mismatch
                             qty_filled = int(sl_status.get('filled_quantity') or 0)
@@ -1475,6 +1562,11 @@ class LiveTrader:
                             self.tracker.close_trade(trade_id, fill_price, "SL_HIT", total_pnl)
                             self._update_circuit_breaker(final_pnl, "SL_HIT")
                             self.trade_logger.log_exit(trade, self.daily_pnl)
+
+                            # V17-H-02: Immediate check for daily loss after closure
+                            if self._check_daily_loss_limit():
+                                self.logger.critical("Daily loss limit breached via SL hit. halting.")
+
                             continue
 
                         elif sl_state == 'PARTIALLY_FILLED':
@@ -1759,7 +1851,8 @@ class LiveTrader:
 
              # Modify Broker SL Order
              self.logger.info(f"Trailing SL to {new_sl_price} with Qty {new_remaining}")
-             self.om.modify_sl_order(sl_order_id, new_sl_price, new_qty=new_remaining)
+             if sl_order_id and not self.paper_trading:
+                 self.om.modify_sl_order(sl_order_id, new_sl_price, trade['symbol'], new_qty=new_remaining)
 
              # Update internal state
              exit_orders['current_sl'] = new_sl_price
@@ -1869,15 +1962,13 @@ class LiveTrader:
 
         # Cancel broker SL order (no longer needed, we're exiting)
         if sl_order_id:
-            self.om.cancel_sl_order(sl_order_id)
-            self.logger.info(f"🛡️ Broker SL Cancelled: {sl_order_id} (position closing)")
+            self._cancel_with_retry(sl_order_id, context=f"CLOSE_POSITION SL for {trade_id}")
 
         # Cancel pending target orders
         target_ids = trade.get('target_order_ids', [])
         for tid in target_ids:
             if tid:
-                self.om.cancel_order(tid)
-                self.logger.info(f"🚫 Target Order Cancelled: {tid}")
+                self._cancel_with_retry(tid, context=f"CLOSE_POSITION Target for {trade_id}")
 
         # Place exit order for remaining quantity
         self.om.place_exit_order(symbol, remaining_qty, trading_symbol, reason)
@@ -1894,12 +1985,16 @@ class LiveTrader:
         trade['reason'] = reason
         trade['pnl'] = total_pnl
 
-        # Log to CSV for audit
-        self.trade_logger.log_exit(trade, self.daily_pnl, 0)
-
         # Close trade in tracker
         self.tracker.close_trade(trade_id, ltp, reason, total_pnl)
         self._update_circuit_breaker(final_pnl, reason)
+
+        # V17-H-02: Immediate check for daily loss after closure
+        if self._check_daily_loss_limit():
+            self.logger.critical(f"Daily loss limit breached via {reason} hit. halting.")
+
+        # Log to CSV for audit
+        self.trade_logger.log_exit(trade, self.daily_pnl, 0)
 
         # Telegram: notify based on exit reason
         entry_price = float(trade['entry_price'])
@@ -1990,6 +2085,13 @@ class LiveTrader:
                         heartbeat_path = os.path.join(tempfile.gettempdir(), 'rsi_bot_heartbeat.json')
                         with open(heartbeat_path, 'w') as hf:
                             json.dump(heartbeat_data, hf)
+
+                        # PHASE 2: Periodic Candle State Backup (every heartbeat)
+                        for underlying in self.underlyings:
+                            for symbol in self.tracked_options.get(underlying, {}):
+                                history = self.candle_builder.get_history(symbol)
+                                if history:
+                                    self.tracker.save_candle_state(symbol, history)
                     except Exception as e:
                         self.logger.debug(f"Heartbeat write failed: {e}")
 
@@ -2230,6 +2332,12 @@ class LiveTrader:
                 if self._poll_candle_close(warmup_start):
                     self._update_option_universe(warmup_start)
                     self._process_strategy_logic(warmup_start)
+
+                # Poll LTPs for CandleBuilder (P-21) every 2s
+                # Throttled by internal LTP cache and loop cadence
+                static_poll_interval = 2
+                if int(now.timestamp()) % static_poll_interval == 0:
+                    self._poll_option_ltps()
 
                 # Monitor active positions and pending entries (throttled to ORDER_POLL_INTERVAL)
                 # Order status API calls are expensive — checking every 5s is sufficient

@@ -354,6 +354,61 @@ class TradeTracker:
         """Clear pending entries file atomically."""
         self.save_pending_entries({})
 
+    # --- Candle State Persistence (Phase 2) ---
+
+    def save_candle_state(self, symbol: str, bars_data: list):
+        """
+        Persist candle history for a symbol atomically.
+        bars_data should be a list of dicts (OHLCV).
+        """
+        with self.lock:
+            # Create a path based on symbol: data/candles/NIFTY.json
+            candles_dir = os.path.join(os.path.dirname(self.filepath), "candles")
+            os.makedirs(candles_dir, exist_ok=True)
+            filepath = os.path.join(candles_dir, f"{symbol.replace(' ', '_')}.json")
+
+            dir_name = os.path.dirname(os.path.abspath(filepath))
+            temp_path = None
+            try:
+                with tempfile.NamedTemporaryFile(
+                    mode='w', dir=dir_name, delete=False, suffix='.tmp'
+                ) as tf:
+                    json.dump({
+                        "symbol": symbol,
+                        "last_updated": datetime.now().isoformat(),
+                        "bars": bars_data
+                    }, tf, indent=2, default=str)
+                    temp_path = tf.name
+
+                os.replace(temp_path, filepath)
+            except Exception as e:
+                self.logger.error(f"Error saving candle state for {symbol}: {e}")
+                if temp_path and os.path.exists(temp_path):
+                    try:
+                        os.remove(temp_path)
+                    except Exception:
+                        pass
+
+    def load_candle_state(self, symbol: str) -> list:
+        """
+        Load persisted candle history for a symbol.
+        Returns list of OHLCV bars.
+        """
+        with self.lock:
+            candles_dir = os.path.join(os.path.dirname(self.filepath), "candles")
+            filepath = os.path.join(candles_dir, f"{symbol.replace(' ', '_')}.json")
+
+            if not os.path.exists(filepath):
+                return []
+
+            try:
+                with open(filepath, 'r') as f:
+                    data = json.load(f)
+                    return data.get("bars", [])
+            except Exception as e:
+                self.logger.error(f"Error loading candle state for {symbol}: {e}")
+                return []
+
     def trim_old_closed_trades(self, keep_days: int = 30):
         """Remove closed trades older than keep_days from the file.
         Keeps the JSON file lean over long-running operation."""
