@@ -8,14 +8,14 @@ venv/
 .env
 .DS_Store
 
-# Logs (generated at runtime)
+# Logs
 *.log
 logs/
 
-# Strategy History (Heavy)
+# Reports
 reports/
 
-# IDEs & Agent/IDE files
+# Agent/IDE
 .agent/
 .gemini/
 .vscode/
