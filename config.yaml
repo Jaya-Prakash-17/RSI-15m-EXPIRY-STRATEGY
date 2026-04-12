@@ -11,12 +11,12 @@ capital:
   initial: 200000          # Starting trading capital in INR (Example: 200000)
 
 charges:
-  brokerage_per_trade: 20  # Flat brokerage fee per executed order (Example: 20)
-  exchange_txn_fee: 0.0006 # NSE Transaction charges multiplier (Example: 0.0006)
-  gst: 0.2                 # Goods and Services Tax on brokerage and fees (Example: 0.18)
-  sebi_charges: 3.0e-06    # SEBI turnover charges multiplier (Example: 0.000003)
-  stamp_duty: 6.0e-05      # Government stamp duty on buy side (Example: 0.00006)
-  stt: 0.001               # Securities Transaction Tax for options (Example: 0.001)
+  brokerage_per_trade: 60  # Inflated 3X for stress test. Actual: 20 (as of April 2026)
+  exchange_txn_fee: 0.0018 # Inflated 3X for stress test. Actual: 0.0006 (as of April 2026)
+  gst: 0.6                 # Inflated 3X for stress test. Actual: 0.20 (as of April 2026)
+  sebi_charges: 9.0e-06    # Inflated 3X for stress test. Actual: 0.000003 (as of April 2026)
+  stamp_duty: 0.00018      # Inflated 3X for stress test. Actual: 0.00006 (as of April 2026)
+  stt: 0.003               # Inflated 3X for stress test. Actual: 0.001 (as of April 2026)
 
 data:
   download_retry_count: 3  # Times to retry failed data downloads (Example: 3)
