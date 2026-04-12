@@ -1,68 +1,80 @@
+# =============================================================================
+# RSI-15m Expiry Breakout Strategy - Configuration File
+# =============================================================================
+
 backtest:
-  end_date: '2025-12-31'
-  offline_mode: true
-  start_date: '2020-01-01'
+  start_date: '2020-01-01'  # The first date for historical testing (Example: '2020-01-01')
+  offline_mode: true       # Use local files only, no API calls during backtest (Example: true)
+  end_date: '2025-12-31'    # The last date for historical testing (Example: '2025-12-31')
+
 capital:
-  initial: 200000
+  initial: 200000          # Starting trading capital in INR (Example: 200000)
+
 charges:
-  brokerage_per_trade: 20
-  exchange_txn_fee: 0.0006
-  gst: 0.2
-  sebi_charges: 3.0e-06
-  stamp_duty: 6.0e-05
-  stt: 0.001
+  brokerage_per_trade: 20  # Flat brokerage fee per executed order (Example: 20)
+  exchange_txn_fee: 0.0006 # NSE Transaction charges multiplier (Example: 0.0006)
+  gst: 0.2                 # Goods and Services Tax on brokerage and fees (Example: 0.18)
+  sebi_charges: 3.0e-06    # SEBI turnover charges multiplier (Example: 0.000003)
+  stamp_duty: 6.0e-05      # Government stamp duty on buy side (Example: 0.00006)
+  stt: 0.001               # Securities Transaction Tax for options (Example: 0.001)
+
 data:
-  download_retry_count: 3
-  storage_path: data
+  download_retry_count: 3  # Times to retry failed data downloads (Example: 3)
+  storage_path: data       # Directory where CSV data is stored (Example: data)
+
 indices:
   BANKNIFTY:
-    expiry_day: Tuesday
-    lot_size: 30
-    tick_size: 0.05
+    expiry_day: Tuesday    # Primary expiry day for this index (Example: Tuesday)
+    lot_size: 30           # Number of units in one contract (Example: 30)
+    tick_size: 0.05        # Minimum price movement (Example: 0.05)
   NIFTY:
-    expiry_day: Tuesday
-    lot_size: 65
-    tick_size: 0.05
+    expiry_day: Tuesday    # Primary expiry day for this index (Example: Thursday)
+    lot_size: 65           # Number of units in one contract (Example: 75)
+    tick_size: 0.05        # Minimum price movement (Example: 0.05)
+
 reporting:
-  slippage_buffer_enabled: true
-  slippage_buffer_per_trade: 65
-  slippage_max_per_trade: 500
-  slippage_min_per_trade: 50
-  slippage_model: position_scaled
-  slippage_ticks_per_side: 1
+  slippage_buffer_enabled: true     # Add random noise to trade execution prices (Example: true)
+  slippage_buffer_per_trade: 65     # Fixed slippage buffer in INR (Example: 65)
+  slippage_max_per_trade: 500       # Maximum allowed slippage in INR (Example: 500)
+  slippage_min_per_trade: 50        # Minimum allowed slippage in INR (Example: 50)
+  slippage_model: position_scaled   # Choose how slippage is calculated (Example: position_scaled)
+  slippage_ticks_per_side: 1        # Extra price points to add for slippage (Example: 1)
+
 risk:
-  consecutive_loss_cooldown: 2
-  max_consecutive_losses: 3
-  max_loss_per_day: 6000
+  consecutive_loss_cooldown: 2 # Days to stop trading after max losses hit (Example: 2)
+  max_consecutive_losses: 3    # Total losses allowed before a cooldown (Example: 3)
+  max_loss_per_day: 6000       # Daily PNL floor to stop trading (Example: 6000)
+
 strategy:
-  alert_validity: 1
-  direction_filter_enabled: false
-  exit_mode: single_lot
-  lots_per_trade: 3
-  max_correlated_positions: 2
-  max_lots: 5
-  max_position_pct: 0.8
-  min_alert_range_points: 0.5
-  min_sl_pct: 0.1
-  min_volume_candles_pct: 0.0
+  alert_validity: 1             # Minutes a signal remains tradeable (Example: 1)
+  direction_filter_enabled: false # Enable/Disable trend following filters (Example: false)
+  exit_mode: single_lot         # Method of exiting positions (Example: single_lot)
+  lots_per_trade: 3             # Number of lots per execution (Example: 3)
+  max_correlated_positions: 2    # Max positions allowed across different indices (Example: 2)
+  max_lots: 5                   # Hard cap on total lots allowed per index (Example: 5)
+  max_position_pct: 0.8         # Max capital usage per single trade (Example: 0.8)
+  min_alert_range_points: 0.5   # Minimum candle range to consider for signal (Example: 0.5)
+  min_sl_pct: 0.1               # Minimum Stop Loss percentage (Example: 0.1)
+  min_volume_candles_pct: 0.0   # Volume filter based on daily average (Example: 0.0)
   rsi:
-    min_candles_for_signal: 33
-    period: 14
-    threshold: 60
-    warmup_periods: 100
-  rsi_debug: false
-  safe_sl_max_loss: 6000
-  safe_sl_mode: true
-  signal_window_end: '13:45'
-  signal_window_start: '10:00'
-  single_lot_exit_target: 3
-  strike_range: 3
-  trade_only_on_expiry: false
+    min_candles_for_signal: 33 # Minimum data points required before first signal (Example: 33)
+    period: 14                 # RSI calculation window (Example: 14)
+    threshold: 60              # RSI value to trigger breakout alert (Example: 60)
+    warmup_periods: 100        # Candles needed for RSI to stabilize (Example: 100)
+  rsi_debug: false              # Print detailed RSI calculations to logs (Example: false)
+  safe_sl_max_loss: 6000        # Max absolute loss allowed on any trade (Example: 6000)
+  safe_sl_mode: true            # Use tighter SL based on max loss param (Example: true)
+  signal_window_start: '10:00'  # Time to start looking for signals (Example: '09:45')
+  signal_window_end: '13:45'    # Time to stop taking new trades (Example: '14:30')
+  single_lot_exit_target: 3     # Multiplier of alert range for profit target (Example: 2)
+  strike_range: 3               # Number of strikes away from ATM to trade (Example: 3)
+  trade_only_on_expiry: false   # If true, only trades on expiry day (Example: false)
+
 trading:
-  order_poll_interval_seconds: 5
-  paper_trading: true
-  trade_log_file: logs/PAPER_TRADES_LOG.csv
+  order_poll_interval_seconds: 5 # How often to check for order completion (Example: 5)
+  paper_trading: true            # Use simulated execution vs real orders (Example: true)
+  trade_log_file: logs/PAPER_TRADES_LOG.csv # File path for recording trades (Example: logs/LIVE_LOG.csv)
   window:
-    auto_square_off: '15:15'
-    end: '13:45'
-    start: 09:45
+    start: '09:45'           # Broker connection start time (Example: '09:15')
+    end: '13:45'             # Monitoring window end time (Example: '15:15')
+    auto_square_off: '15:15' # Time to exit all remaining positions (Example: '15:20')
