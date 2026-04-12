@@ -62,6 +62,7 @@ def load_summaries(reports_dir):
                 'indices': ", ".join(index_list),
                 'lots': data.get('config', {}).get('strategy', {}).get('lots_per_trade', '?'),
                 'exit_target': data.get('config', {}).get('strategy', {}).get('single_lot_exit_target', '?'),
+                'rsi_period': data.get('config', {}).get('strategy', {}).get('rsi', {}).get('period', '?'),
             })
         except Exception as e:
             print(f"Error loading {f}: {e}")
@@ -74,7 +75,7 @@ def print_table(results):
         print("No summary files found.")
         return
 
-    header = f"{'Yr':<4} {'Trd':<4} {'Win%':<5} {'PF':<5} {'DD%':<6} {'PnL':<10} {'Shp':<5} {'Verdict'}"
+    header = f"{'Yr':<4} {'P':<2} {'Trd':<4} {'Win%':<5} {'PF':<5} {'DD%':<6} {'PnL':<10} {'Shp':<5} {'Verdict'}"
     print("\n" + "=" * 80)
     print(" OUT-OF-SAMPLE VALIDATION TABLE")
     print("=" * 80)
@@ -102,7 +103,7 @@ def print_table(results):
             all_pass = False
 
         print(
-            f"{r['year']:<4} {r['trades']:<4} {wr:<5.1f} {pf:<5.2f} "
+            f"{r['year']:<4} {r['rsi_period']:<2} {r['trades']:<4} {wr:<5.1f} {pf:<5.2f} "
             f"{dd:<6.1f} {r['net_pnl']:<10,.0f} {r['sharpe']:<5.2f} "
             f"{verdict}"
         )
@@ -124,16 +125,16 @@ def print_table(results):
         print(f"\n  YoY Consistency:")
         print(f"    PnL Coefficient of Variation: {cv:.2f}")
         if cv > 1.5:
-            print(f"    ⚠️  HIGH VARIANCE: strategy performance is regime-dependent")
+            print(f"    [!] HIGH VARIANCE: strategy performance is regime-dependent")
 
         for yr, pnl in pnls.items():
             share = abs(pnl) / abs(total_pnl) * 100 if total_pnl != 0 else 0
             if share > 40:
-                print(f"    ⚠️  CONCENTRATION: {yr} accounts for {share:.1f}% of total PnL (limit: 40%)")
+                print(f"    [!] CONCENTRATION: {yr} accounts for {share:.1f}% of total PnL (limit: 40%)")
 
         crash_years_pnl = sum(pnls.get(y, 0) for y in ['2020', '2021'])
         if total_pnl > 0 and crash_years_pnl / total_pnl > 0.5:
-            print(f"    ⚠️  REGIME BIAS: 2020+2021 = {crash_years_pnl/total_pnl*100:.1f}% of total PnL (crash-bounce regime)")
+            print(f"    [!] REGIME BIAS: 2020+2021 = {crash_years_pnl/total_pnl*100:.1f}% of total PnL (crash-bounce regime)")
 
     print(
         f"\nFINAL VERDICT: {'ALL YEARS PASS - ready for live consideration' if all_pass else 'STRATEGY FAILS OUT-OF-SAMPLE - do not deploy live'}"

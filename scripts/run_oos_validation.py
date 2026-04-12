@@ -36,26 +36,28 @@ def load_base_config():
         return yaml.safe_load(f)
 
 
-def make_year_config(base_config, year, lots_override=None, exit_mode_override=None):
+def make_year_config(base_config, year, lots_override=None, exit_mode_override=None, rsi_period_override=None):
     """Create an in-memory config override for a specific year.
     Never touches the config.yaml file on disk."""
     cfg = copy.deepcopy(base_config)
     cfg['backtest']['start_date'] = f'{year}-01-01'
     cfg['backtest']['end_date'] = f'{year}-12-31'
-    cfg['backtest']['offline_mode'] = False  # Smart fallback handles it
+    cfg['backtest']['offline_mode'] = True  # Avoid rate limits during back-to-back runs
 
     if lots_override is not None:
         cfg['strategy']['lots_per_trade'] = lots_override
     if exit_mode_override is not None:
         cfg['strategy']['exit_mode'] = exit_mode_override
+    if rsi_period_override is not None:
+        cfg['strategy']['rsi']['period'] = rsi_period_override
 
     return cfg
 
 
-def run_single_year(base_config, year, logger, lots_override=None, exit_mode_override=None):
+def run_single_year(base_config, year, logger, lots_override=None, exit_mode_override=None, rsi_period_override=None):
     """Run a full backtest for one year using the in-process engine.
     Returns (year, trades_df, report_data, elapsed_seconds)."""
-    cfg = make_year_config(base_config, year, lots_override, exit_mode_override)
+    cfg = make_year_config(base_config, year, lots_override, exit_mode_override, rsi_period_override)
     start_date = pd.to_datetime(cfg['backtest']['start_date'])
     end_date = pd.to_datetime(cfg['backtest']['end_date'])
 
@@ -132,6 +134,8 @@ def main():
                         help='Override lots_per_trade for comparison (default: use config.yaml)')
     parser.add_argument('--exit-mode', default=None,
                         help='Override exit_mode (default: use config.yaml)')
+    parser.add_argument('--rsi-period', type=int, default=None,
+                        help='Override rsi_period (default: use config.yaml)')
 
     args = parser.parse_args()
     years = args.years
@@ -146,7 +150,7 @@ def main():
     for year in years:
         try:
             yr, trades_df, report_data, elapsed = run_single_year(
-                base_config, year, logger, args.lots, args.exit_mode
+                base_config, year, logger, args.lots, args.exit_mode, args.rsi_period
             )
             results[yr] = {
                 'trades': len(trades_df) if trades_df is not None else 0,

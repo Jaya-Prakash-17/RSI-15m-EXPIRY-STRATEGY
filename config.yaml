@@ -33,7 +33,7 @@ indices:
     tick_size: 0.05        # Minimum price movement (Example: 0.05)
   # SENSEX:
   #   expiry_day: Friday    # Primary expiry day for this index (Example: Friday)
-  #   lot_size: 10          # Number of units in one contract (Example: 10)
+  #   lot_size: 20        # Number of units in one contract (Example: 20)
   #   tick_size: 0.05       # Minimum price movement (Example: 0.05)
 
 reporting:
@@ -62,7 +62,7 @@ strategy:
   min_volume_candles_pct: 0.0   # Volume filter based on daily average (Example: 0.0)
   rsi:
     min_candles_for_signal: 33 # Minimum data points required before first signal (Example: 33)
-    period: 14                 # RSI calculation window (Example: 14)
+    period: 11                 # RSI lookback period. Example: 11 or 14.
     threshold: 60              # RSI value to trigger breakout alert (Example: 60)
     warmup_periods: 100        # Candles needed for RSI to stabilize (Example: 100)
   rsi_debug: false              # Print detailed RSI calculations to logs (Example: false)
