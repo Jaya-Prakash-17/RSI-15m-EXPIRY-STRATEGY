@@ -1,30 +1,19 @@
-# config.yaml — RSI Expiry Trading Bot Configuration
-
-# Backtest Settings
 backtest:
-  start_date: '2026-01-01'           # Backtest start (YYYY-MM-DD)
-  end_date: '2026-04-11'             # Backtest end (YYYY-MM-DD)
-  offline_mode: true                 # Run using local data files
-
-# Capital Configuration
+  end_date: '2025-12-31'
+  offline_mode: true
+  start_date: '2020-01-01'
 capital:
-  initial: 200000                # Initial trading capital per session (Rs.)
-
-# Trading Charges & Taxes (Live Values as of Jan 2026)
+  initial: 200000
 charges:
-  brokerage_per_trade: 20            # Rs.20 flat (standard discount broker)
-  exchange_txn_fee: 0.0006       # NSE: 0.03503% on premium (True-to-Label Oct 2024 update)
-  gst: 0.20                          # 18% GST on (Brokerage + Txn Fee + SEBI)
-  sebi_charges: 0.000003             # SEBI Turnover Fee: 0.0001% (Rs.10 per Crore)
-  stamp_duty: 0.00006               # 0.003% on Buy Premium
-  stt: 0.001                         # 0.1% on Sell Premium (STT updated Oct 2024)
-
-# Data Management
+  brokerage_per_trade: 20
+  exchange_txn_fee: 0.0006
+  gst: 0.2
+  sebi_charges: 3.0e-06
+  stamp_duty: 6.0e-05
+  stt: 0.001
 data:
-  download_retry_count: 3            # Max retries for API data failure
-  storage_path: data                 # Local directory for CSV data storage
-
-# Index Specific Parameters (Updated Jan 2026)
+  download_retry_count: 3
+  storage_path: data
 indices:
   BANKNIFTY:
     expiry_day: Tuesday
@@ -34,60 +23,46 @@ indices:
     expiry_day: Tuesday
     lot_size: 65
     tick_size: 0.05
-  # SENSEX:
-  #   expiry_day: Thursday
-  #   lot_size: 20
-  #   tick_size: 0.05
-
-# Performance Reporting
 reporting:
-  slippage_buffer_enabled: true      # If true, subtracts slippage buffer from each trade P&L
-  slippage_buffer_per_trade: 65      # Flat slippage buffer in Rs. (used when model='flat')
-  slippage_model: position_scaled    # 'flat' or 'position_scaled' (V16-P-04)
-  slippage_ticks_per_side: 1         # Ticks of slippage per entry/exit side (position_scaled)
-  slippage_min_per_trade: 50         # Floor (Rs.) even for tiny positions
-  slippage_max_per_trade: 500        # Cap (Rs.) to avoid penalizing large wins unfairly
-
-# Risk Management
+  slippage_buffer_enabled: true
+  slippage_buffer_per_trade: 65
+  slippage_max_per_trade: 500
+  slippage_min_per_trade: 50
+  slippage_model: position_scaled
+  slippage_ticks_per_side: 1
 risk:
-  consecutive_loss_cooldown: 2       # [DEPRECATED] Placeholder for future use
-  max_consecutive_losses: 3          # Circuit breaker: stop after N losses (V11-P-02)
-  max_loss_per_day: 6000             # Stop bot if Realized + Unrealized P&L <= this (Rs.)
-
-# Strategy Parameters
+  consecutive_loss_cooldown: 2
+  max_consecutive_losses: 3
+  max_loss_per_day: 6000
 strategy:
-  alert_validity: 1                  # Alert candle + 1 candle window for entry
-  direction_filter_enabled: false    # If true, filters CE on bearish / PE on bullish spot
-  exit_mode: single_lot            # 'single_lot' or 'multi_lot'
-  lots_per_trade: 3                 # Number of lots per position
-  max_correlated_positions: 2        # Max concurrent trades in same direction (P-09)
-  max_lots: 5                        # Global lot limit (hard cap)
-  max_position_pct: 0.8              # Max % of capital to use per trade
-  min_sl_pct: 0.10                   # Minimum SL % distance (P-27)
-  # risk_per_trade_pct removed: risk is controlled by safe_sl_max_loss (Rs. flat cap),
-  # which is more precise than %-based sizing for options with non-linear pricing.
-  min_alert_range_points: 0.5       # Skip alerts with candle range < this (V16-P-01 data guard)
-  min_volume_candles_pct: 0.0        # Skip fraction of expiry-day candles with volume>0 (set to 0 for historical)
+  alert_validity: 1
+  direction_filter_enabled: false
+  exit_mode: single_lot
+  lots_per_trade: 3
+  max_correlated_positions: 2
+  max_lots: 5
+  max_position_pct: 0.8
+  min_alert_range_points: 0.5
+  min_sl_pct: 0.1
+  min_volume_candles_pct: 0.0
   rsi:
-    min_candles_for_signal: 33       # Min candles required to validate RSI signal (V16-P-03: 11*3)
-    period: 11                        # RSI Lookback period
-    threshold: 60                 # Breakout threshold
-    warmup_periods: 100              # Min history required before scanning (V16 prerequisite)
-  rsi_debug: false                   # Verbose RSI value logging
-  safe_sl_max_loss: 6000             # Absolute loss cap per trade (Rs.) (P-23)
-  safe_sl_mode: true                 # Enforce safe_sl_max_loss guard
-  signal_window_start: '10:00'       # Start scanner window (P-30)
-  signal_window_end: '13:45'         # End scanner window (P-30)
-  single_lot_exit_target: 3     # Target index for exit (1=T1, 2=T2, 3=T3)
-  strike_range: 3                    # Number of strikes to scan around ATM
-  trade_only_on_expiry: false        # If true, scans only indices expiring TODAY
-
-# Live/Paper Trading Environment
+    min_candles_for_signal: 33
+    period: 14
+    threshold: 60
+    warmup_periods: 100
+  rsi_debug: false
+  safe_sl_max_loss: 6000
+  safe_sl_mode: true
+  signal_window_end: '13:45'
+  signal_window_start: '10:00'
+  single_lot_exit_target: 3
+  strike_range: 3
+  trade_only_on_expiry: false
 trading:
-  order_poll_interval_seconds: 5     # Wait between broker order status polls (Groww API safety)
-  paper_trading: true                # Simulation mode (V15-P-01 hardened)
+  order_poll_interval_seconds: 5
+  paper_trading: true
   trade_log_file: logs/PAPER_TRADES_LOG.csv
   window:
-    start: '09:45'                   # Trading window start (IST)
-    end: '13:45'                     # Trading window end (IST)
-    auto_square_off: '15:15'         # Force close all positions at this time (IST)
+    auto_square_off: '15:15'
+    end: '13:45'
+    start: 09:45
