@@ -8,7 +8,7 @@ backtest:
   end_date: '2025-12-31'    # The last date for historical testing (Example: '2025-12-31')
 
 capital:
-  initial: 200000          # Starting trading capital in INR (Example: 200000)
+  initial: 200000         # Starting trading capital in INR (Example: 200000)
 
 charges:
   brokerage_per_trade: 60  # Inflated 3X for stress test. Actual: 20 (as of April 2026)
@@ -31,6 +31,10 @@ indices:
     expiry_day: Tuesday    # Primary expiry day for this index (Example: Thursday)
     lot_size: 65           # Number of units in one contract (Example: 75)
     tick_size: 0.05        # Minimum price movement (Example: 0.05)
+  # SENSEX:
+  #   expiry_day: Friday    # Primary expiry day for this index (Example: Friday)
+  #   lot_size: 10          # Number of units in one contract (Example: 10)
+  #   tick_size: 0.05       # Minimum price movement (Example: 0.05)
 
 reporting:
   slippage_buffer_enabled: true     # Add random noise to trade execution prices (Example: true)
