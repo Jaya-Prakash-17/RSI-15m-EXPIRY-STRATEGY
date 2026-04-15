@@ -12,6 +12,10 @@ venv/
 *.log
 logs/
 
+# Data caches
+data/codex/
+data/candles/
+
 # Reports
 reports/
 

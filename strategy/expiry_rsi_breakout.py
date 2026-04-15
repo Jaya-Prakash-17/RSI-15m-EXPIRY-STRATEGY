@@ -60,7 +60,8 @@ class ExpiryRSIBreakout:
                 for k, v in state.items()
             }
             for symbol, state in self.state.items()
-            if state.get('alert') is not None  # Only persist active alerts
+            if state.get('alert') is not None           # Active alert: persist for recovery guard
+            or state.get('last_processed_time') is not None  # Recently processed: persist for audit trail
         }
 
     def import_state(self, state_dict: dict):
@@ -84,7 +85,13 @@ class ExpiryRSIBreakout:
                 except (ValueError, TypeError):
                     restored['last_processed_time'] = None
 
-            restored['_recovered_from_crash'] = True
+            # Case 1: alert is not None → bot crashed before entry; same-bar guard REQUIRED
+            # Case 2: alert is None → bot crashed after consume_alert(); guard NOT needed, trade is active
+            if restored.get('alert') is None:
+                restored['_recovered_from_crash'] = False  # Alert consumed; same-bar guard not needed
+            else:
+                restored['_recovered_from_crash'] = True   # Alert still active; guard needed
+
             self.state[symbol] = restored
             self.logger.info(f"Restored strategy state for {symbol}: alert_age={state.get('age', 0)}")
 
@@ -227,12 +234,17 @@ class ExpiryRSIBreakout:
             if rsi_data is not None and len(rsi_data) > 0:
                  # BUG: Series[-1] fails if index is numeric. Convert to array for position indexing.
                  rsi_arr = np.asarray(rsi_data)
-                 curr = float(rsi_arr[-1])
-                 prev = float(rsi_arr[-2]) if len(rsi_arr) > 1 else None
+                 arr_len = len(rsi_arr)
+                 curr_val = rsi_arr[-1]
 
+                 if arr_len < n + 2:
+                     results[symbol] = (float(curr_val) if not np.isnan(curr_val) else None, None)
+                     continue
+
+                 prev_val = rsi_arr[-2] if arr_len > 1 else np.nan
                  results[symbol] = (
-                      curr if not np.isnan(curr) else None,
-                      prev if prev is not None and not np.isnan(prev) else None
+                      float(curr_val) if not np.isnan(curr_val) else None,
+                      float(prev_val) if not np.isnan(prev_val) else None
                  )
             else:
                  results[symbol] = (None, None)
@@ -399,21 +411,40 @@ class ExpiryRSIBreakout:
         # Update processed time
         state['last_processed_time'] = current_time
 
-        # 1. Check for Entry (existing code)
+        # 1. Check for Alert Negation & Entry
         if state['alert'] is not None:
             alert_candle = state['alert']
 
-            # Entry condition: Price breaks high of alert candle
+            # STEP 1: Negation check (price close below alert low)
+            if self.alert_negation and current_time > state['alert_time'] and current_candle['close'] < alert_candle['low']:
+                self.logger.info(
+                    f"[{symbol}] Alert NEGATED: close={current_candle['close']:.2f} "
+                    f"< alert_low={alert_candle['low']:.2f}"
+                )
+                state['alert'] = None
+                state['age'] = 0
+                state['alert_time'] = None
+                return {'action': 'NEGATED', 'symbol': symbol}
+
+            # STEP 2: Entry check (only if NOT negated)
             if current_time > state['alert_time'] and current_candle['high'] > alert_candle['high']:
 
                 if state.get('_recovered_from_crash'):
                     alert_candle_dt = state['alert'].get('datetime')
                     if alert_candle_dt is not None:
-                        # Compare by candle bar (truncate to 15-min boundary)
-                        def _bar(dt): return dt.replace(second=0, microsecond=0, minute=(dt.minute // 15) * 15)
-                        if _bar(current_time) == _bar(alert_candle_dt):
-                            self.logger.warning(f"[{symbol}] Blocking same-bar entry post crash-recovery")
-                            return None
+                        if isinstance(alert_candle_dt, str):
+                            from datetime import datetime
+                            try:
+                                alert_candle_dt = datetime.fromisoformat(alert_candle_dt)
+                            except ValueError:
+                                pass
+
+                        if not isinstance(alert_candle_dt, str):
+                            # Compare by candle bar (truncate to 15-min boundary)
+                            def _bar(dt): return dt.replace(second=0, microsecond=0, minute=(dt.minute // 15) * 15)
+                            if _bar(current_time) == _bar(alert_candle_dt):
+                                self.logger.warning(f"[{symbol}] Blocking same-bar entry post crash-recovery")
+                                return None
                     state['_recovered_from_crash'] = False  # clear after first safe check
 
                 # ... breakout logic ...
@@ -445,19 +476,6 @@ class ExpiryRSIBreakout:
                     'exit_mode': self.config['strategy'].get('exit_mode', 'multi_lot'),
                     'lots_per_trade': self.config['strategy'].get('lots_per_trade', 3)
                 }
-
-        # 1b. Check for Alert Negation by Price
-        if state['alert'] is not None and self.alert_negation:
-            alert_candle = state['alert']
-            if current_candle['close'] < alert_candle['low']:
-                self.logger.info(
-                    f"[{symbol}] Alert NEGATED: close={current_candle['close']:.2f} "
-                    f"< alert_low={alert_candle['low']:.2f}"
-                )
-                state['alert'] = None
-                state['age'] = 0
-                state['alert_time'] = None
-                return {'action': 'NEGATED', 'symbol': symbol}
 
         # 2. Check for new Alert
         # Time-of-day filter (new alerts only)

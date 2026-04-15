@@ -42,19 +42,19 @@ class OrderManager:
 
     def _resolve_lot_size(self, symbol, trading_symbol=None):
         """
-        Resolve lot size from symbol. Checks in specificity order to avoid
-        substring collision ('NIFTY' is a substring of 'BANKNIFTY').
+        Resolve lot size from symbol using dynamic config keys.
+        Sorts by length (longest first) to prevent substring collision
+        (e.g., 'BANKNIFTY' matches before 'NIFTY').
         """
         symbol_text = f"{symbol or ''} {trading_symbol or ''}"
 
-        # Check in order from most specific to least specific.
-        # BANKNIFTY must come before NIFTY to avoid substring false match.
-        check_order = ['BANKNIFTY', 'MIDCPNIFTY', 'SENSEX', 'NIFTY']
+        indices = self.config.get('indices', {})
+        # Sort keys by length descending: ['FINNIFTY', 'BANKNIFTY', 'MIDCPNIFTY', 'SENSEX', 'BANKEX', 'NIFTY']
+        check_order = sorted(indices.keys(), key=len, reverse=True)
 
         for underlying in check_order:
-            details = self.config.get('indices', {}).get(underlying, {})
-            if details and underlying in symbol_text:
-                lot_size = details.get('lot_size', 1)
+            if underlying in symbol_text:
+                lot_size = indices[underlying].get('lot_size', 1)
                 self.logger.debug(f"Resolved lot_size={lot_size} for {underlying} from symbol")
                 return lot_size
 

@@ -92,6 +92,8 @@ class LiveTrader:
         # Strategy filters
         self.enable_direction_filter = config['strategy'].get('direction_filter_enabled', False)
         self.max_loss_per_day = config['risk']['max_loss_per_day']
+        self.max_position_pct = config['risk'].get('max_position_pct', 0.20)
+        self.logger.info(f"Position size cap: {self.max_position_pct*100:.0f}% of available balance")
 
         # P-08: Incremental candle cache — full download once, append-only after
         self._candle_cache: dict = {}   # symbol → pd.DataFrame
@@ -1046,6 +1048,30 @@ class LiveTrader:
                 except Exception:
                     pass
 
+    def _cancel_all_pending_entries_at_sqoff(self):
+        if not self.pending_entries:
+            return
+        self.logger.warning(f"SQ-OFF: Cancelling {len(self.pending_entries)} pending entry order(s)")
+        for symbol in list(self.pending_entries.keys()):
+            pending = self.pending_entries[symbol]
+            order_id = pending.get('order_id', '')
+            if order_id and not order_id.startswith('PAPER_'):
+                try:
+                    result = self.om.cancel_order(order_id)
+                    if result:
+                        self.logger.info(f"Cancelled pending entry {order_id} for {symbol}")
+                    else:
+                        self.logger.error(f"Failed to cancel {order_id} for {symbol} at sq-off")
+                except Exception as e:
+                    self.logger.error(f"Error cancelling {order_id}: {e}")
+            self.telegram._send(
+                f"🕐 <b>SQ-OFF: Pending Entry Cancelled</b>\n"
+                f"Symbol: <code>{symbol}</code> | Order: {order_id}\n"
+                f"No fill before sq_off_time — order cancelled."
+            )
+        self.pending_entries.clear()
+        self.tracker.save_pending_entries({})
+
     def _place_pending_entry(self, candidate):
         """Place a pending SL-M BUY order when an alert is generated."""
         symbol = candidate['symbol']
@@ -1088,9 +1114,9 @@ class LiveTrader:
                 self.logger.warning(f"Insufficient Capital: ₹{balance} < ₹{cost}")
                 return
 
-            max_cost = balance * max_position_pct
+            max_cost = balance * self.max_position_pct
             if cost > max_cost:
-                self.logger.warning(f"Position too large: ₹{cost:.0f} > {max_position_pct*100:.0f}% of balance (₹{max_cost:.0f}). Skipping.")
+                self.logger.warning(f"Position too large: ₹{cost:.0f} > {self.max_position_pct*100:.0f}% of balance (₹{max_cost:.0f}). Skipping.")
                 return
 
         # Portfolio-level risk cap (Hardening Step 4)
@@ -1199,7 +1225,7 @@ class LiveTrader:
 
         elif gap_pct > RECALC_THRESHOLD:
             # Moderate gap — recalculate SL and targets from actual fill price
-            alert_range = signal.get('alert_range', fill_price - float(signal.get('sl', fill_price - 15)))
+            alert_range = float(signal.get('alert_range', 0))
             if alert_range <= 0:
                 self.logger.critical(f"[GAP-RECALC] alert_range={alert_range:.2f} <= 0 for {original_symbol}. "
                                      f"Using original signal targets to prevent inverted orders.")
@@ -1207,6 +1233,22 @@ class LiveTrader:
                 # Skip recalc entirely; fall through with original targets
             else:
                 new_sl = round(fill_price - alert_range, 2)
+
+                # ADD INVERTED SL ABORT GUARD HERE:
+                if new_sl >= fill_price:
+                    self.logger.critical(
+                        f"🚫 INVERTED SL ABORT: {original_symbol} | "
+                        f"new_sl={new_sl} >= fill_price={fill_price}. "
+                        f"Triggering emergency exit."
+                    )
+                    self.om.place_exit_order(trading_symbol, qty, trading_symbol, "INVERTED_SL_ABORT")
+                    self.strategy.consume_alert(original_symbol)
+                    self.telegram._send(
+                        f"🚨 <b>Inverted SL Abort</b>\nSymbol: <code>{original_symbol}</code>\n"
+                        f"new_sl={new_sl} >= fill={fill_price}. Position closed immediately."
+                    )
+                    return
+
                 new_targets = [
                     round(fill_price + alert_range, 2),
                     round(fill_price + 2 * alert_range, 2),
@@ -1406,19 +1448,26 @@ class LiveTrader:
                         )
                         fill_price = order_status.get('fill_price') or pending['trigger_price']
                         self._activate_trade_from_pending(pending, fill_price=fill_price, override_qty=filled_qty)
+
+                        self.telegram._send(
+                            f"⚠️ <b>Partial Fill — Trade Activated</b>\n"
+                            f"Symbol: <code>{symbol}</code>\n"
+                            f"Filled: {filled_qty} units (order was {status})\n"
+                            f"Trade is LIVE with stub quantity. Monitor SL closely."
+                        )
                     else:
                         self.logger.warning(
                             f"⚠️ Pending entry {order_id} was {status} for {symbol}. "
                             f"No position opened."
                         )
-                    # Notify trader
-                    self.telegram._send(
-                        f"⚠️ <b>Entry Order {status}</b>\n"
-                        f"Symbol: <code>{symbol}</code>\n"
-                        f"Order: {order_id}\n"
-                        f"No position was opened. Reason: {status}\n"
-                        f"Check margin/limits on Groww app."
-                    )
+                        # Notify trader
+                        self.telegram._send(
+                            f"⚠️ <b>Entry Order {status}</b>\n"
+                            f"Symbol: <code>{symbol}</code>\n"
+                            f"Order: {order_id}\n"
+                            f"No position was opened. Reason: {status}\n"
+                            f"Check margin/limits on Groww app."
+                        )
                     # Consume the strategy alert so no orphan ENTRY signals fire
                     original_symbol = pending.get('original_symbol', symbol)
                     self.strategy.consume_alert(original_symbol)
@@ -2230,17 +2279,7 @@ class LiveTrader:
                     self.logger.info("=" * 60)
 
                     # Cancel any pending entry orders first
-                    if self.pending_entries:
-                        self.logger.info(f"Canceling {len(self.pending_entries)} pending entry orders...")
-                        for symbol, pending in list(self.pending_entries.items()):
-                            order_id = pending.get('order_id')
-                            if order_id:
-                                try:
-                                    self.om.cancel_order(order_id)
-                                    self.logger.info(f"Cancelled pending entry: {symbol}")
-                                except Exception as e:
-                                    self.logger.error(f"Cancel pending entry failed for {symbol}: {e}")
-                        self.pending_entries.clear()
+                    self._cancel_all_pending_entries_at_sqoff()
 
                     # Square off active trades
                     active_trades = self.tracker.get_active_trades()
