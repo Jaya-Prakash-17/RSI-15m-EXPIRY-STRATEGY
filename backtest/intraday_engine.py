@@ -241,10 +241,9 @@ class IntradayEngine:
         # This ensures RSI values are more stable and closer to broker values
         warmup_candles = max(warmup_candles, 100)
 
-        warmup_minutes = warmup_candles * 15  # 15-min candles
-
-        # Start fetching from previous day to ensure warmup data
-        warmup_start = date - timedelta(minutes=warmup_minutes, days=3) # Give margin for weekends
+        # 100 candles = 4 full trading days. To guarantee 8 trading days (approx 200 candles)
+        # and account for weekends/holidays, we offset by 12 calendar days.
+        warmup_start = date - timedelta(days=12)
 
         self.logger.info(f"Fetching data with {warmup_candles} candle warmup from {warmup_start}")
 

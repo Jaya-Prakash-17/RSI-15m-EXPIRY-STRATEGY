@@ -103,6 +103,11 @@ class DataManager:
                         for gs, ge in gaps:
                             self.logger.info(f"  Missing: {gs.date()} to {ge.date()}")
                         need_download = True
+                    elif file_max.date() == end_date.date():
+                        from datetime import time
+                        if file_max.time() < time(15, 15):
+                            self.logger.debug(f"Spot {symbol} has incomplete intraday data (ends at {file_max.time()}). Forcing update.")
+                            need_download = True
 
         if need_download:
             if self.offline_mode:
@@ -144,6 +149,13 @@ class DataManager:
                 if file_max_date < requested_end or file_min_date > requested_start:
                     self.logger.debug(f"Derivative {contract_name} boundary mismatch (file: {file_min_date} to {file_max_date}, need {requested_start} to {requested_end})")
                     need_download = True
+                elif file_max_date == requested_end:
+                    from datetime import time
+                    # If data truncates before 15:15 on the final day, it was likely downloaded mid-day.
+                    # Flag this as incomplete to force a full EOD download for backtests.
+                    if existing_df['datetime'].max().time() < time(15, 15):
+                        self.logger.debug(f"Derivative {contract_name} has incomplete intraday data (ends at {existing_df['datetime'].max().time()}). Forcing update.")
+                        need_download = True
 
         if need_download:
             if self.offline_mode:
