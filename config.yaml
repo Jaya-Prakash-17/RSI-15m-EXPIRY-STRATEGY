@@ -3,9 +3,9 @@
 # =============================================================================
 
 backtest:
-  start_date: '2020-01-01'  # The first date for historical testing (Example: '2020-01-01')
-  offline_mode: true       # Use local files only, no API calls during backtest (Example: true)
-  end_date: '2025-12-31'    # The last date for historical testing (Example: '2025-12-31')
+  start_date: '2026-04-01'
+  offline_mode: false
+  end_date: '2026-04-15'
 
 capital:
   initial: 200000         # Starting trading capital in INR (Example: 200000)
@@ -48,6 +48,7 @@ risk:
   consecutive_loss_cooldown: 2 # Days to stop trading after max losses hit (Example: 2)
   max_consecutive_losses: 3    # Total losses allowed before a cooldown (Example: 3)
   max_loss_per_day: 6000       # Daily PNL floor to stop trading (Example: 6000)
+  max_total_premium_deployed: 25000 # Max notional premium across all active positions
 
 strategy:
   alert_validity: 1             # Minutes a signal remains tradeable (Example: 1)
@@ -59,12 +60,12 @@ strategy:
   max_position_pct: 0.8         # Max capital usage per single trade (Example: 0.8)
   min_alert_range_points: 0.5   # Minimum candle range to consider for signal (Example: 0.5)
   min_sl_pct: 0.1               # Minimum Stop Loss percentage (Example: 0.1)
-  min_volume_candles_pct: 0.0   # Volume filter based on daily average (Example: 0.0)
+  min_volume_candles_pct: 0.9   # Volume filter based on daily average (Example: 0.0)
   rsi:
     min_candles_for_signal: 33 # Minimum data points required before first signal (Example: 33)
     period: 11                 # RSI lookback period. Example: 11 or 14.
     threshold: 60              # RSI value to trigger breakout alert (Example: 60)
-    warmup_periods: 100        # Candles needed for RSI to stabilize (Example: 100)
+    warmup_periods: 33        # Candles needed for RSI to stabilize (Example: 100)
   rsi_debug: false              # Print detailed RSI calculations to logs (Example: false)
   safe_sl_max_loss: 6000        # Max absolute loss allowed on any trade (Example: 6000)
   safe_sl_mode: true            # Use tighter SL based on max loss param (Example: true)

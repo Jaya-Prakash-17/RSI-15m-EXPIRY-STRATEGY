@@ -148,12 +148,9 @@ class DataManager:
         if need_download:
             if self.offline_mode:
                 self.logger.debug(f"Offline Mode: Using existing derivative data for {contract_name} (even if range incomplete).")
-            elif file_exists and not refresh:
-                # Smart fallback: file exists but range incomplete — use what we have
-                self.logger.debug(f"Using existing derivative data for {contract_name} (file present, skipping API)")
             else:
-                # File truly missing or refresh requested — must download
-                self.logger.info(f"Derivative data for {contract_name} {'updating from API...' if refresh else 'not found locally, downloading...'}")
+                # File truly missing or range incomplete — must download
+                self.logger.info(f"Derivative data for {contract_name} {'updating from API...' if refresh else 'not found/incomplete locally, downloading...'}")
                 success = self.downloader.download_derivative_data(underlying, contract_name, year, start_date, end_date)
                 if not success and not os.path.exists(filepath):
                     return pd.DataFrame()

@@ -83,6 +83,8 @@ class ExpiryRSIBreakout:
                          restored['last_processed_time'] = datetime.strptime(restored['last_processed_time'], "%Y-%m-%d %H:%M:%S")
                 except (ValueError, TypeError):
                     restored['last_processed_time'] = None
+
+            restored['_recovered_from_crash'] = True
             self.state[symbol] = restored
             self.logger.info(f"Restored strategy state for {symbol}: alert_age={state.get('age', 0)}")
 
@@ -113,32 +115,16 @@ class ExpiryRSIBreakout:
         seed_gain = gains[:n].mean()
         seed_loss = losses[:n].mean()
 
-        # Vectorized Wilder's Smoothing via pandas EWM
-        # Wilder's smoothing is an EMA with alpha = 1 / period.
-        # adjust=False ensures it uses the first value as-is and smooths recursively.
+        avg_gains = np.full(gains.shape, np.nan)
+        avg_losses = np.full(losses.shape, np.nan)
 
-        # We need to construct a series where the first valid value is the seed
-        # at index n-1, and subsequent values are the raw gains/losses.
-        g_series = pd.Series(gains)
-        l_series = pd.Series(losses)
+        avg_gains[n-1] = seed_gain
+        avg_losses[n-1] = seed_loss
 
-        # Override values before the seed to 0 so they don't affect cumulative EWM
-        g_series.iloc[:n-1] = 0
-        l_series.iloc[:n-1] = 0
-
-        # Set the seed value
-        g_series.iloc[n-1] = seed_gain
-        l_series.iloc[n-1] = seed_loss
-
-        avg_gains_series = g_series.ewm(alpha=1/n, adjust=False).mean()
-        avg_losses_series = l_series.ewm(alpha=1/n, adjust=False).mean()
-
-        avg_gains = avg_gains_series.values
-        avg_losses = avg_losses_series.values
-
-        # Mark leads as NaN to match previous behavior
-        avg_gains[:n-1] = np.nan
-        avg_losses[:n-1] = np.nan
+        # Iterative Wilder's Smoothing: avg[i] = (avg[i-1] * (n-1) + val[i]) / n
+        for i in range(n, len(gains)):
+            avg_gains[i] = (avg_gains[i-1] * (n - 1) + gains[i]) / n
+            avg_losses[i] = (avg_losses[i-1] * (n - 1) + losses[i]) / n
 
         with np.errstate(divide='ignore', invalid='ignore'):
             rs = np.where(avg_losses == 0, np.inf, avg_gains / avg_losses)
@@ -148,11 +134,13 @@ class ExpiryRSIBreakout:
         if isinstance(prices, pd.Series):
             rsi_series = pd.Series(index=prices.index, dtype=float)
             rsi_series.iloc[n:] = rsi_values[n-1:]
-            if return_components:
-                return rsi_series, gains, losses, list(avg_gains), list(avg_losses)
-            return rsi_series
+            result = rsi_series
         else:
-            return rsi_values # Return raw array for speed in vectorized contexts
+            result = rsi_values
+
+        if return_components:
+            return result, gains, losses, list(avg_gains), list(avg_losses)
+        return result
 
     def calculate_latest_rsi(self, prices, return_prev=False):
         """
@@ -417,6 +405,17 @@ class ExpiryRSIBreakout:
 
             # Entry condition: Price breaks high of alert candle
             if current_time > state['alert_time'] and current_candle['high'] > alert_candle['high']:
+
+                if state.get('_recovered_from_crash'):
+                    alert_candle_dt = state['alert'].get('datetime')
+                    if alert_candle_dt is not None:
+                        # Compare by candle bar (truncate to 15-min boundary)
+                        def _bar(dt): return dt.replace(second=0, microsecond=0, minute=(dt.minute // 15) * 15)
+                        if _bar(current_time) == _bar(alert_candle_dt):
+                            self.logger.warning(f"[{symbol}] Blocking same-bar entry post crash-recovery")
+                            return None
+                    state['_recovered_from_crash'] = False  # clear after first safe check
+
                 # ... breakout logic ...
                 alert_range = alert_candle['high'] - alert_candle['low']
 

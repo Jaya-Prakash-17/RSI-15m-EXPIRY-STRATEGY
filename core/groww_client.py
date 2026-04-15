@@ -8,6 +8,7 @@ import numpy as np
 import dotenv
 import time
 import threading
+from core.exceptions import RateLimitExceededError
 dotenv.load_dotenv()
 
 
@@ -62,6 +63,7 @@ class GrowwClient:
         self.client = None
         self._instrument_cache = {}  # symbol -> instrument dict. Static per session.
         self._rate_limiter = _RateLimiter(max_rps=10)  # FIX #4: global rate limiter
+        self._consecutive_failures = 0  # CRITICAL: Track 429 errors for hard circuit breaking
 
         # NO MOCK MODE - Fail fast if requirements not met
         if not HAS_GROWW_SDK:
@@ -332,6 +334,48 @@ class GrowwClient:
         except Exception as e:
             self.logger.error(f"Error fetching LTP for {symbol}: {e}")
             return None
+
+    def get_batch_ltp(self, symbols: list[str]) -> dict[str, float | None]:
+        """
+        Fetch LTP for multiple symbols.
+        Tries a sequential fallback with rate limit handling (exponential backoff).
+        Raises RateLimitExceededError on 10+ consecutive 429 failures.
+        """
+        results = {}
+        for symbol in symbols:
+            retries = 3
+            backoff = 0.5
+            while retries > 0:
+                try:
+                    price = self.get_ltp(symbol)
+                    results[symbol] = price
+                    self._consecutive_failures = 0  # reset on success
+                    time.sleep(0.05)  # sequential sleep 50ms (requested)
+                    break
+                except Exception as e:
+                    error_msg = str(e).upper()
+                    # Detect 429 Rate Limit
+                    if "429" in error_msg or "TOO MANY REQUESTS" in error_msg:
+                        self._consecutive_failures += 1
+                        if self._consecutive_failures >= 10:
+                            self.logger.critical("🚨 HARD RATE LIMIT BROKEN: 10 consecutive 429 errors.")
+                            raise RateLimitExceededError("Hard rate limit hit (10+ consecutive failures)")
+
+                        retries -= 1
+                        self.logger.warning(
+                            f"⚠️ Rate limited (429) on {symbol}. "
+                            f"Backing off {backoff}s. Retries: {retries}"
+                        )
+                        time.sleep(backoff)
+                        backoff *= 2
+                    else:
+                        # Non-rate-limit error: log and skip this symbol
+                        self.logger.error(f"Error fetching LTP for {symbol}: {e}")
+                        results[symbol] = None
+                        break
+            if retries == 0:
+                results[symbol] = None
+        return results
 
     def place_order(self, symbol, qty, side, order_type="MARKET", price=None, product="MIS", trading_symbol=None):
         """

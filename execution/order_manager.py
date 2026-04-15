@@ -217,15 +217,22 @@ class OrderManager:
     def check_order_status(self, order_id):
         return self.client.get_order_status(order_id)
 
-    def place_partial_exits(self, symbol, trading_symbol, signal, entry_price):
+    def place_partial_exits(self, symbol, trading_symbol, signal, entry_price, actual_qty=None):
         """
         Place partial exit orders for multi-lot mode.
         """
         exit_mode = signal.get('exit_mode', 'multi_lot')
-        lots = signal.get('lots_per_trade', 3)
+        lot_size = self._resolve_lot_size(symbol, trading_symbol)
+
+        if actual_qty is not None:
+            lots = actual_qty // lot_size if lot_size > 0 else 1
+            total_qty = actual_qty
+        else:
+            lots = signal.get('lots_per_trade', 3)
+            total_qty = lots * lot_size
+
         targets = signal['targets']
         sl_price = signal['sl']
-        lot_size = self._resolve_lot_size(symbol, trading_symbol)
 
         exit_orders = {
             'mode': exit_mode,
@@ -243,7 +250,7 @@ class OrderManager:
             quantities = [
                 lots_per_tp * lot_size,
                 lots_per_tp * lot_size,
-                remainder * lot_size
+                total_qty - (2 * lots_per_tp * lot_size)
             ]
 
             for i, (qty, target_price) in enumerate(zip(quantities, targets)):
@@ -285,7 +292,7 @@ class OrderManager:
             target_idx = self.config.get('strategy', {}).get('single_lot_exit_target', 2) - 1
             target_price = targets[target_idx] if target_idx < len(targets) else targets[-1]
             tp_level = target_idx + 1
-            exit_qty = lots * lot_size
+            exit_qty = total_qty
 
             self.logger.info(
                 f"Setting up single-lot exit at TP{tp_level}: {exit_qty} units "

@@ -50,6 +50,11 @@ class MarketHaltedError(NetworkError):
     pass
 
 
+class RateLimitExceededError(NetworkError):
+    """Raised when consecutive API failures indicate a hard rate limit."""
+    pass
+
+
 # ─── Data Errors ─────────────────────────────────────────────
 class DataError(BotError):
     pass

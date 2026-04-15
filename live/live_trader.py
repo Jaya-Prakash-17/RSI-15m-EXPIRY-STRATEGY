@@ -101,7 +101,10 @@ class LiveTrader:
 
         # P-05: Market halt detection state
         self._market_halted: bool = False
+        self._consecutive_halt_failures: int = 0
+        self._halt_connectivity_alert_sent: bool = False
         self._halt_detected_at = None
+        self._state_save_alert_sent: bool = False
         self._halt_alert_sent: bool = False
 
         # Trading window
@@ -115,6 +118,11 @@ class LiveTrader:
         # Candle Builder for local option candles (P-21)
         self.candle_builder = CandleBuilder(interval_minutes=15)
         self._pending_closed_bars = {}  # symbol -> bar dict
+
+        # Hardening: LTP & Starvation trackers
+        self._consecutive_ltp_failures = 0
+        self._last_bar_close_time = datetime.now()
+        self._starvation_alert_sent = False
 
     def _get_tradeable_indices(self):
         """
@@ -171,6 +179,8 @@ class LiveTrader:
         # P-08 / P-20: Clear memory caches from previous days to prevent leaks
         self._candle_cache.clear()
         self._ltp_cache.clear()
+        self.last_processed_candle_time.clear()
+        self.logger.info("Candle processing timestamps reset for new session.")
 
         try:
             run_startup_assertions()
@@ -422,9 +432,17 @@ class LiveTrader:
         """P-05: Proxy check using NIFTY LTP. Returns False if market appears halted."""
         try:
             ltp = self.client.get_ltp('NIFTY')
-            return ltp is not None and ltp > 0
+            if ltp is not None and ltp > 0:
+                self._consecutive_halt_failures = 0
+                self._halt_connectivity_alert_sent = False
+                return True
+            self._consecutive_halt_failures += 1
         except Exception:
-            return False
+            self._consecutive_halt_failures += 1
+        if self._consecutive_halt_failures >= 5 and not self._halt_connectivity_alert_sent:
+            self.telegram._send_to_owner("⚠️ API connectivity issue: 5 consecutive NIFTY LTP failures. Check connection.")
+            self._halt_connectivity_alert_sent = True
+        return self._consecutive_halt_failures < 5
 
     def _check_correlation_limit(self, opt_type: str, underlying: str) -> bool:
         """P-09: Returns True if trade allowed, False if would over-concentrate direction."""
@@ -590,23 +608,49 @@ class LiveTrader:
 
     def _poll_option_ltps(self):
         """
-        Poll LTP for all tracked options and feed to CandleBuilder.
+        Poll LTP for all tracked options in batch and feed to CandleBuilder.
         Throttled to run every ~2 seconds in main loop.
         """
+        from core.exceptions import RateLimitExceededError
+
         for underlying in self.underlyings:
             symbols = list(self.tracked_options.get(underlying, {}).keys())
-            for symbol in symbols:
-                try:
-                    ltp = self._get_ltp_cached(symbol)
+            if not symbols:
+                continue
+
+            try:
+                # BATCH LTP POLLING (Hardening Step 1)
+                batch_results = self.client.get_batch_ltp(symbols)
+                self._consecutive_ltp_failures = 0  # reset on successful batch call
+
+                for symbol, ltp in batch_results.items():
                     if ltp:
                         closed_bar = self.candle_builder.feed(symbol, ltp)
                         if closed_bar:
                             self._pending_closed_bars[symbol] = closed_bar
                             self.logger.debug(f"Local bar closed for {symbol} at {closed_bar['datetime']}")
+
+                            # Starvation tracking: update last closure time
+                            self._last_bar_close_time = datetime.now()
+                            self._starvation_alert_sent = False
+
                             # Save state immediately on closure (Phase 2 atomic persistence)
                             self.tracker.save_candle_state(symbol, self.candle_builder.get_history(symbol))
-                except Exception as e:
-                    self.logger.error(f"Error polling LTP/feeding CandleBuilder for {symbol}: {e}")
+
+                # Update LTP cache for other methods to use
+                now = datetime.now()
+                for symbol, ltp in batch_results.items():
+                    if ltp:
+                        self._ltp_cache[symbol] = (ltp, now)
+
+            except RateLimitExceededError as e:
+                self._consecutive_ltp_failures += 1
+                self.logger.critical(f"LTP POLLING HALTED: {e}")
+                if self._consecutive_ltp_failures == 1: # only alert once per burst
+                    self.telegram._send_to_owner(f"🚨 <b>Rate Limit Exceeded</b>\nLTP polling paused. Retrying with backoff.")
+                return # skip this poll tick
+            except Exception as e:
+                self.logger.error(f"Error in batch LTP polling: {e}")
 
     def _round_to_tick(self, price, underlying=None):
         """Round price to tick size for given underlying."""
@@ -796,9 +840,14 @@ class LiveTrader:
                             # --- Direction Confirmation ---
                             if self.enable_direction_filter:
                                 try:
-                                    if len(spot_df) >= 2:
-                                        prev_spot = spot_df.iloc[-2]['close']
-                                        curr_spot = spot_df.iloc[-1]['close']
+                                    from datetime import date
+                                    today = datetime.now().date()
+                                    today_spot = spot_df[spot_df['datetime'].dt.date == today]
+                                    if len(today_spot) < 2:
+                                        self.logger.debug(f"[{symbol}] Direction filter: insufficient today candles ({len(today_spot)}). Skipping filter.")
+                                    else:
+                                        prev_spot = today_spot.iloc[-2]['close']
+                                        curr_spot = today_spot.iloc[-1]['close']
                                         opt_type = symbol.split('-')[4]
 
                                         if opt_type == 'CE' and curr_spot < prev_spot:
@@ -988,6 +1037,9 @@ class LiveTrader:
             os.replace(temp_path, filepath)
         except Exception as e:
             self.logger.warning(f"Could not save strategy state: {e}")
+            if not getattr(self, '_state_save_alert_sent', False):
+                self.telegram._send_to_owner(f"⚠️ Strategy state WRITE FAILED: {e}. Crash recovery may be incomplete.")
+                self._state_save_alert_sent = True
             if temp_path and os.path.exists(temp_path):
                 try:
                     os.remove(temp_path)
@@ -1036,12 +1088,29 @@ class LiveTrader:
                 self.logger.warning(f"Insufficient Capital: ₹{balance} < ₹{cost}")
                 return
 
-            # FIX #3: Enforce max_position_pct config guard
-            max_position_pct = self.config['strategy'].get('max_position_pct', 1.0)
             max_cost = balance * max_position_pct
             if cost > max_cost:
                 self.logger.warning(f"Position too large: ₹{cost:.0f} > {max_position_pct*100:.0f}% of balance (₹{max_cost:.0f}). Skipping.")
                 return
+
+        # Portfolio-level risk cap (Hardening Step 4)
+        max_total_premium = self.config['risk'].get('max_total_premium_deployed', 25000)
+        current_premium = 0
+        for trade in self.tracker.get_active_trades():
+            current_premium += trade['entry_price'] * trade['remaining_qty']
+
+        if (current_premium + cost) > max_total_premium:
+            self.logger.warning(
+                f"🛑 PORTFOLIO EXPOSURE CAP: Current=\u20b9{current_premium:.0f} + "
+                f"New=\u20b9{cost:.0f} > Max=\u20b9{max_total_premium:.0f}. Entry aborted."
+            )
+            self.telegram._send(
+                f"🛑 <b>Exposure Cap Hit</b>\n"
+                f"Cannot entry {symbol}. Aggregate premium cap would be exceeded.\n"
+                f"Active: \u20b9{current_premium:.0f} | Limit: \u20b9{max_total_premium:.0f}"
+            )
+            self.strategy.consume_alert(symbol)
+            return
 
         self.logger.info(f"📌 PLACING PENDING ENTRY ORDER for {symbol} ({underlying}) at ₹{trigger_price}")
 
@@ -1099,6 +1168,13 @@ class LiveTrader:
         trigger_price = float(pending['trigger_price'])
         fill_price = float(fill_price)
 
+        if override_qty is not None and override_qty != pending['qty']:
+             self.telegram._send(
+                 f"⚠️ <b>Partial fill: {override_qty}/{pending['qty']} units filled.</b>\n"
+                 f"Symbol: <code>{original_symbol}</code>\n"
+                 f"Exit orders sized to actual fill."
+             )
+
         # ─── GAP-FILL GUARD ────────────────────────────────────────────────
         gap_pct = (fill_price - trigger_price) / trigger_price if trigger_price > 0 else 0
         ABORT_THRESHOLD = self.config['strategy'].get('gap_abort_pct', 0.04)
@@ -1124,29 +1200,36 @@ class LiveTrader:
         elif gap_pct > RECALC_THRESHOLD:
             # Moderate gap — recalculate SL and targets from actual fill price
             alert_range = signal.get('alert_range', fill_price - float(signal.get('sl', fill_price - 15)))
-            new_sl = round(fill_price - alert_range, 2)
-            new_targets = [
-                round(fill_price + alert_range, 2),
-                round(fill_price + 2 * alert_range, 2),
-                round(fill_price + 3 * alert_range, 2),
-            ]
-            # Create a modified copy of signal — do NOT mutate the original
-            signal = {
-                **signal,
-                'sl': new_sl,
-                'targets': new_targets,
-            }
-            self.logger.warning(
-                f"⚠️ GAP-FILL RECALC: {original_symbol} | "
-                f"Trigger=\u20b9{trigger_price} Fill=\u20b9{fill_price} Gap={gap_pct*100:.1f}%. "
-                f"New SL=\u20b9{new_sl}, T1=\u20b9{new_targets[0]}"
-            )
-            self.telegram._send(
-                f"⚠️ <b>Gap Fill — SL/Targets Recalculated</b>\n"
-                f"Symbol: <code>{original_symbol}</code>\n"
-                f"Fill: \u20b9{fill_price} (trigger \u20b9{trigger_price})\n"
-                f"New SL: \u20b9{new_sl} | T1: \u20b9{new_targets[0]}"
-            )
+            if alert_range <= 0:
+                self.logger.critical(f"[GAP-RECALC] alert_range={alert_range:.2f} <= 0 for {original_symbol}. "
+                                     f"Using original signal targets to prevent inverted orders.")
+                signal = {**signal}  # copy only — do NOT mutate
+                # Skip recalc entirely; fall through with original targets
+            else:
+                new_sl = round(fill_price - alert_range, 2)
+                new_targets = [
+                    round(fill_price + alert_range, 2),
+                    round(fill_price + 2 * alert_range, 2),
+                    round(fill_price + 3 * alert_range, 2),
+                ]
+                assert all(t > fill_price for t in new_targets), "Target below fill price"
+                # Create a modified copy of signal — do NOT mutate the original
+                signal = {
+                    **signal,
+                    'sl': new_sl,
+                    'targets': new_targets,
+                }
+                self.logger.warning(
+                    f"⚠️ GAP-FILL RECALC: {original_symbol} | "
+                    f"Trigger=\u20b9{trigger_price} Fill=\u20b9{fill_price} Gap={gap_pct*100:.1f}%. "
+                    f"New SL=\u20b9{new_sl}, T1=\u20b9{new_targets[0]}"
+                )
+                self.telegram._send(
+                    f"⚠️ <b>Gap Fill — SL/Targets Recalculated</b>\n"
+                    f"Symbol: <code>{original_symbol}</code>\n"
+                    f"Fill: \u20b9{fill_price} (trigger \u20b9{trigger_price})\n"
+                    f"New SL: \u20b9{new_sl} | T1: \u20b9{new_targets[0]}"
+                )
         # ─── END GAP-FILL GUARD ────────────────────────────────────────────
 
         targets = [self._round_to_tick(t, underlying) for t in signal.get('targets', [])]
@@ -1184,7 +1267,7 @@ class LiveTrader:
         # Place TARGET orders (limit sell orders at each target)
         # We delegate this entirely to om.place_partial_exits to avoid duplication
         # and ensure percentage/lot rules from config are strictly followed.
-        exit_orders = self.om.place_partial_exits(original_symbol, trading_symbol, signal, fill_price)
+        exit_orders = self.om.place_partial_exits(original_symbol, trading_symbol, signal, fill_price, actual_qty=qty)
 
         target_order_ids = [None, None, None]
         for order in exit_orders['orders']:
@@ -1532,8 +1615,16 @@ class LiveTrader:
 
                         if is_order_filled(sl_state):
                             self.logger.info(f"🔴 SL HIT for {symbol} (Order {sl_order_id})")
-                            fill_price = sl_status.get('fill_price') or float(trade['sl'])
-                            self.logger.info(f"SL Fill price extracted: \u20b9{fill_price} (reference was: \u20b9{trade['sl']})")
+                            actual_fill = float(sl_status.get('fill_price') or trade['sl'])
+                            self.logger.info(f"SL Fill price extracted: \u20b9{actual_fill} (reference was: \u20b9{trade['sl']})")
+
+                            overshoot_pct = (float(trade['sl']) - actual_fill) / float(trade['sl'])
+                            if overshoot_pct > 0.03:
+                                excess_loss = (float(trade['sl']) - actual_fill) * float(trade['remaining_qty'])
+                                self.logger.critical(f"SL OVERSHOOT: {symbol} Expected \u20b9{trade['sl']}, Got \u20b9{actual_fill} ({overshoot_pct*100:.1f}%). Excess loss: \u20b9{excess_loss:.0f}")
+                                self.telegram._send_to_owner(f"🔴 SL OVERSHOOT\n{symbol}\nExpected \u20b9{trade['sl']} → Got \u20b9{actual_fill}\nExcess loss: \u20b9{excess_loss:.0f}")
+
+                            fill_price = actual_fill
 
                             # Cancel all pending target orders with verification (Real Money Safety)
                             for tid in target_ids:
@@ -2327,7 +2418,6 @@ class LiveTrader:
                         self.telegram._send(f"✅ Market resumed after ~{mins}m. Resuming order management.")
                     self._market_halted = False
                     self._halt_alert_sent = False
-
                 # Process Candle Logic
                 if self._poll_candle_close(warmup_start):
                     self._update_option_universe(warmup_start)
@@ -2338,6 +2428,18 @@ class LiveTrader:
                 static_poll_interval = 2
                 if int(now.timestamp()) % static_poll_interval == 0:
                     self._poll_option_ltps()
+
+                # Candle Starvation Check (Hardening Step 3)
+                # If no bar has closed in 20 minutes (15m interval + 5m buffer), alert.
+                if (now - self._last_bar_close_time).total_seconds() > 1200: # 20 mins
+                    if not self._starvation_alert_sent and now_ist.time() > datetime_time(9, 35):
+                        self.logger.critical("🔥 CANDLE STARVATION: No bar closed in >20 minutes!")
+                        self.telegram._send_to_owner(
+                            f"🔥 <b>Candle Starvation Alert</b>\n"
+                            f"No 15-min bars produced for 20 mins.\n"
+                            f"Check if LTP feed is active (Groww connection)."
+                        )
+                        self._starvation_alert_sent = True
 
                 # Monitor active positions and pending entries (throttled to ORDER_POLL_INTERVAL)
                 # Order status API calls are expensive — checking every 5s is sufficient
