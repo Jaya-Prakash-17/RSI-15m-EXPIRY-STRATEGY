@@ -823,11 +823,13 @@ class LiveTrader:
 
                     self.last_processed_candle_time[symbol] = current_candle_time
 
+                    # Build price history up to current candle for min_candles check
+                    price_slice = df['close']
                     signal = self.strategy.check_signal(
                         symbol, last_row,
-                        price_history=None,      # Not needed when rsi_values provided
+                        price_history=price_slice,  # Pass history to enforce minimum guards
                         is_tradable=is_tradable,
-                        rsi_values=rsi_pair       # Pre-computed (current, prev)
+                        rsi_values=rsi_pair         # Pre-computed (current, prev)
                     )
 
                     if signal:

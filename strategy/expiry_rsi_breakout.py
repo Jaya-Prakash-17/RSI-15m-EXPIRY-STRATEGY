@@ -491,12 +491,22 @@ class ExpiryRSIBreakout:
         # Only if we don't have an active alert.
         if state['alert'] is None and is_tradable:
             # Minimum candle quality guard
-            if price_history is not None and len(price_history) < self.min_candles_for_signal:
-                if self.rsi_debug:
-                    self.logger.debug(
-                        f"[{symbol}] Insufficient history: {len(price_history)} < {self.min_candles_for_signal}"
+            # Minimum candle quality guard
+            if price_history is not None:
+                history_len = len(price_history)
+                if history_len < self.min_candles_for_signal:
+                    if self.rsi_debug:
+                        self.logger.debug(
+                            f"[{symbol}] Insufficient history: {history_len} < {self.min_candles_for_signal}"
+                        )
+                    return None
+
+                # Warning for "Warmup Zone" (below 100 candles)
+                if history_len < 100:
+                    self.logger.warning(
+                        f"[{symbol}] Low history ({history_len} candles). "
+                        f"RSI may deviate from broker. Signal quality: CAUTION."
                     )
-                return None
 
             is_green_candle = current_candle['close'] > current_candle['open']
 

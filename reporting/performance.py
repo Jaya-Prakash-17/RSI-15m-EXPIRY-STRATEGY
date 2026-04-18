@@ -703,8 +703,10 @@ class PerformanceReporter:
         inspection_url: str = None
     ) -> str:
         """
-        Generate an interactive HTML dashboard using Plotly.
-        Features: hover tooltips, zoomable charts, full trade table.
+        Generate a premium dark-mode HTML dashboard with standalone HTML/CSS/JS.
+        Uses Plotly for interactive charts embedded in a custom-styled page.
+        Features: glassmorphism stat cards, gradient accents, proper P&L coloring,
+        scrollable trade log, and responsive layout.
         """
         try:
             import plotly.graph_objects as go
@@ -715,17 +717,21 @@ class PerformanceReporter:
 
         initial_cap = self.config.get('capital', {}).get('initial', 100000)
         bt_cfg = self.config.get('backtest', {})
+        strat_cfg = self.config.get('strategy', {})
+        rsi_cfg = strat_cfg.get('rsi', {})
         start_dt = bt_cfg.get('start_date', trades_df['entry_time'].iloc[0] if not trades_df.empty else '')
         end_dt = bt_cfg.get('end_date', trades_df['exit_time'].iloc[-1] if not trades_df.empty else '')
 
         net_pnl = stats['total_pnl']
         ret_pct = (net_pnl / initial_cap * 100) if initial_cap > 0 else 0
+        gross_pnl = trades_df['pnl_gross'].sum()
+        total_charges = trades_df['charges'].sum()
+        total_slippage = trades_df['slippage'].sum()
 
         trade_dates = pd.to_datetime(trades_df['exit_time'])
         equity = trades_df['running_capital'].tolist()
         times = [pd.to_datetime(start_dt)] + trade_dates.tolist()
         eq_vals = [initial_cap] + equity
-
         pnl = trades_df['pnl_net']
 
         # Monthly aggregation
@@ -742,233 +748,423 @@ class PerformanceReporter:
         peak_arr = np.maximum.accumulate(eq_arr)
         dd_pct = (eq_arr - peak_arr) / peak_arr * 100
 
-        # Build figure: 4 rows, 2 cols
-        fig = make_subplots(
-            rows=4, cols=2,
-            row_heights=[0.28, 0.24, 0.22, 0.26],
-            column_widths=[0.6, 0.4],
-            subplot_titles=[
-                'Equity Curve', 'Key Metrics',
-                'Net P&L Per Trade', 'Monthly P&L',
-                'Drawdown %', 'P&L Distribution',
-                'Trade Log', ''
-            ],
-            specs=[
-                [{"type": "scatter"}, {"type": "table"}],
-                [{"type": "bar"}, {"type": "bar"}],
-                [{"type": "scatter"}, {"type": "histogram"}],
-                [{"type": "table", "colspan": 2}, None],
-            ],
-            vertical_spacing=0.06,
-            horizontal_spacing=0.08
-        )
-
-        # 1. Equity Curve
-        fig.add_trace(go.Scatter(
-            x=times, y=eq_vals,
-            mode='lines', name='Equity',
-            line=dict(color='#00d2ff', width=2.5),
-            hovertemplate='Date: %{x}<br>Capital: Rs.%{y:,.0f}<extra></extra>'
-        ), row=1, col=1)
-
-        fig.add_trace(go.Scatter(
-            x=times, y=peak_arr.tolist(),
-            mode='lines', name='Peak',
-            line=dict(color='#8892b0', width=1, dash='dash'),
+        # ── Chart 1: Equity Curve ────────────────────────────────────────
+        fig_equity = go.Figure()
+        fig_equity.add_trace(go.Scatter(
+            x=times, y=eq_vals, mode='lines', name='Equity',
+            line=dict(color='#6366f1', width=2.5),
+            fill='tozeroy', fillcolor='rgba(99, 102, 241, 0.08)',
+            hovertemplate='%{x|%b %d, %Y}<br>Capital: ₹%{y:,.0f}<extra></extra>'
+        ))
+        fig_equity.add_trace(go.Scatter(
+            x=times, y=peak_arr.tolist(), mode='lines', name='Peak',
+            line=dict(color='rgba(255,255,255,0.15)', width=1, dash='dash'),
             hoverinfo='skip'
-        ), row=1, col=1)
+        ))
+        fig_equity.add_hline(y=initial_cap, line_dash="dot", line_color="rgba(250,204,21,0.4)",
+                             annotation_text=f"Start: ₹{initial_cap:,}",
+                             annotation_font=dict(color='#fbbf24', size=10))
+        fig_equity.update_layout(
+            template='plotly_dark', paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+            margin=dict(l=10, r=10, t=10, b=30), height=320, showlegend=False,
+            xaxis=dict(showgrid=False, zeroline=False),
+            yaxis=dict(showgrid=True, gridcolor='rgba(255,255,255,0.05)', zeroline=False,
+                       tickformat=',.0f', tickprefix='₹'),
+            font=dict(color='#94a3b8', size=11)
+        )
+        equity_html = fig_equity.to_html(full_html=False, include_plotlyjs=False, config={'displayModeBar': False})
 
-        fig.add_hline(y=initial_cap, line_dash="dot", line_color="#ffd700",
-                      annotation_text=f"Initial: Rs.{initial_cap:,}", row=1, col=1)
+        # ── Chart 2: P&L Per Trade ───────────────────────────────────────
+        fig_pnl = go.Figure()
+        pnl_colors = ['#22c55e' if x > 0 else '#ef4444' for x in pnl]
+        # Use scatter+bar hybrid: bars for small datasets, scatter for large
+        if len(pnl) <= 80:
+            fig_pnl.add_trace(go.Bar(
+                x=list(range(1, len(pnl)+1)), y=pnl.values.tolist(),
+                orientation='v',
+                marker_color=pnl_colors, marker_line_width=0,
+                hovertemplate='Trade #%{x}<br>P&L: ₹%{y:,.0f}<extra></extra>'
+            ))
+        else:
+            # Scatter stem plot: readable even with 300+ trades
+            fig_pnl.add_trace(go.Scatter(
+                x=list(range(1, len(pnl)+1)), y=pnl.values.tolist(),
+                mode='markers', marker=dict(color=pnl_colors, size=5, opacity=0.85),
+                hovertemplate='Trade #%{x}<br>P&L: ₹%{y:,.0f}<extra></extra>'
+            ))
+        fig_pnl.add_hline(y=0, line_color='rgba(255,255,255,0.3)', line_width=1)
+        fig_pnl.update_layout(
+            template='plotly_dark', paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+            margin=dict(l=10, r=10, t=10, b=30), height=260, showlegend=False,
+            xaxis=dict(showgrid=False, title='Trade #', title_font=dict(size=10, color='#64748b')),
+            yaxis=dict(showgrid=True, gridcolor='rgba(255,255,255,0.05)',
+                       zeroline=True, zerolinecolor='rgba(255,255,255,0.3)', zerolinewidth=1,
+                       tickformat=',.0f', tickprefix='₹'),
+            font=dict(color='#94a3b8', size=11),
+            bargap=0.15
+        )
+        pnl_trade_html = fig_pnl.to_html(full_html=False, include_plotlyjs=False, config={'displayModeBar': False})
 
-        # 2. Stats Table
-        gross = trades_df['pnl_gross'].sum()
-        pf_str = str(stats['profit_factor'])
-
-        metric_names = [
-            'Net P&L', 'Gross P&L', 'Return %', 'Win Rate', 'Profit Factor',
-            'Sharpe', 'Sortino', 'Max Drawdown', 'Avg Capital', 'Avg Win',
-            'Avg Loss', 'Best Trade', 'Worst Trade', 'Win Streak', 'Loss Streak', 'Avg Hold'
-        ]
-        metric_vals = [
-            f'Rs.{net_pnl:,.0f}', f'Rs.{gross:,.0f}', f'{ret_pct:+.1f}%',
-            f'{stats["win_rate"]}%', pf_str,
-            str(stats['sharpe_ratio']), str(stats['sortino_ratio']),
-            f'Rs.{stats["max_drawdown"]:,.0f} ({stats["max_drawdown_pct"]}%)',
-            f'Rs.{stats["avg_capital_deployed"]:,.0f}',
-            f'Rs.{stats["avg_win"]:,.0f}', f'Rs.{stats["avg_loss"]:,.0f}',
-            f'Rs.{stats["largest_win"]:,.0f}', f'Rs.{stats["largest_loss"]:,.0f}',
-            str(stats['max_win_streak']), str(stats['max_loss_streak']),
-            f'{stats["avg_holding_mins"]:.0f} min'
-        ]
-
-        val_colors = []
-        for v in metric_vals:
-            if v.startswith('Rs.-') or v.startswith('-'):
-                val_colors.append('#ff4757')
-            elif v.startswith('Rs.') and not v.startswith('Rs.0'):
-                val_colors.append('#00d166')
-            else:
-                val_colors.append('#e6f1ff')
-
-        fig.add_trace(go.Table(
-            header=dict(
-                values=['Metric', 'Value'],
-                fill_color='#0f3460',
-                font=dict(color='#ffd700', size=12),
-                align='left', height=30
-            ),
-            cells=dict(
-                values=[metric_names, metric_vals],
-                fill_color='#16213e',
-                font=dict(color=[['#8892b0']*len(metric_names), val_colors], size=11),
-                align='left', height=25
-            )
-        ), row=1, col=2)
-
-        # 3. P&L Per Trade
-        pnl_colors = ['#00d166' if x > 0 else '#ff4757' for x in pnl]
-        fig.add_trace(go.Bar(
-            x=list(range(1, len(pnl)+1)),
-            y=pnl.values,
-            marker_color=pnl_colors,
-            name='Trade P&L',
-            hovertemplate='Trade #%{x}<br>P&L: Rs.%{y:,.0f}<extra></extra>',
-            showlegend=False
-        ), row=2, col=1)
-
-        # 4. Monthly P&L
+        # ── Chart 3: Monthly P&L ─────────────────────────────────────────
+        fig_monthly = go.Figure()
         if not monthly.empty:
-            m_colors = ['#00d166' if x > 0 else '#ff4757' for x in monthly['pnl_sum']]
-            fig.add_trace(go.Bar(
-                x=monthly['month'],
-                y=monthly['pnl_sum'],
-                marker_color=m_colors,
-                name='Monthly P&L',
-                text=[f'Rs.{v:,.0f}' for v in monthly['pnl_sum']],
-                textposition='outside',
-                textfont=dict(size=10),
-                hovertemplate='%{x}<br>P&L: Rs.%{y:,.0f}<extra></extra>',
-                showlegend=False
-            ), row=2, col=2)
+            m_colors = ['#22c55e' if x > 0 else '#ef4444' for x in monthly['pnl_sum']]
+            fig_monthly.add_trace(go.Bar(
+                x=monthly['month'].tolist(), y=monthly['pnl_sum'].tolist(),
+                orientation='v',
+                marker_color=m_colors, marker_line_width=0,
+                text=[f'₹{v:,.0f}' for v in monthly['pnl_sum']],
+                textposition='outside', textfont=dict(size=9, color='#94a3b8'),
+                hovertemplate='%{x}<br>P&L: ₹%{y:,.0f}<extra></extra>'
+            ))
+        fig_monthly.add_hline(y=0, line_color='rgba(255,255,255,0.15)', line_width=1)
+        fig_monthly.update_layout(
+            template='plotly_dark', paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+            margin=dict(l=10, r=10, t=10, b=50), height=260, showlegend=False,
+            xaxis=dict(showgrid=False, tickangle=-45),
+            yaxis=dict(showgrid=True, gridcolor='rgba(255,255,255,0.05)',
+                       zeroline=True, zerolinecolor='rgba(255,255,255,0.3)', zerolinewidth=1,
+                       tickformat=',.0f', tickprefix='₹'),
+            font=dict(color='#94a3b8', size=11),
+            bargap=0.2
+        )
+        monthly_html = fig_monthly.to_html(full_html=False, include_plotlyjs=False, config={'displayModeBar': False})
 
-        # 5. Drawdown %
-        fig.add_trace(go.Scatter(
-            x=times, y=dd_pct.tolist(),
-            fill='tozeroy',
-            mode='lines',
-            line=dict(color='#ff4757', width=1.5),
-            fillcolor='rgba(255, 71, 87, 0.2)',
-            name='Drawdown',
-            hovertemplate='Date: %{x}<br>DD: %{y:.1f}%<extra></extra>',
-            showlegend=False
-        ), row=3, col=1)
+        # ── Chart 4: Drawdown ────────────────────────────────────────────
+        fig_dd = go.Figure()
+        dd_amt = (eq_arr - peak_arr).tolist()  # drawdown in ₹
+        # Build custom hover text with both % and ₹ amount
+        dd_hover = [f"{t.strftime('%b %d, %Y') if hasattr(t, 'strftime') else t}<br>"
+                    f"DD: {dd_pct[i]:.1f}%<br>"
+                    f"DD Amt: ₹{dd_amt[i]:,.0f}"
+                    for i, t in enumerate(times)]
+        fig_dd.add_trace(go.Scatter(
+            x=times, y=dd_pct.tolist(), fill='tozeroy', mode='lines',
+            line=dict(color='#ef4444', width=1.5),
+            fillcolor='rgba(239, 68, 68, 0.15)',
+            text=dd_hover, hoverinfo='text'
+        ))
+        fig_dd.update_layout(
+            template='plotly_dark', paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+            margin=dict(l=10, r=10, t=10, b=30), height=220, showlegend=False,
+            xaxis=dict(showgrid=False),
+            yaxis=dict(showgrid=True, gridcolor='rgba(255,255,255,0.05)', zeroline=False,
+                       ticksuffix='%'),
+            font=dict(color='#94a3b8', size=11)
+        )
+        dd_html = fig_dd.to_html(full_html=False, include_plotlyjs=False, config={'displayModeBar': False})
 
-        # 6. P&L Distribution
-        fig.add_trace(go.Histogram(
-            x=pnl[pnl > 0], nbinsx=20,
-            marker_color='#00d166', opacity=0.7,
-            name=f'Wins ({len(pnl[pnl > 0])})',
-            hovertemplate='P&L: Rs.%{x}<br>Count: %{y}<extra></extra>'
-        ), row=3, col=2)
+        # ── Chart 5: P&L Distribution ────────────────────────────────────
+        fig_dist = go.Figure()
+        if len(pnl[pnl > 0]) > 0:
+            fig_dist.add_trace(go.Histogram(
+                x=pnl[pnl > 0].tolist(), nbinsx=20,
+                marker_color='rgba(34, 197, 94, 0.7)', name=f'Wins ({len(pnl[pnl > 0])})',
+                hovertemplate='P&L: ₹%{x:,.0f}<br>Count: %{y}<extra></extra>'
+            ))
+        if len(pnl[pnl <= 0]) > 0:
+            fig_dist.add_trace(go.Histogram(
+                x=pnl[pnl <= 0].tolist(), nbinsx=20,
+                marker_color='rgba(239, 68, 68, 0.7)', name=f'Losses ({len(pnl[pnl <= 0])})',
+                hovertemplate='P&L: ₹%{x:,.0f}<br>Count: %{y}<extra></extra>'
+            ))
+        fig_dist.add_vline(x=pnl.mean(), line_dash="dash", line_color="#fbbf24", line_width=1.5,
+                           annotation_text=f"Avg: ₹{pnl.mean():,.0f}",
+                           annotation_font=dict(color='#fbbf24', size=10))
+        fig_dist.update_layout(
+            template='plotly_dark', paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+            margin=dict(l=10, r=10, t=10, b=30), height=220, barmode='overlay',
+            legend=dict(font=dict(size=10, color='#94a3b8'), bgcolor='rgba(0,0,0,0)'),
+            xaxis=dict(showgrid=False, title='P&L (₹)', title_font=dict(size=10, color='#64748b')),
+            yaxis=dict(showgrid=True, gridcolor='rgba(255,255,255,0.05)', zeroline=False,
+                       title='Count', title_font=dict(size=10, color='#64748b')),
+            font=dict(color='#94a3b8', size=11)
+        )
+        dist_html = fig_dist.to_html(full_html=False, include_plotlyjs=False, config={'displayModeBar': False})
 
-        fig.add_trace(go.Histogram(
-            x=pnl[pnl <= 0], nbinsx=20,
-            marker_color='#ff4757', opacity=0.7,
-            name=f'Losses ({len(pnl[pnl <= 0])})',
-            hovertemplate='P&L: Rs.%{x}<br>Count: %{y}<extra></extra>'
-        ), row=3, col=2)
-
-        # 7. Trade Log Table
+        # ── Trade Table HTML ─────────────────────────────────────────────
         trade_tbl = trades_df[['symbol', 'entry_time', 'exit_time', 'entry_price',
-                               'exit_price', 'qty', 'cost', 'reason', 'pnl_gross', 'pnl_net']].copy()
+                               'exit_price', 'qty', 'reason', 'pnl_gross', 'charges', 'pnl_net']].copy()
         trade_tbl['entry_time'] = pd.to_datetime(trade_tbl['entry_time']).dt.strftime('%Y-%m-%d %H:%M')
         trade_tbl['exit_time'] = pd.to_datetime(trade_tbl['exit_time']).dt.strftime('%Y-%m-%d %H:%M')
 
-        cell_colors_pnl = ['#00d166' if v > 0 else '#ff4757' for v in trade_tbl['pnl_net']]
-        n_rows = len(trade_tbl)
+        table_rows = []
+        for i, (idx, trow) in enumerate(trade_tbl.iterrows()):
+            gross_val = trow['pnl_gross']
+            net_val = trow['pnl_net']
+            # BUG FIX: Each column gets its OWN color based on its OWN sign
+            gross_cls = 'pnl-pos' if gross_val > 0 else ('pnl-neg' if gross_val < 0 else '')
+            net_cls = 'pnl-pos' if net_val > 0 else ('pnl-neg' if net_val < 0 else '')
+            reason = trow['reason']
+            reason_cls = 'reason-tp' if reason == 'TARGET' else ('reason-sl' if reason == 'SL' else 'reason-sq')
 
-        fig.add_trace(go.Table(
-            header=dict(
-                values=['Symbol', 'Entry Time', 'Exit Time', 'Entry Px', 'Exit Px',
-                        'Qty', 'Capital', 'Reason', 'Gross P&L', 'Net P&L'],
-                fill_color='#0f3460',
-                font=dict(color='#ffd700', size=11),
-                align='left', height=28
-            ),
-            cells=dict(
-                values=[trade_tbl[c].tolist() for c in trade_tbl.columns],
-                fill_color='#16213e',
-                font=dict(
-                    color=[['#e6f1ff']*n_rows, ['#e6f1ff']*n_rows, ['#e6f1ff']*n_rows,
-                           ['#e6f1ff']*n_rows, ['#e6f1ff']*n_rows, ['#e6f1ff']*n_rows,
-                           ['#ffd700']*n_rows, ['#e6f1ff']*n_rows, cell_colors_pnl, cell_colors_pnl],
-                    size=10
-                ),
-                align='left', height=24
-            )
-        ), row=4, col=1)
+            table_rows.append(f"""<tr>
+                <td class="col-idx">{i + 1}</td>
+                <td class="col-sym">{trow['symbol']}</td>
+                <td>{trow['entry_time']}</td>
+                <td>{trow['exit_time']}</td>
+                <td>₹{trow['entry_price']:,.2f}</td>
+                <td>₹{trow['exit_price']:,.2f}</td>
+                <td>{trow['qty']}</td>
+                <td><span class="badge {reason_cls}">{reason}</span></td>
+                <td class="{gross_cls}">₹{gross_val:,.2f}</td>
+                <td>₹{trow['charges']:,.2f}</td>
+                <td class="{net_cls}" style="font-weight:600;">₹{net_val:,.2f}</td>
+            </tr>""")
+        trade_rows_html = '\n'.join(table_rows)
 
-        # (Note: Deep Inspection button is injected as raw HTML later in this function)
-
-        # Layout styling
+        # ── Stat card helpers ────────────────────────────────────────────
+        pnl_color = '#22c55e' if net_pnl >= 0 else '#ef4444'
         pnl_sign = '+' if net_pnl >= 0 else ''
-        fig.update_layout(
-            title=dict(
-                text=(f"<b>RSI-15m Backtest Dashboard</b>  |  {start_dt} to {end_dt}  |  "
-                      f"{stats['total_trades']} trades  |  "
-                      f"<span style='color:{'#00d166' if net_pnl >= 0 else '#ff4757'}'>"
-                      f"Net: Rs.{net_pnl:,.0f} ({pnl_sign}{ret_pct:.1f}%)</span>"),
-                font=dict(size=16, color='#e6f1ff'),
-                x=0.01
-            ),
-            template='plotly_dark',
-            paper_bgcolor='#1a1a2e',
-            plot_bgcolor='#16213e',
-            font=dict(color='#e6f1ff', family='Segoe UI, sans-serif'),
-            height=1600,
-            showlegend=False,
-            barmode='overlay'
-        )
+        pf_val = float(str(stats['profit_factor']).replace('inf', '999'))
+        pf_color = '#22c55e' if pf_val >= 1.1 else '#ef4444'
+        wr_color = '#22c55e' if stats['win_rate'] >= 40 else ('#ef4444' if stats['win_rate'] < 30 else '#fbbf24')
+        sharpe_color = '#22c55e' if stats['sharpe_ratio'] >= 1.0 else ('#ef4444' if stats['sharpe_ratio'] < 0 else '#fbbf24')
 
-        # Save the figure to HTML
-        fig.write_html(filepath, include_plotlyjs='cdn')
-
-        # Robust Inject: If inspection_url is provided, inject a real HTML button at the top
+        inspect_btn = ''
         if inspection_url:
-            try:
-                with open(filepath, 'r', encoding='utf-8') as f:
-                    content = f.read()
+            inspect_btn = f'''<a href="{inspection_url}" target="_blank" class="inspect-btn">
+                <span class="inspect-icon">🔍</span> Deep Inspect Trades
+            </a>'''
 
-                # Floating button style
-                button_html = f"""
-                <div style="position: fixed; top: 20px; right: 20px; z-index: 9999;">
-                    <a href="{inspection_url}" target="_blank" style="
-                        background-color: #ffd700;
-                        color: #1a1a2e;
-                        padding: 12px 24px;
-                        border-radius: 8px;
-                        text-decoration: none;
-                        font-weight: bold;
-                        font-family: sans-serif;
-                        box-shadow: 0 4px 15px rgba(0,0,0,0.5);
-                        border: 2px solid #fff;
-                        display: block;
-                        transition: transform 0.2s;
-                    " onmouseover="this.style.transform='scale(1.05)'" onmouseout="this.style.transform='scale(1)'">
-                        🔥 Deep Inspect Individual Trades
-                    </a>
-                </div>
-                """
+        # ── Full HTML ────────────────────────────────────────────────────
+        html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RSI-15m Backtest Dashboard | {start_dt} to {end_dt}</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+<script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+<style>
+  *, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
 
-                # Insert right after <body>
-                if '<body>' in content:
-                    new_content = content.replace('<body>', f'<body>{button_html}')
-                    with open(filepath, 'w', encoding='utf-8') as f:
-                        f.write(new_content)
-                self.logger.info(f"Injected Deep Inspect button into {filepath}")
-            except Exception as e:
-                self.logger.warning(f"Failed to inject button: {e}")
+  body {{
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    background: #0b0f19;
+    color: #e2e8f0;
+    min-height: 100vh;
+    padding: 20px 24px;
+    -webkit-font-smoothing: antialiased;
+  }}
+
+  .header {{
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 20px 28px;
+    margin-bottom: 24px;
+    background: linear-gradient(135deg, rgba(99,102,241,0.12) 0%, rgba(139,92,246,0.08) 50%, rgba(0,0,0,0) 100%);
+    border: 1px solid rgba(99,102,241,0.2);
+    border-radius: 16px;
+    backdrop-filter: blur(12px);
+  }}
+  .header-left h1 {{
+    font-size: 20px; font-weight: 700; color: #f1f5f9; letter-spacing: -0.02em;
+  }}
+  .header-left .sub {{
+    font-size: 13px; color: #64748b; margin-top: 4px; font-weight: 400;
+  }}
+  .header-right {{ display: flex; align-items: center; gap: 16px; }}
+  .header-pnl {{
+    font-size: 28px; font-weight: 800; color: {pnl_color}; letter-spacing: -0.03em;
+  }}
+  .header-pnl .pct {{ font-size: 15px; font-weight: 500; opacity: 0.8; }}
+
+  .inspect-btn {{
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 10px 20px;
+    background: linear-gradient(135deg, #6366f1, #8b5cf6);
+    color: #fff; border-radius: 10px; text-decoration: none;
+    font-weight: 600; font-size: 13px;
+    border: 1px solid rgba(139,92,246,0.4);
+    box-shadow: 0 4px 20px rgba(99,102,241,0.3);
+    transition: all 0.2s ease;
+  }}
+  .inspect-btn:hover {{ transform: translateY(-2px); box-shadow: 0 8px 30px rgba(99,102,241,0.5); }}
+  .inspect-icon {{ font-size: 16px; }}
+
+  .stats-grid {{
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+    gap: 14px; margin-bottom: 24px;
+  }}
+  .stat-card {{
+    background: rgba(30, 41, 59, 0.6);
+    border: 1px solid rgba(100, 116, 139, 0.15);
+    border-radius: 12px; padding: 16px 18px;
+    backdrop-filter: blur(8px);
+    transition: border-color 0.2s, transform 0.15s;
+  }}
+  .stat-card:hover {{ border-color: rgba(99,102,241,0.4); transform: translateY(-2px); }}
+  .stat-card .label {{
+    font-size: 11px; font-weight: 500; color: #64748b;
+    text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 6px;
+  }}
+  .stat-card .value {{ font-size: 20px; font-weight: 700; letter-spacing: -0.02em; }}
+  .stat-card .detail {{ font-size: 11px; color: #64748b; margin-top: 4px; }}
+
+  .charts-grid {{
+    display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px;
+  }}
+  .chart-panel {{
+    background: rgba(15, 23, 42, 0.7);
+    border: 1px solid rgba(100, 116, 139, 0.12);
+    border-radius: 14px; padding: 18px; overflow: hidden;
+  }}
+  .chart-panel.full-width {{ grid-column: 1 / -1; }}
+  .chart-panel h3 {{
+    font-size: 13px; font-weight: 600; color: #94a3b8; margin-bottom: 12px;
+    text-transform: uppercase; letter-spacing: 0.04em;
+  }}
+
+  .table-container {{
+    background: rgba(15, 23, 42, 0.7);
+    border: 1px solid rgba(100, 116, 139, 0.12);
+    border-radius: 14px; padding: 18px; margin-bottom: 24px; overflow: hidden;
+  }}
+  .table-container h3 {{
+    font-size: 13px; font-weight: 600; color: #94a3b8; margin-bottom: 14px;
+    text-transform: uppercase; letter-spacing: 0.04em;
+  }}
+  .table-scroll {{ overflow-x: auto; max-height: 600px; overflow-y: auto; }}
+  .trade-table {{ width: 100%; border-collapse: collapse; font-size: 12px; white-space: nowrap; }}
+  .trade-table thead th {{
+    position: sticky; top: 0; background: #1e293b; color: #94a3b8;
+    padding: 10px 12px; text-align: left; font-weight: 600; font-size: 11px;
+    text-transform: uppercase; letter-spacing: 0.04em;
+    border-bottom: 2px solid rgba(99,102,241,0.3); z-index: 10;
+  }}
+  .trade-table tbody tr {{
+    border-bottom: 1px solid rgba(100, 116, 139, 0.08); transition: background 0.15s;
+  }}
+  .trade-table tbody tr:hover {{ background: rgba(99,102,241,0.06); }}
+  .trade-table tbody td {{ padding: 9px 12px; color: #cbd5e1; }}
+  .col-idx {{ color: #475569 !important; font-weight: 500; }}
+  .col-sym {{ color: #e2e8f0 !important; font-weight: 600; font-size: 11px; }}
+
+  .pnl-pos {{ color: #22c55e !important; }}
+  .pnl-neg {{ color: #ef4444 !important; }}
+
+  .badge {{
+    display: inline-block; padding: 3px 10px; border-radius: 6px;
+    font-size: 10px; font-weight: 700; letter-spacing: 0.03em;
+  }}
+  .reason-tp {{ background: rgba(34,197,94,0.15); color: #22c55e; }}
+  .reason-sl {{ background: rgba(239,68,68,0.15); color: #ef4444; }}
+  .reason-sq {{ background: rgba(251,191,36,0.15); color: #fbbf24; }}
+
+  .footer {{ text-align: center; padding: 16px; color: #475569; font-size: 11px; }}
+
+  ::-webkit-scrollbar {{ width: 6px; height: 6px; }}
+  ::-webkit-scrollbar-track {{ background: transparent; }}
+  ::-webkit-scrollbar-thumb {{ background: #334155; border-radius: 3px; }}
+  ::-webkit-scrollbar-thumb:hover {{ background: #475569; }}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="header-left">
+    <h1>RSI-15m Expiry Breakout</h1>
+    <div class="sub">
+      {start_dt} &rarr; {end_dt} &nbsp;&middot;&nbsp;
+      RSI({rsi_cfg.get('period', 14)}) TH {rsi_cfg.get('threshold', 60)} &nbsp;&middot;&nbsp;
+      {strat_cfg.get('exit_mode', 'single_lot').replace('_', ' ').title()} &nbsp;&middot;&nbsp;
+      Capital: ₹{initial_cap:,}
+    </div>
+  </div>
+  <div class="header-right">
+    {inspect_btn}
+    <div class="header-pnl">
+      {pnl_sign}₹{abs(net_pnl):,.0f}
+      <span class="pct">({pnl_sign}{ret_pct:.1f}%)</span>
+    </div>
+  </div>
+</div>
+
+<div class="stats-grid">
+  <div class="stat-card">
+    <div class="label">Total Trades</div>
+    <div class="value" style="color:#e2e8f0">{stats['total_trades']}</div>
+    <div class="detail">{stats['winning_trades']}W / {stats['losing_trades']}L</div>
+  </div>
+  <div class="stat-card">
+    <div class="label">Win Rate</div>
+    <div class="value" style="color:{wr_color}">{stats['win_rate']}%</div>
+    <div class="detail">Streak: {stats['max_win_streak']}W / {stats['max_loss_streak']}L</div>
+  </div>
+  <div class="stat-card">
+    <div class="label">Profit Factor</div>
+    <div class="value" style="color:{pf_color}">{stats['profit_factor']}</div>
+    <div class="detail">R:R {stats['risk_reward_ratio']}</div>
+  </div>
+  <div class="stat-card">
+    <div class="label">Sharpe Ratio</div>
+    <div class="value" style="color:{sharpe_color}">{stats['sharpe_ratio']}</div>
+    <div class="detail">Sortino: {stats['sortino_ratio']}</div>
+  </div>
+  <div class="stat-card">
+    <div class="label">Max Drawdown</div>
+    <div class="value" style="color:#ef4444">{stats['max_drawdown_pct']}%</div>
+    <div class="detail">₹{stats['max_drawdown']:,.0f}</div>
+  </div>
+  <div class="stat-card">
+    <div class="label">Net P&amp;L</div>
+    <div class="value" style="color:{pnl_color}">₹{net_pnl:,.0f}</div>
+    <div class="detail">Gross: ₹{gross_pnl:,.0f}</div>
+  </div>
+  <div class="stat-card">
+    <div class="label">Avg Win</div>
+    <div class="value" style="color:#22c55e">₹{stats['avg_win']:,.0f}</div>
+    <div class="detail">Best: ₹{stats['largest_win']:,.0f}</div>
+  </div>
+  <div class="stat-card">
+    <div class="label">Avg Loss</div>
+    <div class="value" style="color:#ef4444">₹{stats['avg_loss']:,.0f}</div>
+    <div class="detail">Worst: ₹{stats['largest_loss']:,.0f}</div>
+  </div>
+</div>
+
+<div class="charts-grid">
+  <div class="chart-panel full-width"><h3>Equity Curve</h3>{equity_html}</div>
+</div>
+<div class="charts-grid">
+  <div class="chart-panel"><h3>P&amp;L Per Trade</h3>{pnl_trade_html}</div>
+  <div class="chart-panel"><h3>Monthly P&amp;L</h3>{monthly_html}</div>
+</div>
+<div class="charts-grid">
+  <div class="chart-panel"><h3>Drawdown</h3>{dd_html}</div>
+  <div class="chart-panel"><h3>P&amp;L Distribution</h3>{dist_html}</div>
+</div>
+
+<div class="table-container">
+  <h3>Trade Log ({len(trade_tbl)} trades)</h3>
+  <div class="table-scroll">
+    <table class="trade-table">
+      <thead>
+        <tr>
+          <th>#</th><th>Symbol</th><th>Entry Time</th><th>Exit Time</th>
+          <th>Entry</th><th>Exit</th><th>Qty</th><th>Reason</th>
+          <th>Gross P&amp;L</th><th>Charges</th><th>Net P&amp;L</th>
+        </tr>
+      </thead>
+      <tbody>
+        {trade_rows_html}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="footer">
+  Generated {datetime.now().strftime('%Y-%m-%d %H:%M')} &nbsp;&middot;&nbsp; RSI-15m Expiry Breakout Strategy
+</div>
+
+</body>
+</html>"""
+
+        with open(filepath, 'w', encoding='utf-8') as f:
+            f.write(html)
 
         # Auto-open in browser
         try:

@@ -3,9 +3,9 @@
 # =============================================================================
 
 backtest:
-  start_date: '2026-04-01'
-  offline_mode: false
-  end_date: '2026-04-15'
+  start_date: "2026-04-01"
+  offline_mode: true
+  end_date: "2026-04-18"
 
 capital:
   initial: 200000         # Starting trading capital in INR (Example: 200000)
@@ -13,7 +13,7 @@ capital:
 charges:
   brokerage_per_trade: 60  # Inflated 3X for stress test. Actual: 20 (as of April 2026)
   exchange_txn_fee: 0.0018 # Inflated 3X for stress test. Actual: 0.0006 (as of April 2026)
-  gst: 0.6                 # Inflated 3X for stress test. Actual: 0.20 (as of April 2026)
+  gst: 0.45                # Inflated 3X for stress test. Actual: 0.20 (as of April 2026)
   sebi_charges: 9.0e-06    # Inflated 3X for stress test. Actual: 0.000003 (as of April 2026)
   stamp_duty: 0.00018      # Inflated 3X for stress test. Actual: 0.00006 (as of April 2026)
   stt: 0.003               # Inflated 3X for stress test. Actual: 0.001 (as of April 2026)
@@ -31,10 +31,10 @@ indices:
     expiry_day: Tuesday    # Primary expiry day for this index (Example: Thursday)
     lot_size: 65           # Number of units in one contract (Example: 75)
     tick_size: 0.05        # Minimum price movement (Example: 0.05)
-  # SENSEX:
-  #   expiry_day: Friday    # Primary expiry day for this index (Example: Friday)
-  #   lot_size: 20        # Number of units in one contract (Example: 20)
-  #   tick_size: 0.05       # Minimum price movement (Example: 0.05)
+  SENSEX:
+    expiry_day: Thursday    # Primary expiry day for this index (Example: Friday)
+    lot_size: 20        # Number of units in one contract (Example: 20)
+    tick_size: 0.05       # Minimum price movement (Example: 0.05)
 
 reporting:
   slippage_buffer_enabled: true     # Add random noise to trade execution prices (Example: true)
@@ -48,11 +48,11 @@ risk:
   consecutive_loss_cooldown: 2 # Days to stop trading after max losses hit (Example: 2)
   max_consecutive_losses: 3    # Total losses allowed before a cooldown (Example: 3)
   max_loss_per_day: 6000       # Daily PNL floor to stop trading (Example: 6000)
-  max_total_premium_deployed: 25000 # Max notional premium across all active positions
+  max_total_premium_deployed: 30000 # Max notional premium across all active positions
 
 strategy:
   alert_validity: 1             # Minutes a signal remains tradeable (Example: 1)
-  direction_filter_enabled: false # Enable/Disable trend following filters (Example: false)
+  direction_filter_enabled: false  # Enable/Disable trend following filters (Example: false)
   exit_mode: single_lot         # Method of exiting positions (Example: single_lot)
   lots_per_trade: 3             # Number of lots per execution (Example: 3)
   max_correlated_positions: 2    # Max positions allowed across different indices (Example: 2)
@@ -60,12 +60,12 @@ strategy:
   max_position_pct: 0.8         # Max capital usage per single trade (Example: 0.8)
   min_alert_range_points: 0.5   # Minimum candle range to consider for signal (Example: 0.5)
   min_sl_pct: 0.1               # Minimum Stop Loss percentage (Example: 0.1)
-  min_volume_candles_pct: 0.9   # Volume filter based on daily average (Example: 0.0)
+  min_volume_candles_pct: 0.3   # Volume filter based on daily average (Example: 0.0)
   rsi:
-    min_candles_for_signal: 33 # Minimum data points required before first signal (Example: 33)
+    min_candles_for_signal: 100 # Minimum data points required before first signal (Example: 33)
     period: 11                 # RSI lookback period. Example: 11 or 14.
-    threshold: 60              # RSI value to trigger breakout alert (Example: 60)
-    warmup_periods: 33        # Candles needed for RSI to stabilize (Example: 100)
+    threshold: 60             # RSI value to trigger breakout alert (Example: 60)
+    warmup_periods: 100        # Candles needed for RSI to stabilize (Example: 100)
   rsi_debug: false              # Print detailed RSI calculations to logs (Example: false)
   safe_sl_max_loss: 6000        # Max absolute loss allowed on any trade (Example: 6000)
   safe_sl_mode: true            # Use tighter SL based on max loss param (Example: true)

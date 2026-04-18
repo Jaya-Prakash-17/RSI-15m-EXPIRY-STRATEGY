@@ -17,6 +17,14 @@ class IntradayEngine:
         from strategy.expiry_rsi_breakout import ExpiryRSIBreakout
         self.strategy_cls = ExpiryRSIBreakout
 
+        vol_filter = config['strategy'].get('min_volume_candles_pct', 0.5)
+        if vol_filter > 0.5:
+            self.logger.warning(
+                f"[CONFIG WARNING] min_volume_candles_pct={vol_filter} is dangerously loose. "
+                f"Options with >{vol_filter*100:.0f}% zero-volume candles will be traded. "
+                f"Recommended: 0.3 for realistic backtesting."
+            )
+
         # Issue 4: Capital Isolation
         self.capital = config['capital']['initial']
         self.trades = []
@@ -60,6 +68,39 @@ class IntradayEngine:
         # V6-P-001: Validate data paths once before starting the loop
         for idx in self.config['indices'].keys():
             self._validate_data_paths(idx, start_date)
+
+            # P-17: Ensure index actually has historical data for this range
+            import os, glob
+            import re
+
+            # Extract year range
+            years_to_check = list(range(start_date.year, end_date.year + 1))
+            total_files = 0
+
+            idx_dir = os.path.join(self.dm.config['data']['storage_path'], 'derivatives', idx)
+            if os.path.exists(idx_dir):
+                for d in os.listdir(idx_dir):
+                    if not os.path.isdir(os.path.join(idx_dir, d)):
+                        continue
+
+                    # Extract year from expiry date directory like "2023-05-19"
+                    m = re.match(r'^(\d{4})-\d{2}-\d{2}$', d)
+                    if m:
+                        year = int(m.group(1))
+                        if year in years_to_check:
+                            csvs = glob.glob(os.path.join(idx_dir, d, '*.csv'))
+                            total_files += len(csvs)
+
+            if total_files == 0:
+                year_range = f"{start_date.year}-{end_date.year}"
+                self.logger.error(
+                    f"[DATA CHECK] {idx}: NO derivative data found for {year_range}. "
+                    f"This index will generate ZERO trades. Remove from config or download data."
+                )
+            elif total_files < 50 * len(years_to_check):
+                self.logger.warning(
+                    f"[DATA CHECK] {idx}: Sparse data found ({total_files} files). Expected ~100+ per year."
+                )
 
         current_date = start_date
         while current_date <= end_date:
@@ -357,6 +398,10 @@ class IntradayEngine:
             if current_spot_row is None: continue
             current_spot_price = current_spot_row['close']
 
+            # For direction filter: get the candle just before this one
+            prev_spot_row = self._get_latest_candle(spot_df, t - timedelta(minutes=15))
+            prev_spot_price = prev_spot_row['close'] if prev_spot_row is not None else None
+
             if active_trade:
                 trade_pnl_realized = self._manage_active_trade(active_trade, t, option_data)
                 if active_trade['status'] == 'CLOSED':
@@ -416,14 +461,20 @@ class IntradayEngine:
                 # Get index of current candle in its own dataframe to pull RSI
                 # row.name is its index in df
                 curr_idx = row.name
-                if curr_idx < 1 or curr_idx >= len(symbol_rsis): continue
+                if curr_idx < 2 or curr_idx - 1 >= len(symbol_rsis): continue
 
-                curr_rsi = symbol_rsis[curr_idx]
-                prev_rsi = symbol_rsis[curr_idx - 1]
+                curr_rsi = symbol_rsis[curr_idx - 1]
+                prev_rsi = symbol_rsis[curr_idx - 2]
 
                 if np.isnan(curr_rsi): continue
 
-                signal = strategy.check_signal(symbol, row, rsi_values=(curr_rsi, prev_rsi))
+                # Build price history up to current candle for min_candles check
+                price_slice = df['close'].iloc[:curr_idx + 1]
+                signal = strategy.check_signal(
+                    symbol, row,
+                    price_history=price_slice,
+                    rsi_values=(curr_rsi, prev_rsi)
+                )
                 diag['rsi_checks'] += 1
 
                 # Debug signal result
@@ -434,6 +485,14 @@ class IntradayEngine:
                     diag['alerts_fired'] += 1
 
                 if signal and signal['action'] == 'ENTRY':
+                    # Direction Filter Port from LiveTrader (Trend Following Guard)
+                    if self.config['strategy'].get('direction_filter_enabled', False) and prev_spot_price is not None:
+                         opt_type = symbol.split('-')[4]
+                         if opt_type == 'CE' and current_spot_price < prev_spot_price:
+                             continue
+                         if opt_type == 'PE' and current_spot_price > prev_spot_price:
+                             continue
+
                     parts = symbol.split('-')
                     try:
                         strike = float(parts[3])
