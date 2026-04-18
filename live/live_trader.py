@@ -155,38 +155,40 @@ class LiveTrader:
         tradeable = []
 
         if not self.trade_only_on_expiry:
-            indices = list(self.config['indices'].keys())
-            self.logger.info(f"trade_only_on_expiry=False, trading ALL indices: {indices}")
-            return indices
+            tradeable = list(self.config['indices'].keys())
+            self.logger.info(f"trade_only_on_expiry=False, trading ALL indices: {tradeable}")
+        else:
+            for idx in self.config['indices'].keys():
+                # Fast local check first (no API call)
+                if not is_expiry_day(idx, today):
+                    self.logger.debug(f"{idx}: not an expiry day today ({today})")
+                    continue
 
-        for idx in self.config['indices'].keys():
-            # Fast local check first (no API call)
-            if not is_expiry_day(idx, today):
-                self.logger.debug(f"{idx}: not an expiry day today ({today})")
-                continue
-
-            # Confirm with Groww API (verifies holiday adjustments and
-            # catches any future rule changes we haven't coded yet)
-            try:
-                expiries = self.dm.get_expiries(idx)
-                if today_str in expiries:
-                    self.logger.info(f"✅ Confirmed API expiry for {idx} today ({today})")
+                # Confirm with Groww API
+                try:
+                    expiries = self.dm.get_expiries(idx)
+                    if today_str in expiries:
+                        self.logger.info(f"✅ Confirmed API expiry for {idx} today ({today})")
+                        tradeable.append(idx)
+                    else:
+                        self.logger.warning(
+                            f"⚠️  expiry_calendar says {idx} expires today "
+                            f"but API disagrees. API expiries: {expiries[:5]}. "
+                            f"Skipping {idx} to be safe."
+                        )
+                except Exception as e:
+                    # API failure: trust local calendar
+                    self.logger.warning(f"API expiry check failed for {idx}: {e}. Trusting local calendar.")
                     tradeable.append(idx)
-                else:
-                    self.logger.warning(
-                        f"⚠️  expiry_calendar says {idx} expires today "
-                        f"but API disagrees. API expiries: {expiries[:5]}. "
-                        f"Skipping {idx} to be safe."
-                    )
-            except Exception as e:
-                # API failure: trust local calendar (don't skip trading day)
-                self.logger.warning(
-                    f"API expiry check failed for {idx}: {e}. "
-                    f"Trusting local expiry_calendar."
-                )
-                tradeable.append(idx)
+
+        # [RISK-01] Sort by Priority: NIFTY > SENSEX > BANKNIFTY
+        priority = {'NIFTY': 0, 'SENSEX': 1, 'BANKNIFTY': 2}
+        tradeable.sort(key=lambda x: priority.get(x, 99))
 
         return tradeable
+
+
+
 
     def _initialize_day(self):
         """Initialize trading for the day."""
@@ -471,19 +473,33 @@ class LiveTrader:
     def _check_correlation_limit(self, opt_type: str, underlying: str) -> bool:
         """P-09: Returns True if trade allowed, False if would over-concentrate direction."""
         max_same_dir = self.config['strategy'].get('max_correlated_positions', 1)
+
+        # Count active trades in this direction
         active = self.tracker.get_active_trades()
-        same_direction = sum(
+        same_direction_active = sum(
             1 for t in active
             if t.get('opt_type') == opt_type
             and t.get('underlying') != underlying
         )
-        if same_direction >= max_same_dir:
+
+        # Count pending orders in this direction
+        same_direction_pending = sum(
+            1 for p in self.pending_entries.values()
+            if p.get('opt_type') == opt_type
+            and p.get('underlying') != underlying
+        )
+
+        total = same_direction_active + same_direction_pending
+
+        if total >= max_same_dir:
             self.logger.info(
-                f"[{underlying}] Skipping {opt_type}: already {same_direction} "
+                f"[{underlying}] Skipping {opt_type}: already {total} "
+                f"({same_direction_active} active, {same_direction_pending} pending) "
                 f"{opt_type} on other index (correlation limit={max_same_dir})."
             )
             return False
         return True
+
 
     def _get_warmup_start_time(self):
         """Calculate start time for RSI warmup period, factoring in weekends and holidays."""
@@ -749,25 +765,40 @@ class LiveTrader:
         warmup_start = self._get_warmup_start_time()
 
         alert_candidates = []  # New alerts to place pending orders
-        is_tradable = self.start_time <= now.time() <= self.end_time
+        is_tradable = (self.start_time <= now.time() <= self.end_time)
+        if not is_tradable:
+            return
+
+
+        # [CONC-01] Parallel Spot Ingestion for all underlyings
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        spot_data_map = {}
+
+        with ThreadPoolExecutor(max_workers=len(self.underlyings)) as executor:
+            futures = {
+                executor.submit(self.dm.get_spot_candles, self.spot_symbols.get(u, u), warmup_start, now, refresh=True): u
+                for u in self.underlyings
+            }
+
+
+            for future in as_completed(futures):
+                u = futures[future]
+                try:
+                    spot_data_map[u] = future.result()
+                except Exception as e:
+                    self.logger.error(f"[CONC-01] Parallel fetch failed for {u}: {e}")
 
         # Process each underlying index
         for underlying in self.underlyings:
-            spot_df = pd.DataFrame()  # RESET: prevent cross-contamination from previous iteration
+            spot_df = spot_data_map.get(underlying)
             spot_price = 0
 
             spot_symbol = self.spot_symbols.get(underlying, underlying)
             expiry_date = self.expiry_dates.get(underlying, datetime.now().date())
 
-            # Get spot price for this underlying
-            try:
-                spot_df = self.dm.get_spot_candles(spot_symbol, warmup_start, now, refresh=False)
-            except Exception as e:
-                self.logger.error(f"Failed to fetch spot data for {underlying}: {e}")
-
             # Validate before use — skip this underlying if spot data is unavailable
             if spot_df is None or spot_df.empty:
-                self.logger.warning(f"Spot data empty for {underlying}. Skipping.")
+                self.logger.warning(f"Spot data empty/failed for {underlying}. Skipping.")
                 continue
 
             if 'datetime' not in spot_df.columns:
@@ -939,7 +970,12 @@ class LiveTrader:
                     by_index[idx] = []
                 by_index[idx].append(candidate)
 
-            for index_name, candidates in by_index.items():
+            # [RISK-01] Sort Indices by Priority: NIFTY > SENSEX > BANKNIFTY
+            priority_map = {'NIFTY': 0, 'SENSEX': 1, 'BANKNIFTY': 2}
+            sorted_indices = sorted(by_index.keys(), key=lambda x: priority_map.get(x, 99))
+
+            for index_name in sorted_indices:
+                candidates = by_index[index_name]
                 existing_active = self.tracker.get_active_trades_for_index(index_name)
                 existing_pending = self.tracker.get_pending_for_index(self.pending_entries, index_name)
 
@@ -953,7 +989,13 @@ class LiveTrader:
                 # Select best candidate for this index
                 candidates.sort(key=lambda x: (x['dist'], -x['volume']))
                 best = candidates[0]
-                self.logger.info(f"[{index_name}] Best ALERT: {best['symbol']}")
+
+                # [P-09] Enforce Direction Correlation Limit
+                if not self._check_correlation_limit(best['opt_type'], index_name):
+                    continue
+
+                self.logger.info(f"[{index_name}] Best ALERT selected: {best['symbol']}")
+
 
                 # Send Telegram alert for this index's best candidate
                 signal = best['signal']

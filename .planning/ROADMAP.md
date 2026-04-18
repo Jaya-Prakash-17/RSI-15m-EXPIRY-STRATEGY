@@ -7,8 +7,9 @@
 - **Goal**: Expand from single-instrument tracking to multi-index concurrent trading and automated hedge detection.
 
 ### Phase 09: Multi-Index Signal Concurrency
-- [ ] Concurrent monitoring of NIFTY, BANKNIFTY, SENSEX signal streams.
-- [ ] Priority-based capital allocation across signals.
+- [x] Concurrent monitoring of NIFTY, BANKNIFTY, SENSEX signal streams.
+- [x] Priority-based capital allocation across signals.
+
 
 ### 999. Future Backlog
 - **999.1**: vectorized-rsi-smoothing-completed
