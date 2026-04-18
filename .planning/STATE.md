@@ -1,29 +1,31 @@
+## Current Position
+
+Phase: Not started (Inializing Milestone v1.0)
+Plan: —
+Status: Scoping Production Hardening Milestone
+Last activity: 2026-04-19 — Milestone v1.0 "Production Hardening" started. All requirements scoped with REQ-IDs.
+
+## Accumulated Context
+
+### Visual Logic (Validated)
+- Forced vertical chart orientation and list serialization in `performance.py` to prevent scale distortions (binary blob issue).
+- Added drawdown absolute monetary values to hover tooltips.
+- Re-activated P&L Distribution bars via explicit `tolist()` serialization.
+
+### Trade Inspector (Validated)
+- High-fidelity markers: Filled green/red triangles for entries/exits.
+- Horizontal rays extend to right edge with SL/TP price tags.
+
+### Strategy (Current Preferred)
+- RSI(11), Threshold(60), TP(3.0), Lots(3).
+- 3X Stress-Test charges.
+
+## Validated Decisions
+| Decision | Rationale | Outcome |
+|----------|-----------|---------|
+| .tolist() for Plotly | Prevents numpy-binary bdata artifacts in HTML export | ✅ |
+| Vertical Bar Orientation | Forces correct Y-axis scaling for discrete trades | ✅ |
+| Absolute DD Amounts | Required for P&L risk context | ✅ |
+
 ---
-gsd_state_version: 1.0
-milestone: v1.0
-milestone_name: milestone
-status: Phase 02 Completed
-last_updated: "2026-04-11T18:41:00.000Z"
-progress:
-  total_phases: 8
-  completed_phases: 3
-  total_plans: 3
-  completed_plans: 3
-  percent: 100
----
-
-# Project State
-
-## Overview
-
-Starting fresh from Milestone 1 focused on hardening and diagnostics. Current priority is resolving the lack of trades in the 2020 backtests.
-
-## Active Phase
-
-- **Phase 2**: Atomic Live State Persistence (COMPLETED)
-
-## Project Reference
-
-See: .planning/PROJECT.md (updated 2026-04-11)
-**Core value:** Reliable signal generation and safe, automated execution.
-**Current focus:** Phase 04 — Final Production Validation
+*Last updated: 2026-04-19*
