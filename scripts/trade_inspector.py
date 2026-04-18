@@ -40,6 +40,11 @@ def generate_inspector_dashboard(summary_json_path):
         print("No trades found in summary.")
         return
 
+    # Limit to last 100 trades for performance on large backtests
+    if len(trades) > 100:
+        print(f"Limiting inspection to last 100 trades (Total: {len(trades)})")
+        trades = trades[-100:]
+
     html_content = [
         "<html><head><title>Visual Trade Inspector</title>",
         "<style>",

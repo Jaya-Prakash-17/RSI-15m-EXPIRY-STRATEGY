@@ -325,10 +325,10 @@ class ExpiryRSIBreakout:
         if self.safe_sl_mode:
             try:
                 max_loss_check = (entry_price - effective_sl) * qty
-                if max_loss_check > self.safe_sl_max_loss * 1.05:  # 5% tolerance for rounding
+                if max_loss_check > self.safe_sl_max_loss * 1.01:  # 1% tolerance for rounding
                     self.logger.error(
                         f"[SAFE_SL ASSERTION FAILED] {symbol}: "
-                        f"effective_sl={effective_sl:.2f} gives max_loss=Rs.{max_loss_check:.0f} "
+                        f"effective_sl={effective_sl:.2f} gives max_loss=Rs.{max_loss_check:.1f} "
                         f"which exceeds safe_sl_max_loss=Rs.{self.safe_sl_max_loss}. "
                         f"Force-correcting."
                     )
@@ -398,7 +398,7 @@ class ExpiryRSIBreakout:
                      # Age 1: Candle T+1 (Valid).
                      # Age 2: Candle T+2 (Valid).
                      # Age 3: Candle T+3 (Expired, if alert_validity=2).
-                     if state['age'] > self.alert_validity:
+                     if state['age'] > self.alert_validity_candles:
                          self.logger.info(f"Alert expired for {symbol} at {current_time} (Age: {state['age']})")
                          expired_symbol = symbol
                          state['alert'] = None

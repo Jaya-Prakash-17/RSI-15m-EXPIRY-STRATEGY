@@ -16,16 +16,22 @@ LAST_VERIFIED = "2024-12-31"
 LOT_SIZE_HISTORY = {
     'NIFTY': [
         (date(2020, 1, 1), 75),
-        (date(2025, 9, 1), 65)
+        (date(2021, 7, 1), 50),
+        (date(2024, 4, 26), 25),
+        (date(2024, 11, 21), 75),
+        (date(2026, 1, 1), 65)
     ],
     'BANKNIFTY': [
-        (date(2020, 1, 1), 25),
-        (date(2024, 11, 20), 35),
-        (date(2025, 9, 1), 30)
+        (date(2020, 1, 1), 20),
+        (date(2021, 7, 1), 25),
+        (date(2023, 7, 14), 15),
+        (date(2024, 11, 21), 30),
+        (date(2025, 7, 1), 35),
+        (date(2026, 1, 1), 30)
     ],
     'SENSEX': [
         (date(2023, 5, 1), 10),
-        (date(2024, 11, 20), 20)
+        (date(2024, 11, 21), 20)
     ]
 }
 
@@ -56,26 +62,28 @@ def get_historical_lot_size(underlying: str, reference_date) -> int:
 
 def run_startup_assertions():
     """Verify key boundary dates on startup."""
-    assert get_historical_lot_size('NIFTY', date(2024, 11, 19)) == 75
-    assert get_historical_lot_size('NIFTY', date(2025, 9, 1)) == 65
-    assert get_historical_lot_size('BANKNIFTY', date(2024, 11, 19)) == 25
-    assert get_historical_lot_size('BANKNIFTY', date(2024, 11, 20)) == 35
-    assert get_historical_lot_size('BANKNIFTY', date(2025, 9, 1)) == 30
-    print("✅ Historical lot size assertions passed.")
+    assert get_historical_lot_size('NIFTY', date(2024, 4, 25)) == 50
+    assert get_historical_lot_size('NIFTY', date(2024, 4, 26)) == 25
+    assert get_historical_lot_size('NIFTY', date(2024, 11, 21)) == 75
+    assert get_historical_lot_size('BANKNIFTY', date(2023, 7, 13)) == 25
+    assert get_historical_lot_size('BANKNIFTY', date(2023, 7, 14)) == 15
+    assert get_historical_lot_size('BANKNIFTY', date(2024, 11, 21)) == 30
+    print("Historical lot size assertions passed.")
 
 def _run_self_test():
     """Run comprehensive self-test."""
     print("Running historical lot size self-test...")
     test_cases = [
         ('NIFTY', date(2020, 3, 15), 75),
-        ('NIFTY', date(2024, 11, 19), 75),
-        ('NIFTY', date(2025, 9, 1), 65),
+        ('NIFTY', date(2022, 1, 1), 50),
+        ('NIFTY', date(2024, 11, 19), 25),
+        ('NIFTY', date(2025, 9, 1), 75),
         ('NIFTY', date(2026, 3, 1), 65),
-        ('BANKNIFTY', date(2024, 11, 19), 25),
-        ('BANKNIFTY', date(2024, 11, 20), 35),
-        ('BANKNIFTY', date(2025, 9, 1), 30),
+        ('BANKNIFTY', date(2024, 11, 19), 15),
+        ('BANKNIFTY', date(2024, 11, 21), 30),
+        ('BANKNIFTY', date(2025, 9, 1), 35),
         ('SENSEX', date(2023, 5, 1), 10),
-        ('SENSEX', date(2024, 11, 20), 20)
+        ('SENSEX', date(2024, 11, 21), 20)
     ]
 
     for underlying, ref_date, expected in test_cases:
@@ -89,7 +97,7 @@ def _run_self_test():
     except ValueError:
         pass
 
-    print("✅ All historical lot size self-test cases passed.")
+    print("All historical lot size self-test cases passed.")
 
 if __name__ == '__main__':
     _run_self_test()

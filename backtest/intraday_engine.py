@@ -403,10 +403,34 @@ class IntradayEngine:
             prev_spot_price = prev_spot_row['close'] if prev_spot_row is not None else None
 
             if active_trade:
-                trade_pnl_realized = self._manage_active_trade(active_trade, t, option_data)
-                if active_trade['status'] == 'CLOSED':
-                    self.trades.append(active_trade)
-                    daily_pnl += trade_pnl_realized
+                # ── PROACTIVE DAILY LOSS LIMIT (MTM) ────────────────────────
+                # Check if unrealized loss + realized daily_pnl exceeds limit
+                symbol = active_trade['symbol']
+                if symbol in option_data:
+                    current_candle = self._get_latest_candle(option_data[symbol], t)
+                    if current_candle is not None:
+                        # Use candle low for PE/CE buyer's worst case or open for simplistic check
+                        # Here we use open as the first opportunity to exit
+                        current_price = current_candle['open']
+                        unrealized_pnl = (current_price - active_trade['entry_price']) * active_trade['remaining_qty']
+                        total_pnl = daily_pnl + unrealized_pnl + active_trade.get('partial_pnl', 0)
+
+                        if total_pnl <= -self.max_loss_per_day:
+                            self.logger.warning(
+                                f"🛑 DAILY LOSS LIMIT HIT (MTM): {total_pnl:.2f} <= -{self.max_loss_per_day}. "
+                                f"Squaring off {symbol} at {current_price:.2f}"
+                            )
+                            trade_pnl_realized = self._close_trade(active_trade, t, "DAILY_LIMIT", option_data)
+                            daily_pnl += trade_pnl_realized
+                            self.trades.append(active_trade)
+                            active_trade = None
+                            break  # Stop all trading for the day
+
+                if active_trade:
+                    trade_pnl_realized = self._manage_active_trade(active_trade, t, option_data)
+                    if active_trade['status'] == 'CLOSED':
+                        self.trades.append(active_trade)
+                        daily_pnl += trade_pnl_realized
 
                     # V10-P-08: Track consecutive losses for circuit breaker
                     if trade_pnl_realized < 0:

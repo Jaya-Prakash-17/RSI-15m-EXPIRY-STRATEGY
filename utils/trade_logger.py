@@ -8,6 +8,7 @@ import csv
 import logging
 from datetime import datetime
 from threading import Lock
+from utils.symbol_parser import detect_underlying
 
 class TradeLogger:
     """
@@ -17,7 +18,7 @@ class TradeLogger:
 
     # CSV headers for trade log
     HEADERS = [
-        'timestamp', 'trade_id', 'mode', 'symbol', 'trading_symbol',
+        'timestamp', 'trade_id', 'mode', 'underlying', 'symbol', 'trading_symbol',
         'side', 'entry_time', 'entry_price', 'qty',
         'exit_time', 'exit_price', 'sl', 'target',
         'reason', 'pnl', 'pnl_if_sl_hit', 'max_loss_savings',
@@ -45,11 +46,15 @@ class TradeLogger:
     def log_entry(self, trade, daily_pnl=0, capital=0):
         """Log trade entry."""
         with self.lock:
+            symbol = trade.get('symbol', '')
+            underlying = trade.get('underlying') or detect_underlying(symbol)
+
             row = {
                 'timestamp': datetime.now().isoformat(),
                 'trade_id': trade.get('trade_id', ''),
                 'mode': self.mode,
-                'symbol': trade.get('symbol', ''),
+                'underlying': underlying,
+                'symbol': symbol,
                 'trading_symbol': trade.get('trading_symbol', ''),
                 'side': 'BUY',
                 'entry_time': trade.get('entry_time', ''),
@@ -79,6 +84,8 @@ class TradeLogger:
             capital: Available capital after this trade (0 if not tracked)
         """
         with self.lock:
+            symbol = trade.get('symbol', '')
+            underlying = trade.get('underlying') or detect_underlying(symbol)
             exit_price = trade.get('exit_price', 0)
             exit_time = trade.get('exit_time', datetime.now().isoformat())
             reason = trade.get('reason', 'UNKNOWN')
@@ -89,7 +96,8 @@ class TradeLogger:
                 'timestamp': datetime.now().isoformat(),
                 'trade_id': trade.get('trade_id', ''),
                 'mode': self.mode,
-                'symbol': trade.get('symbol', ''),
+                'underlying': underlying,
+                'symbol': symbol,
                 'trading_symbol': trade.get('trading_symbol', ''),
                 'side': 'SELL',
                 'entry_time': trade.get('entry_time', ''),
@@ -113,7 +121,7 @@ class TradeLogger:
             # Log MAX_LOSS comparison
             if reason == 'MAX_LOSS':
                 self.logger.info(
-                    f"MAX_LOSS EXIT: {trade.get('symbol')} | "
+                    f"MAX_LOSS EXIT: {symbol} | "
                     f"Actual PnL: ₹{pnl:.2f} | "
                     f"If SL hit: ₹{trade.get('pnl_if_sl_hit', 0):.2f} | "
                     f"Saved: ₹{trade.get('max_loss_savings', 0):.2f}"
@@ -122,11 +130,15 @@ class TradeLogger:
     def log_partial_exit(self, trade, exit_qty, exit_price, reason, partial_pnl, daily_pnl=0, capital=0):
         """Log partial exit."""
         with self.lock:
+            symbol = trade.get('symbol', '')
+            underlying = trade.get('underlying') or detect_underlying(symbol)
+
             row = {
                 'timestamp': datetime.now().isoformat(),
                 'trade_id': trade.get('trade_id', ''),
                 'mode': self.mode,
-                'symbol': trade.get('symbol', ''),
+                'underlying': underlying,
+                'symbol': symbol,
                 'trading_symbol': trade.get('trading_symbol', ''),
                 'side': 'PARTIAL_SELL',
                 'entry_time': trade.get('entry_time', ''),

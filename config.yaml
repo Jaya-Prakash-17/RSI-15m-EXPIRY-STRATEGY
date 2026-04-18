@@ -3,9 +3,9 @@
 # =============================================================================
 
 backtest:
-  start_date: "2026-04-01"
+  start_date: "2020-01-01"
   offline_mode: true
-  end_date: "2026-04-18"
+  end_date: "2025-12-31"
 
 capital:
   initial: 200000         # Starting trading capital in INR (Example: 200000)

@@ -5,6 +5,7 @@ import logging
 from datetime import datetime
 import os
 import json
+from utils.symbol_parser import detect_underlying, parse_opt_type
 
 class PerformanceReporter:
     def __init__(self, config=None):
@@ -67,7 +68,7 @@ class PerformanceReporter:
             'total': total_charges
         }
 
-    def calculate_advanced_stats(self, trades_df, initial_cap=None):
+    def calculate_advanced_stats(self, trades_df, initial_cap=None, is_subgroup=False):
         """Calculate advanced performance statistics"""
         if trades_df.empty:
             return {}
@@ -204,7 +205,7 @@ class PerformanceReporter:
         except:
             avg_holding_mins = 0
 
-        return {
+        stats = {
             # Basic
             'total_trades': total_trades,
             'winning_trades': winning_trades,
@@ -248,6 +249,30 @@ class PerformanceReporter:
             'pnl_std_dev': round(std_pnl, 2)
         }
 
+        # Multi-Index Segmentation (only run for the top-level call)
+        if not is_subgroup:
+            stats['segmented'] = {}
+
+            # Segment by Instrument (Underlying)
+            if 'underlying' in trades_df.columns:
+                unique_indices = trades_df['underlying'].unique()
+                for idx in unique_indices:
+                    idx_df = trades_df[trades_df['underlying'] == idx]
+                    stats['segmented'][idx] = self.calculate_advanced_stats(
+                        idx_df, initial_cap=initial_cap, is_subgroup=True
+                    )
+
+            # Segment by Option Type (Directional Bias)
+            if 'opt_type' in trades_df.columns:
+                stats['segmented']['CE'] = self.calculate_advanced_stats(
+                    trades_df[trades_df['opt_type'] == 'CE'], initial_cap=initial_cap, is_subgroup=True
+                )
+                stats['segmented']['PE'] = self.calculate_advanced_stats(
+                    trades_df[trades_df['opt_type'] == 'PE'], initial_cap=initial_cap, is_subgroup=True
+                )
+
+        return stats
+
     def generate_report(self, trades_df, save_to_file=True):
         """Generate comprehensive performance report with trading charges"""
         if trades_df.empty:
@@ -258,6 +283,12 @@ class PerformanceReporter:
         # Ensure cost column exists (entry_price * qty)
         if 'cost' not in trades_df.columns:
             trades_df['cost'] = trades_df['entry_price'] * trades_df['qty']
+
+        # Multi-Index Attribution: Ensure 'underlying' and 'opt_type' columns exist
+        if 'underlying' not in trades_df.columns:
+            trades_df['underlying'] = trades_df['symbol'].apply(detect_underlying)
+        if 'opt_type' not in trades_df.columns:
+            trades_df['opt_type'] = trades_df['symbol'].apply(lambda x: parse_opt_type(x) or 'N/A')
 
         # Read exit config once, outside the loop
         exit_mode = self.config.get('strategy', {}).get('exit_mode', 'single_lot')
@@ -752,6 +783,50 @@ class PerformanceReporter:
         peak_arr = np.maximum.accumulate(eq_arr)
         dd_pct = (eq_arr - peak_arr) / peak_arr * 100
 
+        # ── Chart 0: P&L Attribution Heatmap ─────────────────────────────
+        heatmap_html = ""
+        seg_grid_html = ""
+        if 'segmented' in stats:
+            # Heatmap Data
+            heat_df = trades_df.copy()
+            heat_df['Date'] = pd.to_datetime(heat_df['exit_time']).dt.date
+            heat_pivot = heat_df.groupby(['Date', 'underlying'])['pnl_net'].sum().unstack().fillna(0)
+
+            fig_heat = go.Figure(data=go.Heatmap(
+                z=heat_pivot.values.T,
+                x=heat_pivot.index,
+                y=heat_pivot.columns,
+                colorscale='RdYlGn',
+                reversescale=False,
+                zmid=0,
+                hovertemplate='Date: %{x}<br>Index: %{y}<br>P&L: ₹%{z:,.0f}<extra></extra>'
+            ))
+            fig_heat.update_layout(
+                template='plotly_dark', paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+                margin=dict(l=10, r=10, t=30, b=10), height=280,
+                xaxis=dict(showgrid=False, title='Date', title_font=dict(size=10, color='#64748b')),
+                yaxis=dict(showgrid=False),
+                font=dict(color='#94a3b8', size=11)
+            )
+            heatmap_html = fig_heat.to_html(full_html=False, include_plotlyjs=False, config={'displayModeBar': False})
+
+            # Instrument Summary Grid HTML
+            seg_cards = []
+            for name, m in stats['segmented'].items():
+                if name in ['CE', 'PE'] or not isinstance(m, dict): continue
+                pnl_val = m['total_pnl']
+                color = '#22c55e' if pnl_val >= 0 else '#ef4444'
+                wr = m['win_rate']
+                trades_cnt = m['total_trades']
+
+                seg_cards.append(f"""
+                <div class="stat-card" style="border-left: 3px solid {color};">
+                    <div class="label">{name} Performance</div>
+                    <div class="value" style="color:{color}">₹{pnl_val:,.0f}</div>
+                    <div class="detail">{wr}% WR &middot; {trades_cnt} Trades</div>
+                </div>""")
+            seg_grid_html = '\n'.join(seg_cards)
+
         # ── Chart 1: Equity Curve ────────────────────────────────────────
         fig_equity = go.Figure()
         fig_equity.add_trace(go.Scatter(
@@ -884,6 +959,28 @@ class PerformanceReporter:
                        title='Count', title_font=dict(size=10, color='#64748b')),
             font=dict(color='#94a3b8', size=11)
         )
+        # ── Chart 6: Directional Bias (CE vs PE) ──────────────────────────
+        bias_html = ""
+        if 'segmented' in stats and 'CE' in stats['segmented'] and 'PE' in stats['segmented']:
+            ce_pnl = stats['segmented']['CE']['total_pnl']
+            pe_pnl = stats['segmented']['PE']['total_pnl']
+            fig_bias = go.Figure(data=[go.Bar(
+                x=['CE (Call)', 'PE (Put)'],
+                y=[ce_pnl, pe_pnl],
+                marker_color=['#22c55e' if ce_pnl > 0 else '#ef4444',
+                             '#22c55e' if pe_pnl > 0 else '#ef4444'],
+                text=[f"₹{ce_pnl:,.0f}", f"₹{pe_pnl:,.0f}"],
+                textposition='auto',
+                hovertemplate='Type: %{x}<br>Net P&L: ₹%{y:,.0f}<extra></extra>'
+            )])
+            fig_bias.update_layout(
+                template='plotly_dark', paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+                margin=dict(l=10, r=10, t=30, b=10), height=220,
+                xaxis=dict(showgrid=False), yaxis=dict(showgrid=True, gridcolor='rgba(255,255,255,0.05)'),
+                font=dict(color='#94a3b8', size=11)
+            )
+            bias_html = fig_bias.to_html(full_html=False, include_plotlyjs=False, config={'displayModeBar': False})
+
         dist_html = fig_dist.to_html(full_html=False, include_plotlyjs=False, config={'displayModeBar': False})
 
         # ── Trade Table HTML ─────────────────────────────────────────────
@@ -1010,7 +1107,7 @@ class PerformanceReporter:
   .stat-card .detail {{ font-size: 11px; color: #64748b; margin-top: 4px; }}
 
   .charts-grid {{
-    display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px;
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 16px; margin-bottom: 24px;
   }}
   .chart-panel {{
     background: rgba(15, 23, 42, 0.7);
@@ -1088,6 +1185,10 @@ class PerformanceReporter:
   </div>
 </div>
 
+<div class="stats-grid" style="grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); margin-top: -12px; margin-bottom: 24px;">
+  {seg_grid_html}
+</div>
+
 <div class="stats-grid">
   <div class="stat-card">
     <div class="label">Total Trades</div>
@@ -1138,6 +1239,7 @@ class PerformanceReporter:
 
 <div class="charts-grid">
   <div class="chart-panel full-width"><h3>Equity Curve</h3>{equity_html}</div>
+  <div class="chart-panel full-width"><h3>P&L Attribution Heatmap</h3>{heatmap_html}</div>
 </div>
 <div class="charts-grid">
   <div class="chart-panel"><h3>P&amp;L Per Trade</h3>{pnl_trade_html}</div>
@@ -1145,6 +1247,7 @@ class PerformanceReporter:
 </div>
 <div class="charts-grid">
   <div class="chart-panel"><h3>Drawdown</h3>{dd_html}</div>
+  <div class="chart-panel"><h3>Directional Bias (CE vs PE)</h3>{bias_html}</div>
   <div class="chart-panel"><h3>P&amp;L Distribution</h3>{dist_html}</div>
 </div>
 

@@ -18,6 +18,8 @@ data/candles/
 
 # Reports
 reports/
+FINAL_REPORTS/
+audit_docs/
 
 # Agent/IDE
 .agent/
@@ -27,3 +29,13 @@ reports/
 .pytest_cache/
 node-local/
 scratch/
+planning/
+.claude/
+.cursorrules
+.windsurfrules
+CLAUDE.md
+
+# Persistence
+data/strategy_state.json
+data/trades.json
+data/pending_entries.json
