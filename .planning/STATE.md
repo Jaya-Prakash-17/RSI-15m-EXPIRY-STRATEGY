@@ -1,20 +1,22 @@
 ## Current Position
 
-Phase: Not started (Inializing Milestone v1.0)
+Phase: Not started (Defining Requirements)
 Plan: —
-Status: Scoping Production Hardening Milestone
-Last activity: 2026-04-19 — Milestone v1.0 "Production Hardening" started. All requirements scoped with REQ-IDs.
+Status: Initializing Milestone v3.0: Analytics & Operational Excellence
+Last activity: 2026-04-18 — Milestone v3.0 started. Scoping attribution and rotation features.
+
 
 ## Accumulated Context
+
+### Concurrency Logic (Validated)
+- **Parallel Fetching**: ThreadPoolExecutor used for spot candle discovery across NIFTY, SENSEX, BANKNIFTY.
+- **Priority sorting**: Deterministic precedence (NIFTY > SENSEX > BANKNIFTY) ensures capital is allocated to highest liquidity/probability signals.
+- **Correlation tracking**: Pending orders must be tracked in `_check_correlation_limit` to prevent directional over-leverage during simultaneous multi-index breakouts.
 
 ### Visual Logic (Validated)
 - Forced vertical chart orientation and list serialization in `performance.py` to prevent scale distortions (binary blob issue).
 - Added drawdown absolute monetary values to hover tooltips.
 - Re-activated P&L Distribution bars via explicit `tolist()` serialization.
-
-### Trade Inspector (Validated)
-- High-fidelity markers: Filled green/red triangles for entries/exits.
-- Horizontal rays extend to right edge with SL/TP price tags.
 
 ### Strategy (Current Preferred)
 - RSI(11), Threshold(60), TP(3.0), Lots(3).
@@ -23,9 +25,10 @@ Last activity: 2026-04-19 — Milestone v1.0 "Production Hardening" started. All
 ## Validated Decisions
 | Decision | Rationale | Outcome |
 |----------|-----------|---------|
+| Parallel Spot Fetch | Reduce loop lag when scanning 3+ instruments | ✅ |
+| Index Priority Map | Deterministic capital scaling during simultaneous signals | ✅ |
+| Pending-State Risk | Catch concentration risk in-iteration before order placement | ✅ |
 | .tolist() for Plotly | Prevents numpy-binary bdata artifacts in HTML export | ✅ |
-| Vertical Bar Orientation | Forces correct Y-axis scaling for discrete trades | ✅ |
-| Absolute DD Amounts | Required for P&L risk context | ✅ |
 
 ---
-*Last updated: 2026-04-19*
+*Last updated: 2026-04-18*

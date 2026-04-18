@@ -7,8 +7,14 @@ A specialized trading system implementing an RSI-based breakout strategy for Ind
 - **v2.0 (2026-04-18)**: Portfolio Diversification & Scaling. Implemented parallel multi-index discovery and signal concurrency with deterministic priority allocation.
 - **v1.0 (2026-04-18)**: Production Hardening & Reliability. Established a resilient, "fail-closed" environment with time-sync, recovery paths, and safety gates.
 
-## Current Milestone: v3.0 Advanced Risk Analytics & Performance Polishing
-**Goal**: Implement real-time margin management, probabilistic stop-loss scaling, and enhanced performance visualization for multi-index operations.
+## Current Milestone: v3.0 Analytics & Operational Excellence
+**Goal**: Enhance multi-index performance transparency and infrastructure reliability without altering the core trading strategy.
+
+**Target features**:
+- **Multi-Index Attribution**: Instrument-specific performance metrics (P&L, Hit-rate, DD) in the Dashboard.
+- **Automated Log Rotation**: Robust log management to prevent disk bloat.
+- **Live State Visibility**: Enhanced boot-up recovery transparency and console feedback.
+
 
 ## Requirements
 
