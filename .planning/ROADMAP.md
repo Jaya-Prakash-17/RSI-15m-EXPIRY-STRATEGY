@@ -1,15 +1,19 @@
 # Project Roadmap
 
 ## Milestone History
+- **[v2.0: Portfolio Diversification & Scaling](milestones/v2.0-ROADMAP.md)** [COMPLETED 2026-04-18]
 - **[v1.0: Production Hardening & Reliability](milestones/v1.0-ROADMAP.md)** [COMPLETED 2026-04-18]
 
-## Milestone v2.0: Portfolio Diversification & Scaling [DRAFT]
-- **Goal**: Expand from single-instrument tracking to multi-index concurrent trading and automated hedge detection.
+## Milestone v3.0: Advanced Risk Analytics & Performance Polishing [DRAFT]
+- **Goal**: Implement real-time margin management, probabilistic stop-loss scaling, and enhanced performance visualization for multi-index operations.
 
-### Phase 09: Multi-Index Signal Concurrency
-- [x] Concurrent monitoring of NIFTY, BANKNIFTY, SENSEX signal streams.
-- [x] Priority-based capital allocation across signals.
+### Phase 10: Margin-Aware Execution [PLANNED]
+- [ ] Broker margin endpoint integration.
+- [ ] Concurrent order retry logic on margin rejection.
 
+### Phase 11: Dynamic Risk Scaling [PLANNED]
+- [ ] ATR-based SL/TP adjustment.
+- [ ] Intra-day risk exposure heatmaps.
 
 ### 999. Future Backlog
 - **999.1**: vectorized-rsi-smoothing-completed
