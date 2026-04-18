@@ -82,6 +82,10 @@ class PerformanceReporter:
         losing_trades = len(loss_trades)
         win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
 
+        # Calculate cost (capital deployed) if not present
+        if 'cost' not in trades_df.columns:
+            trades_df['cost'] = trades_df['entry_price'] * trades_df['qty']
+
         # P&L stats
         total_pnl = pnl.sum()
         avg_pnl = pnl.mean()
@@ -884,7 +888,7 @@ class PerformanceReporter:
 
         # ── Trade Table HTML ─────────────────────────────────────────────
         trade_tbl = trades_df[['symbol', 'entry_time', 'exit_time', 'entry_price',
-                               'exit_price', 'qty', 'reason', 'pnl_gross', 'charges', 'pnl_net']].copy()
+                               'exit_price', 'qty', 'cost', 'reason', 'pnl_gross', 'charges', 'pnl_net']].copy()
         trade_tbl['entry_time'] = pd.to_datetime(trade_tbl['entry_time']).dt.strftime('%Y-%m-%d %H:%M')
         trade_tbl['exit_time'] = pd.to_datetime(trade_tbl['exit_time']).dt.strftime('%Y-%m-%d %H:%M')
 
@@ -906,6 +910,7 @@ class PerformanceReporter:
                 <td>₹{trow['entry_price']:,.2f}</td>
                 <td>₹{trow['exit_price']:,.2f}</td>
                 <td>{trow['qty']}</td>
+                <td style="color:#00d2ff;">₹{trow['cost']:,.0f}</td>
                 <td><span class="badge {reason_cls}">{reason}</span></td>
                 <td class="{gross_cls}">₹{gross_val:,.2f}</td>
                 <td>₹{trow['charges']:,.2f}</td>
@@ -1105,6 +1110,11 @@ class PerformanceReporter:
     <div class="detail">Sortino: {stats['sortino_ratio']}</div>
   </div>
   <div class="stat-card">
+    <div class="label">Avg Capital Deployed</div>
+    <div class="value" style="color:#00d2ff;">₹{stats['avg_capital_deployed']:,.0f}</div>
+    <div class="detail">Max: ₹{stats['max_capital_deployed']:,.0f}</div>
+  </div>
+  <div class="stat-card">
     <div class="label">Max Drawdown</div>
     <div class="value" style="color:#ef4444">{stats['max_drawdown_pct']}%</div>
     <div class="detail">₹{stats['max_drawdown']:,.0f}</div>
@@ -1145,7 +1155,7 @@ class PerformanceReporter:
       <thead>
         <tr>
           <th>#</th><th>Symbol</th><th>Entry Time</th><th>Exit Time</th>
-          <th>Entry</th><th>Exit</th><th>Qty</th><th>Reason</th>
+          <th>Entry</th><th>Exit</th><th>Qty</th><th>Capital Deployed</th><th>Reason</th>
           <th>Gross P&amp;L</th><th>Charges</th><th>Net P&amp;L</th>
         </tr>
       </thead>
