@@ -41,10 +41,13 @@ LTP_CACHE_TTL_SECONDS      = 1     # Re-use LTP if fetched within last second
 class LiveTrader:
     def __init__(self, config):
         self.logger = logging.getLogger("LiveTrader")
-        self.config = config
-        self.dm = DataManager(config)
-        self.om = OrderManager(config)
         self.client = GrowwClient()
+        self.config = config
+        self.dm = DataManager(config, client=self.client)
+
+        self.om = OrderManager(config, client=self.client)
+
+
         self.strategy = ExpiryRSIBreakout(config)
         self.tracker = TradeTracker()  # Bot trade tracking
         self.trade_logger = TradeLogger(config)  # CSV trade audit log
@@ -70,7 +73,12 @@ class LiveTrader:
 
         self.last_candle_time = None
         self.prev_closed_candle_time = None
-        self.last_processed_candle_time = {}
+        # [RECO-02] Restore processed bars from persistence to prevent re-entry on crash
+        raw_bars = self.tracker.get_last_processed_bars()
+        self.last_processed_candle_time = {
+            s: datetime.fromisoformat(t) if isinstance(t, str) else t
+            for s, t in raw_bars.items()
+        }
 
         # Pending entry orders (SL-M BUY orders waiting for fill)
         # Structure: {symbol: {'order_id': str, 'trigger_price': float, 'alert_candle': dict,
@@ -118,13 +126,19 @@ class LiveTrader:
         self.trade_only_on_expiry = config['strategy'].get('trade_only_on_expiry', True)
 
         # Candle Builder for local option candles (P-21)
-        self.candle_builder = CandleBuilder(interval_minutes=15)
+        # Production Hardening: enforce_timestamp=True for deterministic boundaries
+        self.candle_builder = CandleBuilder(interval_minutes=15, enforce_timestamp=True)
         self._pending_closed_bars = {}  # symbol -> bar dict
 
         # Hardening: LTP & Starvation trackers
         self._consecutive_ltp_failures = 0
         self._last_bar_close_time = datetime.now()
         self._starvation_alert_sent = False
+
+        # Phase 07 Resilience Tracking
+        self._is_reconnecting = False
+        self._emergency_halt_active = False
+
 
     def _get_tradeable_indices(self):
         """
@@ -181,8 +195,14 @@ class LiveTrader:
         # P-08 / P-20: Clear memory caches from previous days to prevent leaks
         self._candle_cache.clear()
         self._ltp_cache.clear()
-        self.last_processed_candle_time.clear()
-        self.logger.info("Candle processing timestamps reset for new session.")
+
+        # [RECO-02] Restore state instead of clearing if it's the same day
+        raw_bars = self.tracker.get_last_processed_bars()
+        self.last_processed_candle_time = {
+            s: datetime.fromisoformat(t) if isinstance(t, str) else t
+            for s, t in raw_bars.items()
+        }
+        self.logger.info(f"Candle tracking restored for {len(self.last_processed_candle_time)} symbols.")
 
         try:
             run_startup_assertions()
@@ -393,7 +413,9 @@ class LiveTrader:
         price = self.client.get_ltp(symbol)
         if price is not None:
             self._ltp_cache[symbol] = (price, now)
+            self._is_reconnecting = False # Reset reconnect flag on success
         return price
+
 
     def _get_candles_incremental(
         self, underlying: str, symbol: str, year: int,
@@ -625,12 +647,20 @@ class LiveTrader:
                 batch_results = self.client.get_batch_ltp(symbols)
                 self._consecutive_ltp_failures = 0  # reset on successful batch call
 
+                # Capture accurate capture-time for boundary alignment
+                now = datetime.now()
                 for symbol, ltp in batch_results.items():
                     if ltp:
-                        closed_bar = self.candle_builder.feed(symbol, ltp)
+                        closed_bar = self.candle_builder.feed(symbol, ltp, timestamp=now)
                         if closed_bar:
                             self._pending_closed_bars[symbol] = closed_bar
                             self.logger.debug(f"Local bar closed for {symbol} at {closed_bar['datetime']}")
+
+                            # [CONT-02] Check for broken continuity
+                            if self.candle_builder.continuity_broken:
+                                self.logger.critical(f"🛑 TRADING HALTED: Continuity gap detected for {symbol}. Manual resync required.")
+                                self.circuit_breaker_active = True
+                                self.telegram._send_to_owner(f"🚨 <b>Trading Halted</b>\nContinuity gap detected for {symbol}. System in lock-down.")
 
                             # Starvation tracking: update last closure time
                             self._last_bar_close_time = datetime.now()
@@ -785,6 +815,11 @@ class LiveTrader:
 
                     current_candle_time = last_row['datetime']
 
+                    # [DATA-01] Starvation / Health Guard
+                    if not last_row.get('is_healthy', True):
+                        self.logger.warning(f"[{symbol}] Skipping signal scan: candle at {last_row['datetime']} is STARVED (insufficient ticks)")
+                        continue
+
                     # Prevent duplicate processing
                     last_processed = self.last_processed_candle_time.get(symbol)
                     if last_processed and current_candle_time <= last_processed:
@@ -822,6 +857,8 @@ class LiveTrader:
                     )
 
                     self.last_processed_candle_time[symbol] = current_candle_time
+                    # [RECO-02] Segment 2: Persist processed bar to disk
+                    self.tracker.save_processed_bar(symbol, current_candle_time)
 
                     # Build price history up to current candle for min_candles check
                     price_slice = df['close']
@@ -1155,6 +1192,8 @@ class LiveTrader:
                     'order_id': order_id,
                     'trigger_price': trigger_price,
                     'qty': qty,
+                    'filled_qty': 0,            # Phase 06: Partial fill tracking
+                    'avg_fill_price': 0.0,       # Phase 06: Weighted avg tracking
                     'trading_symbol': trading_symbol,
                     'original_symbol': symbol,
                     'signal': signal,
@@ -1195,6 +1234,12 @@ class LiveTrader:
         original_symbol = pending.get('original_symbol', trading_symbol)
         trigger_price = float(pending['trigger_price'])
         fill_price = float(fill_price)
+
+        # [SAFE-01] Zero-Fill Hard Reject (Bug #8)
+        if fill_price <= 0:
+            self.logger.critical(f"🛑 REJECTED: Order {order_id} has fill_price={fill_price}. Data corruption risk.")
+            self.telegram._send_to_owner(f"🚨 <b>Order Rejected</b>\nInvalid fill price {fill_price} for {original_symbol}. Logic aborted.")
+            return
 
         if override_qty is not None and override_qty != pending['qty']:
              self.telegram._send(
@@ -1428,59 +1473,152 @@ class LiveTrader:
                     continue
 
                 status = order_status.get('status', '').upper()
+                broker_fill_price = float(order_status.get('fill_price', 0) or 0)
+                broker_filled_qty = int(order_status.get('filled_quantity', 0) or 0)
+
+                # Task 4: Zero-Fill Reject [SAFE-01]
+                if broker_filled_qty > 0 and broker_fill_price <= 0:
+                    self.logger.critical(
+                        f"🚨 INVALID FILL DATA: Broker reported price ₹{broker_fill_price} "
+                        f"for {broker_filled_qty} units of {symbol}. Logic aborted for this sweep."
+                    )
+                    continue
 
                 if is_order_filled(status):
                     # ORDER FILLED - Create active trade
-                    fill_price = order_status.get('fill_price') or pending['trigger_price']
-                    self.logger.info(f"Fill price extracted: ₹{fill_price} (trigger was: ₹{pending['trigger_price']})")
+                    fill_price = broker_fill_price if broker_fill_price > 0 else pending['trigger_price']
 
-                    self.logger.info(f"🎯 PENDING ENTRY FILLED: {symbol} @ ₹{fill_price}")
-                    self._activate_trade_from_pending(pending, fill_price=fill_price)
+                    # [SLIP-01] Slippage Tolerance Enforcement
+                    trigger_price = float(pending['trigger_price'])
+                    slippage_pct = (fill_price - trigger_price) / trigger_price
+                    max_slip = self.config.get('risk', {}).get('max_slippage_pct', 0.02)
+
+                    if slippage_pct > max_slip:
+                        self.logger.warning(
+                            f"🚨 HIGH SLIPPAGE detected for {symbol}: {slippage_pct:.2%} "
+                            f"(Limit: {max_slip:.2%}). Fill: {fill_price}, Trigger: {trigger_price}"
+                        )
+                        self.telegram._send(
+                            f"🚨 <b>High Slippage on Entry</b>\n"
+                            f"Symbol: <code>{symbol}</code>\n"
+                            f"Slippage: {slippage_pct:.2%}\n"
+                            f"Fill: ₹{fill_price} | Trigger: ₹{trigger_price}"
+                        )
+
+                    self.logger.info(f"🎯 PENDING ENTRY FILLED: {symbol} @ ₹{fill_price} (Qty: {broker_filled_qty})")
+                    self._activate_trade_from_pending(pending, fill_price=fill_price, override_qty=broker_filled_qty)
+
                     del self.pending_entries[symbol]
                     self.tracker.save_pending_entries(self.pending_entries)
                     self._save_strategy_state()
 
-                elif status in ('CANCELLED', 'REJECTED', 'EXPIRED'):
-                    # BUG-001: Check for partial fill before total cleanup
-                    filled_qty = int(order_status.get('filled_quantity', 0))
-                    if filled_qty > 0:
+
+                elif status in ['PARTIALLY_FILLED', 'PARTIAL']:
+                    # Update local tracking for partial fills
+                    if broker_filled_qty > pending.get('filled_qty', 0):
+                        self.logger.info(
+                            f"⏳ PARTIAL FILL detected for {symbol}: {broker_filled_qty}/{pending['qty']} "
+                            f"filled at avg ₹{broker_fill_price}"
+                        )
+                        pending['filled_qty'] = broker_filled_qty
+                        pending['avg_fill_price'] = broker_fill_price
+                        self.tracker.save_pending_entries(self.pending_entries)
+
+                elif status in ['REJECTED', 'CANCELLED', 'FAILED', 'EXPIRED']:
+                    # Reconcile any partial fills before clearing (Stub Trade logic)
+                    if broker_filled_qty > 0:
                         self.logger.warning(
-                            f"🔔 Partial Entry detected for {symbol} ({filled_qty} units). "
+                            f"🔔 Partial Entry detected for {symbol} ({broker_filled_qty} units). "
                             f"Order was {status}, but partial fill occurred. Activating Stub Trade."
                         )
-                        fill_price = order_status.get('fill_price') or pending['trigger_price']
-                        self._activate_trade_from_pending(pending, fill_price=fill_price, override_qty=filled_qty)
-
+                        self._activate_trade_from_pending(
+                            pending,
+                            fill_price=broker_fill_price if broker_fill_price > 0 else pending['trigger_price'],
+                            override_qty=broker_filled_qty
+                        )
                         self.telegram._send(
-                            f"⚠️ <b>Partial Fill — Trade Activated</b>\n"
-                            f"Symbol: <code>{symbol}</code>\n"
-                            f"Filled: {filled_qty} units (order was {status})\n"
-                            f"Trade is LIVE with stub quantity. Monitor SL closely."
+                            f"🔔 <b>Partial Fill on {status.capitalize()}</b>\n"
+                            f"Symbol: <code>{symbol}</code> | Filled: {broker_filled_qty} units\n"
+                            f"Stub trade activated. Monitor SL/Targets."
                         )
                     else:
-                        self.logger.warning(
-                            f"⚠️ Pending entry {order_id} was {status} for {symbol}. "
-                            f"No position opened."
-                        )
-                        # Notify trader
+                        self.logger.info(f"❌ Entry Order {status}: {symbol} (Order: {order_id})")
                         self.telegram._send(
-                            f"⚠️ <b>Entry Order {status}</b>\n"
+                            f"❌ <b>Entry Order {status.capitalize()}</b>\n"
                             f"Symbol: <code>{symbol}</code>\n"
                             f"Order: {order_id}\n"
-                            f"No position was opened. Reason: {status}\n"
-                            f"Check margin/limits on Groww app."
+                            f"No position opened."
                         )
-                    # Consume the strategy alert so no orphan ENTRY signals fire
+
+                    # Clean up
                     original_symbol = pending.get('original_symbol', symbol)
                     self.strategy.consume_alert(original_symbol)
-                    self.logger.info(f"Strategy alert consumed for {original_symbol} after rejection")
-
                     del self.pending_entries[symbol]
                     self.tracker.save_pending_entries(self.pending_entries)
                     self._save_strategy_state()
 
             except Exception as e:
                 self.logger.error(f"Error monitoring pending entry for {symbol}: {e}")
+
+    def _reconnect_resync(self):
+        """
+        [RECO-01] Reconnect resync path: Invalidate caches after disconnect.
+        Forces the next loop to fetch fresh data.
+        """
+        self.logger.info("⚡ Disconnect detected. Initiating Reconnect Resync Path...")
+        self._ltp_cache.clear()
+        self._candle_cache.clear()
+        self._is_reconnecting = True
+
+        # Verify connectivity
+        try:
+            test_ltp = self.client.get_ltp('NIFTY')
+            if test_ltp and test_ltp > 0:
+                self.logger.info("✅ Reconnect Resync: Connectivity verified.")
+                self.telegram._send("⚡ <b>Reconnect Resync</b>\nAPI connectivity restored. Caches cleared, fresh data will be fetched in next sweep.")
+            else:
+                self.logger.warning("⚠️ Reconnect Resync: Connectivity still unreliable.")
+        except Exception as e:
+            self.logger.error(f"Reconnect Resync: Error verifying connectivity: {e}")
+
+    def _emergency_flatten(self):
+        """
+        [SAFE-02] Prolonged-disconnect emergency flattening policy.
+        Closes all active positions via MARKET orders if bot is blind for too long.
+        """
+        self.logger.critical("🚨 EMERGENCY FLATTEN TRIGGERED: Prolonged Disconnect detected.")
+        self.telegram._send("🚨 <b>EMERGENCY FLATTEN</b>\nProlonged disconnect detected. Attempting to close all positions via MARKET orders.")
+
+        active_trades = self.tracker.get_active_trades()
+        if not active_trades:
+            self.logger.info("Emergency Flatten: No active positions to close.")
+            return
+
+        for trade in active_trades:
+            symbol = trade['symbol']
+            qty = trade['remaining_qty']
+            self.logger.warning(f"Emergency Flatten: Closing {qty} units of {symbol} (MARKET)")
+
+            try:
+                # Fire MARKET SELL directly to broker (bypassing normal trackers for speed/certainty)
+                resp = self.client.place_order(
+                    symbol=symbol,
+                    qty=qty,
+                    side='SELL',
+                    order_type='MARKET',
+                    product='MIS'
+                )
+                self.logger.info(f"Emergency Flatten: Order placed for {symbol}. Resp: {resp}")
+            except Exception as e:
+                self.logger.error(f"Emergency Flatten: FAILED for {symbol}: {e}")
+                self.telegram._send(f"🚨 <b>Emergency Flatten FAILED</b> for {symbol}\nManual intervention required!")
+
+        # Stop the bot after emergency flatten to prevent rogue re-entries
+        self.logger.critical("Emergency Flatten complete. Activating Kill Switch.")
+        with open(KILL_SWITCH_FILE, 'w') as f:
+            f.write("Emergency Flatten Activated")
+        self._emergency_halt_active = True
+
 
     def _close_paper_trade_hit_target(self, trade, target_idx, target_price, ltp):
         """Helper to close a paper trade when a target is hit."""
@@ -2149,6 +2287,31 @@ class LiveTrader:
         elif 'SQ_OFF' in reason or 'DAILY_LOSS' in reason:
             self.telegram.square_off(symbol, ltp, entry_price, remaining_qty, reason)
 
+    def _sanitize_restored_state(self):
+        """[INTE-01] Validates active trades on startup against current LTP."""
+        active_trades = self.tracker.get_active_trades()
+        if not active_trades:
+            return
+
+        self.logger.info(f"🔍 [INTE-01] Integrity check: {len(active_trades)} restored trades")
+        for trade in active_trades:
+            symbol = trade['symbol']
+            ltp = self.client.get_ltp(symbol)
+            if not ltp:
+                continue
+
+            # Check if SL or Target was hit while bot was down
+            sl = float(trade.get('sl', 0))
+            target = float(trade.get('targets', [999999])[0]) if isinstance(trade.get('targets'), list) else float(trade.get('target', 999999))
+
+            if ltp <= sl:
+                self.logger.critical(f"🚨 [INTE-01] INTEGRITY FAILURE: {symbol} @ {ltp} <= SL {sl}. Closing.")
+                self._close_entire_position(trade, ltp, "RECOVERY_SL_HIT")
+            elif ltp >= target:
+                self.logger.info(f"🎯 [INTE-01] TARGET HIT DURING DOWN-TIME: {symbol} @ {ltp} >= Target {target}.")
+                self._close_entire_position(trade, ltp, "RECOVERY_TP_HIT")
+
+
     def run(self):
         """Main trading loop."""
         self.logger.info("=" * 60)
@@ -2161,6 +2324,9 @@ class LiveTrader:
 
         # Initial option universe update
         self._update_option_universe()
+
+        # [INTE-01] Sanity check restored trades after universe is ready
+        self._sanitize_restored_state()
 
         # Heartbeat counter
         last_heartbeat = datetime.now()
@@ -2211,7 +2377,23 @@ class LiveTrader:
                     self.logger.info(f"Heartbeat - Bot is running. Active trades: {len(self.tracker.get_active_trades())}")
                     last_heartbeat = now
 
+                    # [SAFE-02] Resilience: Check for prolonged disconnect
+                    poll_gap_seconds = (now - self.client.last_success_at).total_seconds()
+                    emer_threshold_seconds = self.config.get('resilience', {}).get('disconnect_emergency_threshold_mins', 10) * 60
+
+
+                    if poll_gap_seconds > emer_threshold_seconds and not self._emergency_halt_active:
+                        self.logger.critical(f"Disconnect threshold reached ({poll_gap_seconds:.0f}s > {emer_threshold_seconds}s).")
+                        self._emergency_flatten()
+                        break # Exit loop after emergency flatten
+
+                    if poll_gap_seconds > 60: # 1 minute of failure
+                        self.logger.warning(f"Connectivity Warning: No successful API calls for {poll_gap_seconds:.0f}s")
+                        if not self._is_reconnecting:
+                            self._reconnect_resync()
+
                     # Write heartbeat file for external monitoring
+
                     try:
                         heartbeat_data = {
                             'timestamp': now.isoformat(),

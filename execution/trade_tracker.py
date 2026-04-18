@@ -30,7 +30,8 @@ class TradeTracker:
                 "closed_trades": [],
                 "metadata": {
                     "last_updated": datetime.now().isoformat(),
-                    "version": "1.0"
+                    "version": "1.0",
+                    "last_processed_bars": {}
                 }
             }
             self._save_data(initial_data)
@@ -115,8 +116,14 @@ class TradeTracker:
             trade["created_at"] = datetime.now().isoformat()
 
             data["active_trades"].append(trade)
-            self._save_data(data)
 
+            # [RECO-02] Log entry bar into persistent metadata to prevent re-entry on crash
+            if 'entry_bar_time' in trade:
+                metadata = data.setdefault('metadata', {})
+                bars = metadata.setdefault('last_processed_bars', {})
+                bars[trade['symbol']] = trade['entry_bar_time']
+
+            self._save_data(data)
             self.logger.info(f"Added active trade: {trade['trade_id']}")
             return trade["trade_id"]
 
@@ -144,6 +151,21 @@ class TradeTracker:
                 if trade.get("underlying") == index_name:
                     return True
             return False
+
+    def get_last_processed_bars(self) -> dict:
+        """[RECO-02] Retrieve persisted last processed bar timestamps (symbol -> ISO string)."""
+        with self.lock:
+            data = self._load_data()
+            return data.get("metadata", {}).get("last_processed_bars", {})
+
+    def save_processed_bar(self, symbol: str, bar_time: str):
+        """[RECO-02] Persist a processed bar timestamp to prevent re-processing on crash."""
+        with self.lock:
+            data = self._load_data()
+            metadata = data.setdefault('metadata', {})
+            bars = metadata.setdefault('last_processed_bars', {})
+            bars[symbol] = bar_time if isinstance(bar_time, str) else bar_time.isoformat()
+            self._save_data(data)
 
     def get_active_trades_for_index(self, underlying: str) -> list:
         """

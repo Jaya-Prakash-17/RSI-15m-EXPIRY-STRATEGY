@@ -48,10 +48,16 @@ risk:
   consecutive_loss_cooldown: 2 # Days to stop trading after max losses hit (Example: 2)
   max_consecutive_losses: 3    # Total losses allowed before a cooldown (Example: 3)
   max_loss_per_day: 6000       # Daily PNL floor to stop trading (Example: 6000)
+  max_slippage_pct: 0.02       # [SLIP-01] Max allowed slippage (2%) before entry block or exit alert
+
+resilience:
+  disconnect_emergency_threshold_mins: 10 # [SAFE-02] Mins of disconnect before emergency flatten
+  reconnect_resync_gap_mins: 15           # [RECO-01] Gap size forcing full cache rebuild
+
   max_total_premium_deployed: 30000 # Max notional premium across all active positions
 
 strategy:
-  alert_validity: 1             # Minutes a signal remains tradeable (Example: 1)
+  alert_validity_candles: 1        # [BUG-04] Signals valid for 1 candle (15 min)
   direction_filter_enabled: false  # Enable/Disable trend following filters (Example: false)
   exit_mode: single_lot         # Method of exiting positions (Example: single_lot)
   lots_per_trade: 3             # Number of lots per execution (Example: 3)

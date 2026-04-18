@@ -20,10 +20,11 @@ def is_partially_filled(status: str) -> bool:
     return status.upper() in {'PARTIALLY_FILLED', 'PARTIAL'}
 
 class OrderManager:
-    def __init__(self, config):
+    def __init__(self, config, client=None):
         self.logger = logging.getLogger("OrderManager")
         self.config = config
-        self.client = GrowwClient()
+        self.client = client or GrowwClient()
+
 
         # V17-H-01: Explicit tick sizes for Indian Indices (Real Money Safety)
         self.tick_sizes = {

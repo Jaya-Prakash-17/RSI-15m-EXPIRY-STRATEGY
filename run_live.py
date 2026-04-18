@@ -138,8 +138,9 @@ def validate_config(config):
         logger.critical("CRITICAL: strategy.rsi.period must be > 0")
         return False
 
-    if config['strategy'].get('alert_validity', 0) <= 0:
-        logger.critical("CRITICAL: strategy.alert_validity must be > 0")
+    if config['strategy'].get('alert_validity_candles', 0) <= 0:
+        logger.critical("CRITICAL: strategy.alert_validity_candles must be > 0 (Min: 1 candle)")
+
         return False
 
     # ── Risk limits ───────────────────────────────────────────────────────────

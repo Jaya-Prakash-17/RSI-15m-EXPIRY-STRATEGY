@@ -5,17 +5,49 @@ from collections import deque
 import logging
 
 class CandleBuilder:
-    def __init__(self, interval_minutes=15, max_bars=150):
+    def __init__(self, interval_minutes=15, max_bars=150, enforce_timestamp=False):
         self.logger = logging.getLogger("CandleBuilder")
         self.interval_minutes = interval_minutes
         self.max_bars = max_bars
+        self.enforce_timestamp = enforce_timestamp
         self.bars = {}  # symbol -> deque of closed bars
         self.active_candles = {}  # symbol -> forming candle dict
+        self.continuity_broken = False
 
     def _get_boundary_time(self, dt):
         """Align datetime to the start of the 15-minute interval."""
+        if not dt:
+            return None
         minutes = (dt.minute // self.interval_minutes) * self.interval_minutes
         return dt.replace(minute=minutes, second=0, microsecond=0)
+
+    def _check_continuity(self, symbol, new_dt):
+        """
+        Validate that the new candle boundary follows the last one without gaps.
+        Hard-gate: if gap > interval, set continuity_broken.
+        """
+        if symbol not in self.bars or not self.bars[symbol]:
+            return True
+
+        last_dt = self.bars[symbol][-1]['datetime']
+        expected_dt = last_dt + timedelta(minutes=self.interval_minutes)
+        gap = (new_dt - last_dt).total_seconds()
+
+        if gap > (self.interval_minutes * 60):
+            self.logger.critical(
+                f"🚨 DATA CONTINUITY BROKEN for {symbol}: "
+                f"Last bar {last_dt}, Current bar {new_dt}. "
+                f"Missing {int(gap/60)} minutes."
+            )
+            self.continuity_broken = True
+            return False
+
+        # Also check for overlaps/duplicates if needed
+        if new_dt <= last_dt:
+            self.logger.warning(f"Duplicate or stale boundary received for {symbol}: {new_dt}")
+            return False
+
+        return True
 
     def warm_up_from_df(self, symbol, df):
         """Seed the builder with historical candles to avoid cold RSI."""
@@ -72,8 +104,13 @@ class CandleBuilder:
         if ltp is None or ltp <= 0:
             return None
 
+        if self.enforce_timestamp and timestamp is None:
+            raise ValueError(f"CandleBuilder: 'timestamp' is REQUIRED when enforce_timestamp=True (Symbol: {symbol})")
+
         now = timestamp or datetime.now()
         boundary = self._get_boundary_time(now)
+        if not boundary:
+            return None
 
         closed_candle = None
 
@@ -95,12 +132,20 @@ class CandleBuilder:
                 # Close current candle
                 closed_candle = candle.copy()
 
-                # Tick/Thin bar guard
-                if closed_candle['ticks'] < 3:
+                # [DATA-01] Bar Quality Guard
+                ticks = candle['ticks']
+                is_healthy = ticks >= 3  # Configurable threshold proxy
+
+                closed_candle['is_healthy'] = is_healthy
+
+                if not is_healthy:
                     self.logger.warning(
                         f"Thin bar detected for {symbol} at {closed_candle['datetime']}: "
-                        f"only {closed_candle['ticks']} ticks. Range: {closed_candle['high'] - closed_candle['low']:.2f}"
+                        f"only {ticks} ticks. Range: {closed_candle['high'] - closed_candle['low']:.2f}"
                     )
+
+                # [CONT-01] Continuity Gate
+                self._check_continuity(symbol, boundary)
 
                 if symbol not in self.bars:
                     self.bars[symbol] = deque(maxlen=self.max_bars)

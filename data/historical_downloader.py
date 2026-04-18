@@ -18,10 +18,11 @@ class HistoricalDownloader:
         60: 180,   # Per Groww docs: 1-hour = 180 days max per request
     }
 
-    def __init__(self, config):
+    def __init__(self, config, client=None):
         self.logger = logging.getLogger("HistoricalDownloader")
         self.config = config
-        self.client = GrowwClient()
+        self.client = client or GrowwClient()
+
         self.base_path = config['data']['storage_path']
         self.retry_count = config['data'].get('download_retry_count', 3)
 

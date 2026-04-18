@@ -11,7 +11,8 @@ class ExpiryRSIBreakout:
         self.config = config  # Store full config for exit mode access
         self.rsi_period = config['strategy']['rsi']['period']
         self.rsi_threshold = config['strategy']['rsi']['threshold']
-        self.alert_validity = config['strategy']['alert_validity']
+        self.alert_validity_candles = config['strategy']['alert_validity_candles']
+
         self.alert_negation = config['strategy'].get('alert_negation', True)  # Default to True
         self.rsi_warmup = config['strategy']['rsi'].get('warmup_periods', 100)
         self.min_candles_for_signal = config['strategy']['rsi'].get(

@@ -9,10 +9,11 @@ from core.exceptions import DataError
 from utils.symbol_parser import build_option_symbol
 
 class DataManager:
-    def __init__(self, config):
+    def __init__(self, config, client=None):
         self.logger = logging.getLogger("DataManager")
         self.config = config
-        self.downloader = HistoricalDownloader(config)
+        self.downloader = HistoricalDownloader(config, client=client)
+
         self.base_path = config['data']['storage_path']
         self.offline_mode = config.get('backtest', {}).get('offline_mode', False)
         self.data_cache = {}

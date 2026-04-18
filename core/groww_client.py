@@ -64,6 +64,8 @@ class GrowwClient:
         self._instrument_cache = {}  # symbol -> instrument dict. Static per session.
         self._rate_limiter = _RateLimiter(max_rps=10)  # FIX #4: global rate limiter
         self._consecutive_failures = 0  # CRITICAL: Track 429 errors for hard circuit breaking
+        self.last_success_at = datetime.datetime.now() # [NETW-01] Track connectivity
+
 
         # NO MOCK MODE - Fail fast if requirements not met
         if not HAS_GROWW_SDK:
@@ -127,33 +129,54 @@ class GrowwClient:
 
     def _safe_call(self, api_func, *args, **kwargs):
         """
-        Wrapper for all Groww API calls.
-        On 401 Unauthorized or token-related error, re-authenticates and retries once.
-        On any other error, raises normally.
+        [NETW-01] Wrapper for all Groww API calls with Idempotent Retries & Exponential Backoff.
+        - Automatic re-auth on 401/Unauthorized.
+        - Exponential backoff on 429 (Rate Limit) or 5xx (Server Error).
+        - Max 5 retries by default.
         """
-        try:
-            self._rate_limiter.acquire()  # FIX #4: throttle before every API call
-            return api_func(*args, **kwargs)
-        except Exception as e:
-            error_str = str(e).lower()
-            is_auth_error = ('401' in error_str or
-                            'unauthorized' in error_str or
-                            'token' in error_str or
-                            'expired' in error_str)
-            if is_auth_error:
-                self.logger.warning(
-                    f"Auth error detected ({type(e).__name__}). "
-                    f"Re-authenticating and retrying..."
-                )
-                try:
-                    self._authenticate()
-                    self.logger.info("Re-authentication successful. Retrying API call.")
-                    return api_func(*args, **kwargs)
-                except Exception as re_auth_err:
-                    self.logger.critical(f"Re-authentication FAILED: {re_auth_err}")
-                    self.logger.critical("All API calls will fail. Manual intervention needed.")
-                    raise ConnectionError(f"Re-auth failed: {re_auth_err}") from re_auth_err
-            raise  # Re-raise non-auth errors unchanged
+        max_retries = 5
+        base_delay = 1.0  # seconds
+
+        for attempt in range(max_retries + 1):
+            try:
+                self._rate_limiter.acquire()  # FIX #4: throttle BEFORE every API call
+                res = api_func(*args, **kwargs)
+                self.last_success_at = datetime.datetime.now()
+                return res
+
+
+            except Exception as e:
+                error_str = str(e).lower()
+
+                # Case 1: Auth Error (Retry once after re-authentication)
+                is_auth_error = any(kw in error_str for kw in ['401', 'unauthorized', 'token', 'expired'])
+                if is_auth_error and attempt == 0:
+                    self.logger.warning(f"Auth error detected. Re-authenticating... (Attempt {attempt+1})")
+                    try:
+                        self._authenticate()
+                        # Retry immediately after re-auth
+                        continue
+                    except Exception as re_auth_err:
+                        self.logger.critical(f"Re-authentication FAILED: {re_auth_err}")
+                        raise ConnectionError(f"Re-auth failed: {re_auth_err}") from re_auth_err
+
+                # Case 2: Transient/Retryable Errors (429, 5xx, or specific network strings)
+                is_retryable = any(kw in error_str for kw in ['429', '500', '502', '503', '504', 'timeout', 'connection'])
+
+                if is_retryable and attempt < max_retries:
+                    delay = base_delay * (2 ** attempt) + (random.random() * 0.1)
+                    self.logger.warning(
+                        f"Retryable error ({type(e).__name__}): {e}. "
+                        f"Retrying in {delay:.2f}s... (Attempt {attempt+1}/{max_retries})"
+                    )
+                    time.sleep(delay)
+                    continue
+
+                # Case 3: Non-retryable or exhaustion
+                if attempt == max_retries:
+                    self.logger.error(f"API call failed after {max_retries} retries: {e}")
+                raise e
+
 
 
     def get_historical_candles(self, symbol, interval, start_date, end_date):
