@@ -71,7 +71,15 @@ class PerformanceReporter:
     def calculate_advanced_stats(self, trades_df, initial_cap=None, is_subgroup=False):
         """Calculate advanced performance statistics"""
         if trades_df.empty:
-            return {}
+            return {
+                'total_trades': 0, 'winning_trades': 0, 'losing_trades': 0, 'win_rate': 0.0,
+                'total_pnl': 0.0, 'avg_pnl_per_trade': 0.0, 'avg_win': 0.0, 'avg_loss': 0.0,
+                'largest_win': 0.0, 'largest_loss': 0.0, 'profit_factor': 0.0,
+                'risk_reward_ratio': 0.0, 'expectancy': 0.0, 'max_drawdown': 0.0,
+                'max_drawdown_pct': 0.0, 'sharpe_ratio': 0.0, 'sortino_ratio': 0.0,
+                'calmar_ratio': 0.0, 'avg_holding_mins': 0.0, 'avg_capital_deployed': 0.0,
+                'max_capital_deployed': 0.0, 'pnl_std_dev': 0.0, 'max_win_streak': 0, 'max_loss_streak': 0
+            }
 
         pnl = trades_df['pnl_net']
         win_trades = trades_df[trades_df['pnl_net'] > 0]
@@ -273,7 +281,7 @@ class PerformanceReporter:
 
         return stats
 
-    def generate_report(self, trades_df, save_to_file=True):
+    def generate_report(self, trades_df, save_to_file=True, custom_prefix=None):
         """Generate comprehensive performance report with trading charges"""
         if trades_df.empty:
             self.logger.info("No trades generated.")
@@ -296,11 +304,15 @@ class PerformanceReporter:
 
         charges_list = []
         for idx, trade in trades_df.iterrows():
-            charges = self.calculate_charges(
-                trade['entry_price'],
-                trade['exit_price'],
-                trade['qty']
-            )
+            if 'override_charges' in trade and pd.notna(trade['override_charges']):
+                charges = {'total': trade['override_charges']}
+                charges['brokerage'] = trade['override_charges']
+            else:
+                charges = self.calculate_charges(
+                    trade['entry_price'],
+                    trade['exit_price'],
+                    trade['qty']
+                )
 
             # Multi-lot trades have extra exit legs: TP1 and TP2 are separate orders
             # from the final exit, each incurring ₹20 brokerage.
@@ -440,36 +452,38 @@ class PerformanceReporter:
 
         # Save to file if requested
         if save_to_file:
-            # Descriptive filename convention:
-            # RSI-15m_2020-2025_P11_TH60_100k_20260406_1830.json
-
-            # 1. Fetch parameters for filename
-            bt_cfg = self.config.get('backtest', {})
-            strat_cfg = self.config.get('strategy', {})
-            rsi_cfg = strat_cfg.get('rsi', {})
-            cap_cfg = self.config.get('capital', {})
-
-            # Parse start/end year
-            s_year = pd.to_datetime(bt_cfg.get('start_date', '2020')).year
-            e_year = pd.to_datetime(bt_cfg.get('end_date', '2025')).year
-
-            # RSI Parameters
-            rsi_p = rsi_cfg.get('period', 11)
-            rsi_t = rsi_cfg.get('threshold', 60)
-
-            # Exit Mode & Target
-            mode = "SINGLE" if strat_cfg.get('exit_mode') == 'single_lot' else "MULTI"
-            tgt = strat_cfg.get('single_lot_exit_target', 1) if mode == "SINGLE" else "123"
-
-            # Capital (e.g. 500000 -> 500k)
-            cap_val = cap_cfg.get('initial', 100000)
-            cap_str = f"{int(cap_val/1000)}k" if cap_val >= 1000 else str(cap_val)
-
             timestamp = datetime.now().strftime("%Y%m%d_%H%M")
+            if custom_prefix:
+                prefix = f"{custom_prefix}_{timestamp}"
+            else:
+                # Descriptive filename convention:
+                # RSI-15m_2020-2025_P11_TH60_100k_20260406_1830.json
 
-            # Base prefix for related files:
-            # RSI-15m_2020-2025_P11_TH60_SINGLE_T1_500k_20260406_1854
-            prefix = f"RSI-15m_{s_year}-{e_year}_P{rsi_p}_TH{rsi_t}_{mode}_T{tgt}_{cap_str}_{timestamp}"
+                # 1. Fetch parameters for filename
+                bt_cfg = self.config.get('backtest', {})
+                strat_cfg = self.config.get('strategy', {})
+                rsi_cfg = strat_cfg.get('rsi', {})
+                cap_cfg = self.config.get('capital', {})
+
+                # Parse start/end year
+                s_year = pd.to_datetime(bt_cfg.get('start_date', '2020')).year
+                e_year = pd.to_datetime(bt_cfg.get('end_date', '2025')).year
+
+                # RSI Parameters
+                rsi_p = rsi_cfg.get('period', 11)
+                rsi_t = rsi_cfg.get('threshold', 60)
+
+                # Exit Mode & Target
+                mode = "SINGLE" if strat_cfg.get('exit_mode') == 'single_lot' else "MULTI"
+                tgt = strat_cfg.get('single_lot_exit_target', 1) if mode == "SINGLE" else "123"
+
+                # Capital (e.g. 500000 -> 500k)
+                cap_val = cap_cfg.get('initial', 100000)
+                cap_str = f"{int(cap_val/1000)}k" if cap_val >= 1000 else str(cap_val)
+
+                # Base prefix for related files:
+                # RSI-15m_2020-2025_P11_TH60_SINGLE_T1_500k_20260406_1854
+                prefix = f"RSI-15m_{s_year}-{e_year}_P{rsi_p}_TH{rsi_t}_{mode}_T{tgt}_{cap_str}_{timestamp}"
 
             # Save summary JSON
             json_filename = os.path.join(self.reports_dir, f"{prefix}_summary.json")
@@ -1000,18 +1014,18 @@ class PerformanceReporter:
             reason_cls = 'reason-tp' if reason == 'TARGET' else ('reason-sl' if reason == 'SL' else 'reason-sq')
 
             table_rows.append(f"""<tr>
-                <td class="col-idx">{i + 1}</td>
+                <td class="col-idx" data-order="{i+1}">{i + 1}</td>
                 <td class="col-sym">{trow['symbol']}</td>
                 <td>{trow['entry_time']}</td>
                 <td>{trow['exit_time']}</td>
-                <td>₹{trow['entry_price']:,.2f}</td>
-                <td>₹{trow['exit_price']:,.2f}</td>
-                <td>{trow['qty']}</td>
-                <td style="color:#00d2ff;">₹{trow['cost']:,.0f}</td>
+                <td data-order="{trow['entry_price']}">₹{trow['entry_price']:,.2f}</td>
+                <td data-order="{trow['exit_price']}">₹{trow['exit_price']:,.2f}</td>
+                <td data-order="{trow['qty']}">{trow['qty']}</td>
+                <td data-order="{trow['cost']}" style="color:#00d2ff;">₹{trow['cost']:,.0f}</td>
                 <td><span class="badge {reason_cls}">{reason}</span></td>
-                <td class="{gross_cls}">₹{gross_val:,.2f}</td>
-                <td>₹{trow['charges']:,.2f}</td>
-                <td class="{net_cls}" style="font-weight:600;">₹{net_val:,.2f}</td>
+                <td class="{gross_cls}" data-order="{gross_val}">₹{gross_val:,.2f}</td>
+                <td data-order="{trow['charges']}">₹{trow['charges']:,.2f}</td>
+                <td class="{net_cls}" data-order="{net_val}" style="font-weight:600;">₹{net_val:,.2f}</td>
             </tr>""")
         trade_rows_html = '\n'.join(table_rows)
 
@@ -1142,6 +1156,25 @@ class PerformanceReporter:
   }}
   .trade-table tbody tr:hover {{ background: rgba(99,102,241,0.06); }}
   .trade-table tbody td {{ padding: 9px 12px; color: #cbd5e1; }}
+
+  /* Sorting & Filtering Styles */
+  .table-header-controls {{
+    display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;
+  }}
+  .search-box {{
+    background: rgba(30, 41, 59, 0.6); border: 1px solid rgba(100, 116, 139, 0.2);
+    border-radius: 8px; padding: 8px 14px; color: #e2e8f0; font-size: 13px; outline: none;
+    width: 300px; transition: border-color 0.2s;
+  }}
+  .search-box:focus {{ border-color: #6366f1; }}
+
+  .sortable {{ cursor: pointer; position: relative; padding-right: 20px !important; }}
+  .sortable:hover {{ background: #2d3748 !important; color: #fff !important; }}
+  .sortable::after {{
+    content: '↕'; position: absolute; right: 8px; opacity: 0.3; font-size: 10px;
+  }}
+  .sort-asc::after {{ content: '↑'; opacity: 1; color: #6366f1; }}
+  .sort-desc::after {{ content: '↓'; opacity: 1; color: #6366f1; }}
   .col-idx {{ color: #475569 !important; font-weight: 500; }}
   .col-sym {{ color: #e2e8f0 !important; font-weight: 600; font-size: 11px; }}
 
@@ -1252,14 +1285,26 @@ class PerformanceReporter:
 </div>
 
 <div class="table-container">
-  <h3>Trade Log ({len(trade_tbl)} trades)</h3>
+  <div class="table-header-controls">
+    <h3>Trade Log ({len(trade_tbl)} trades)</h3>
+    <input type="text" id="tradeSearch" class="search-box" placeholder="Search trades (e.g. NIFTY, TP, CLOSED)...">
+  </div>
   <div class="table-scroll">
-    <table class="trade-table">
+    <table class="trade-table" id="tradeTable">
       <thead>
         <tr>
-          <th>#</th><th>Symbol</th><th>Entry Time</th><th>Exit Time</th>
-          <th>Entry</th><th>Exit</th><th>Qty</th><th>Capital Deployed</th><th>Reason</th>
-          <th>Gross P&amp;L</th><th>Charges</th><th>Net P&amp;L</th>
+          <th class="sortable">#</th>
+          <th class="sortable">Symbol</th>
+          <th class="sortable">Entry Time</th>
+          <th class="sortable">Exit Time</th>
+          <th class="sortable">Entry</th>
+          <th class="sortable">Exit</th>
+          <th class="sortable">Qty</th>
+          <th class="sortable">Capital</th>
+          <th class="sortable">Reason</th>
+          <th class="sortable">Gross P&amp;L</th>
+          <th class="sortable">Charges</th>
+          <th class="sortable">Net P&amp;L</th>
         </tr>
       </thead>
       <tbody>
@@ -1272,6 +1317,70 @@ class PerformanceReporter:
 <div class="footer">
   Generated {datetime.now().strftime('%Y-%m-%d %H:%M')} &nbsp;&middot;&nbsp; RSI-15m Expiry Breakout Strategy
 </div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {{
+    const searchInput = document.getElementById('tradeSearch');
+    const table = document.getElementById('tradeTable');
+    const tbody = table.querySelector('tbody');
+    const headers = table.querySelectorAll('th.sortable');
+
+    // ── SEARCH FILTER ──────────────────────────────────────────────────
+    searchInput.addEventListener('keyup', function() {{
+        const term = this.value.toLowerCase();
+        const rows = tbody.querySelectorAll('tr');
+
+        rows.forEach(row => {{
+            const text = row.textContent.toLowerCase();
+            row.style.display = text.includes(term) ? '' : 'none';
+        }});
+    }});
+
+    // ── SORTING ────────────────────────────────────────────────────────
+    let currentSort = {{ column: -1, direction: 'asc' }};
+
+    headers.forEach((header, index) => {{
+        header.addEventListener('click', () => {{
+            const direction = (currentSort.column === index && currentSort.direction === 'asc') ? 'desc' : 'asc';
+            currentSort = {{ column: index, direction: direction }};
+
+            // Update header styles
+            headers.forEach(h => h.classList.remove('sort-asc', 'sort-desc'));
+            header.classList.add(direction === 'asc' ? 'sort-asc' : 'sort-desc');
+
+            const rows = Array.from(tbody.querySelectorAll('tr'));
+
+            rows.sort((a, b) => {{
+                const aTd = a.children[index];
+                const bTd = b.children[index];
+
+                // Use data-order attribute if available for numerical sorting
+                let aVal = aTd.getAttribute('data-order') || aTd.textContent.trim();
+                let bVal = bTd.getAttribute('data-order') || bTd.textContent.trim();
+
+                // Date handling
+                if (aVal.includes('-') && aVal.includes(':')) {{
+                   aVal = new Date(aVal).getTime();
+                   bVal = new Date(bVal).getTime();
+                }} else if (!isNaN(aVal) && !isNaN(parseFloat(aVal))) {{
+                   aVal = parseFloat(aVal);
+                   bVal = parseFloat(bVal);
+                }} else {{
+                   aVal = aVal.toLowerCase();
+                   bVal = bVal.toLowerCase();
+                }}
+
+                if (aVal < bVal) return direction === 'asc' ? -1 : 1;
+                if (aVal > bVal) return direction === 'asc' ? 1 : -1;
+                return 0;
+            }});
+
+            // Re-render rows
+            rows.forEach(row => tbody.appendChild(row));
+        }});
+    }});
+}});
+</script>
 
 </body>
 </html>"""

@@ -23,3 +23,36 @@
 - **999.3**: fast-gap-detection-via-sets-completed
 - **999.4**: hot-loop-import-cleanup-completed
 - **999.5**: dynamic-margin-monitoring (Deferred)
+
+### Phase 12: Remove all volume checks across codebase
+
+**Goal:** [To be planned]
+**Requirements**: TBD
+**Depends on:** Phase 11
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (run /gsd-plan-phase 12 to break down)
+
+### Phase 13: NIFTY Morning Strangle Backtest implementation and 5-year run
+
+**Goal:** [To be planned]
+**Requirements**: TBD
+**Depends on:** Phase 12
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (run /gsd-plan-phase 13 to break down)
+
+### Phase 14: Gap Directional Spread Backtest
+
+**Goal:** Implement Bull Call / Bear Put spread based on 9:15 gap direction and backtest over 5 years.
+**Requirements**:
+- If gap up/neutral: Buy ATM CE, Sell 5-strike OTM CE.
+- If gap down: Buy ATM PE, Sell 5-strike OTM PE.
+- Execution at 9:45 AM, Exit at 3:15 PM.
+**Depends on:** Phase 13
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (run /gsd-plan-phase 14 to break down)

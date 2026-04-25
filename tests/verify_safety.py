@@ -6,6 +6,9 @@ import json
 import os
 import sys
 
+# Add root to sys.path
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 # Mocking core dependencies before importing LiveTrader
 sys.modules['growwapi'] = MagicMock()
 

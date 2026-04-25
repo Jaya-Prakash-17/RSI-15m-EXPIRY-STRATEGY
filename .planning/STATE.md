@@ -30,5 +30,11 @@ Last activity: 2026-04-18 — Phase 10: Multi-Index Attribution Reporting comple
 | Pending-State Risk | Catch concentration risk in-iteration before order placement | ✅ |
 | .tolist() for Plotly | Prevents numpy-binary bdata artifacts in HTML export | ✅ |
 
+### Roadmap Evolution
+- Phase 12 added: Remove all volume checks across codebase
+- Phase 13 added: NIFTY Morning Strangle Backtest implementation and 5-year run
+- Phase 14 added: Gap Directional Spread Backtest (Bull Call / Bear Put)
+
+
 ---
 *Last updated: 2026-04-18*

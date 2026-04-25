@@ -11,7 +11,7 @@ capital:
   initial: 200000         # Starting trading capital in INR (Example: 200000)
 
 charges:
-  brokerage_per_trade: 60  # Inflated 3X for stress test. Actual: 20 (as of April 2026)
+  brokerage_per_trade: 40 # Inflated 2X for stress test. Actual: 20 (as of April 2026)
   exchange_txn_fee: 0.0018 # Inflated 3X for stress test. Actual: 0.0006 (as of April 2026)
   gst: 0.45                # Inflated 3X for stress test. Actual: 0.20 (as of April 2026)
   sebi_charges: 9.0e-06    # Inflated 3X for stress test. Actual: 0.000003 (as of April 2026)
@@ -54,10 +54,10 @@ resilience:
   disconnect_emergency_threshold_mins: 10 # [SAFE-02] Mins of disconnect before emergency flatten
   reconnect_resync_gap_mins: 15           # [RECO-01] Gap size forcing full cache rebuild
 
-  max_total_premium_deployed: 30000 # Max notional premium across all active positions
+  max_total_premium_deployed: 100000 # Max notional premium across all active positions
 
 strategy:
-  alert_validity_candles: 1        # [BUG-04] Signals valid for 1 candle (15 min)
+  alert_validity_candles: 1        # [BUG-04] Signals valid for 2 candles (30 min)
   direction_filter_enabled: false  # Enable/Disable trend following filters (Example: false)
   exit_mode: single_lot         # Method of exiting positions (Example: single_lot)
   lots_per_trade: 3             # Number of lots per execution (Example: 3)
@@ -65,14 +65,15 @@ strategy:
   max_lots: 5                   # Hard cap on total lots allowed per index (Example: 5)
   max_position_pct: 0.8         # Max capital usage per single trade (Example: 0.8)
   min_alert_range_points: 0.5   # Minimum candle range to consider for signal (Example: 0.5)
-  min_sl_pct: 0.1               # Minimum Stop Loss percentage (Example: 0.1)
-  min_volume_candles_pct: 0.3   # Volume filter based on daily average (Example: 0.0)
+  min_sl_pct: 0.1              # Minimum Stop Loss percentage (Example: 0.1)
+  min_volume_candles_pct: 0.5   # Filter for illiquid strikes (0.5 = 50% non-zero bars)
+
   rsi:
-    min_candles_for_signal: 100 # Minimum data points required before first signal (Example: 33)
-    period: 11                 # RSI lookback period. Example: 11 or 14.
-    threshold: 60             # RSI value to trigger breakout alert (Example: 60)
-    warmup_periods: 100        # Candles needed for RSI to stabilize (Example: 100)
-  rsi_debug: false              # Print detailed RSI calculations to logs (Example: false)
+    min_candles_for_signal: 33   # Minimum bars before any alert fires (Example: 15)
+    period: 11                # RSI lookback period. Example: 11 or 14.
+    threshold: 60            # RSI value to trigger breakout alert (Example: 55)
+    warmup_periods: 33        # Candles needed for stable Wilder RSI (Example: 25)
+  rsi_debug: true               # Print detailed RSI calculations to logs (Example: false)
   safe_sl_max_loss: 6000        # Max absolute loss allowed on any trade (Example: 6000)
   safe_sl_mode: true            # Use tighter SL based on max loss param (Example: true)
   signal_window_start: '10:00'  # Time to start looking for signals (Example: '09:45')
@@ -87,5 +88,5 @@ trading:
   trade_log_file: logs/PAPER_TRADES_LOG.csv # File path for recording trades (Example: logs/LIVE_LOG.csv)
   window:
     start: '09:45'           # Broker connection start time (Example: '09:15')
-    end: '13:45'             # Monitoring window end time (Example: '15:15')
+    end: '15:30'             # Monitoring window end time (Example: '15:15')
     auto_square_off: '15:15' # Time to exit all remaining positions (Example: '15:20')

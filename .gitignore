@@ -18,7 +18,6 @@ data/candles/
 
 # Reports
 reports/
-FINAL_REPORTS/
 audit_docs/
 
 # Agent/IDE

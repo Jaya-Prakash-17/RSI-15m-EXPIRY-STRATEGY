@@ -1,11 +1,13 @@
-
 import sys
 import os
 import logging
-
+import json
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta, time as datetime_time
+
+# Add root to sys.path
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from unittest.mock import MagicMock, patch
 import yaml

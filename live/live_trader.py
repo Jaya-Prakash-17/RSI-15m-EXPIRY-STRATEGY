@@ -573,10 +573,8 @@ class LiveTrader:
                         self.tracked_options[underlying] = {}
 
                     if symbol not in self.tracked_options[underlying]:
-                        # Issue #8: Minimum Volume Filter
-                        # We only add to tracking if the option has sufficient volume
-                        # or if we're doing initial discovery. For now, we add everything
-                        # but check volume during signal generation.
+                        # [P-12] Volume filter removed - adding all candidates to tracking
+
                         self.logger.info(f"Adding {symbol} to tracking for {underlying}.")
                         self.tracked_options[underlying][symbol] = pd.DataFrame()
 
@@ -938,7 +936,7 @@ class LiveTrader:
                                 'symbol': symbol,
                                 'signal': signal,
                                 'dist': dist,
-                                'volume': last_row['volume'],
+
                                 'strike': strike,
                                 'opt_type': parts[4],
                                 'underlying': underlying,
@@ -987,7 +985,7 @@ class LiveTrader:
                     continue
 
                 # Select best candidate for this index
-                candidates.sort(key=lambda x: (x['dist'], -x['volume']))
+                candidates.sort(key=lambda x: x['dist'])
                 best = candidates[0]
 
                 # [P-09] Enforce Direction Correlation Limit

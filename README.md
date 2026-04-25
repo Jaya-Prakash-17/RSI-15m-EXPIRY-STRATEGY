@@ -2,20 +2,30 @@
 
 Intraday Index Options Strategy based on RSI breakout on 15-minute candles, designed for Indian markets (NSE/BSE). Includes a backtesting engine with interactive dashboards and a live trading bot with Telegram alerts.
 
-## Strategy Summary
+## Strategy Suite Summary
 
+### 1. Primary: Expiry RSI Breakout (15-Minute)
 | Parameter | Value |
 |---|---|
-| **Strategy** | Expiry RSI Breakout (15-Minute) |
-| **Instruments** | Index Options only (NIFTY, BANKNIFTY, SENSEX) |
-| **Trade Day** | Expiry day only (configurable: `trade_only_on_expiry`) |
-| **Candle Timeframe** | 15 minutes |
-| **RSI Period** | 11 (Wilder's RSI) |
-| **RSI Threshold** | 60 (alert on cross above) |
-| **Entry** | Price breaks the high of alert candle (SL-M BUY order) |
-| **Stop Loss** | Alert candle low − 1 pt, capped by `safe_sl_max_loss` |
-| **Targets (TP)** | T1 (1×), T2 (2×), T3 (3×) alert candle range |
-| **Risk Cap** | `safe_sl_max_loss` per trade (default: Rs.2000 = 2% of capital) |
+| **Instruments** | Index Options (NIFTY, BANKNIFTY, SENSEX) |
+| **Trade Day** | Expiry day only |
+| **Entry** | RSI (11) > 60 + High Breakout on 15m candle |
+| **Risk Cap** | `safe_sl_max_loss` (Default: Rs.2000) |
+| **Exit** | T1 (1x), T2 (2x), T3 (3x) alert range |
+
+### 2. Specialized: Morning Strangle
+| Parameter | Value |
+|---|---|
+| **Entry** | 09:20 AM on Expiry Day |
+| **Legs** | Short ATM Call + Short ATM Put |
+| **Exit** | 11:30 AM or SL hit |
+
+### 3. Specialized: Gap Directional Spread
+| Parameter | Value |
+|---|---|
+| **Entry** | 09:15 AM based on Gap Direction |
+| **Legs** | Bull Call / Bear Put Spreads |
+| **Exit** | 15:25 EOD or SL hit |
 
 ### Expiry Schedule (Current — since Sep 2025)
 
@@ -48,65 +58,55 @@ Intraday Index Options Strategy based on RSI breakout on 15-minute candles, desi
 ```
 RSI-15m-EXPIRY-STRATEGY/
 ├── config.yaml              # All strategy, risk, and trading parameters
-├── .env.example             # Template for environment variables (copy to .env)
-├── run_backtest.py          # Entry point: run backtesting
-├── run_live.py              # Entry point: run live/paper trading
-├── daily_reconcile.py       # Post-market P&L reconciliation vs broker
+├── .env.example             # Template for environment variables
+├── run_backtest.py          # Entry point: Primary RSI backtesting
+├── run_live.py              # Entry point: Live/Paper trading
 │
-├── strategy/                # Trading strategy implementation
-│   └── expiry_rsi_breakout.py   # RSI breakout signal logic (ALERT → ENTRY → SL calc)
+├── strategy/                # Strategy logic implementations
+│   └── expiry_rsi_breakout.py   # Primary RSI signal logic
 │
-├── backtest/                # Backtesting engine
-│   └── intraday_engine.py       # Replays historical data, simulates trades
-│                                 # V10: circuit breaker, safe_sl recalc, SL compliance audit
+├── backtest/                # Backtesting engines
+│   ├── intraday_engine.py       # RSI Engine (V10)
+│   └── optimize.py              # Parameter optimizer
 │
-├── live/                    # Live trading engine
-│   ├── live_trader.py           # Real-time trading loop with Telegram alerts
-│   └── live_trader_monitoring_methods.py  # Health check methods
+├── strangle_backtest/       # Specialized strategy tests
+│   ├── run_strangle.py          # Morning Strangle backtest
+│   └── run_gap_spread.py        # Gap Directional Spread backtest
 │
-├── core/                    # Infrastructure
-│   ├── groww_client.py          # Groww broker API client (BSE/NSE support)
-│   ├── exceptions.py            # Exception hierarchy (CircuitBreaker, OrderReject, etc.)
-│   ├── logger.py                # Logging setup
-│   └── retry_decorator.py       # Retry with exponential backoff
+├── live/                    # Live trading infrastructure
+│   ├── live_trader.py           # Real-time execution loop
+│   └── live_trader_monitoring_methods.py
 │
-├── data/                    # Data layer
-│   ├── data_manager.py          # Central data hub (cache + serve)
-│   ├── historical_downloader.py # Bulk CSV downloader for backtests
-│   ├── spot/                    # Spot index 15m candle CSVs
-│   └── derivatives/             # Option chain 15m candle CSVs
+├── core/                    # System core (Broker API, logging)
+│   ├── groww_client.py          # Groww API client
+│   └── exceptions.py            # Custom error types
 │
-├── execution/               # Order management (live only)
-│   ├── order_manager.py         # Place/modify/cancel broker orders
-│   └── trade_tracker.py         # Trade state persistence & recovery
+├── data/                    # Data persistence & management
+│   ├── data_manager.py          # Central data hub
+│   └── historical_downloader.py # CSV downloader
 │
-├── reporting/               # Backtest reports
-│   └── performance.py           # PNG dashboard + interactive HTML (Plotly) + JSON
+├── execution/               # Order management
+│   ├── order_manager.py         # Broker order placement
+│   └── trade_tracker.py         # State recovery
 │
-├── scripts/                 # Operational scripts
-│   ├── compare_years.py         # Cross-year backtest comparison (GO/NO-GO)
-│   ├── verify_backtest_data.py  # Pre-flight data & lot size verification
-│   ├── preflight_check.py       # Live trading pre-flight checks
-│   ├── setup_service.sh         # Linux systemd service installer
-│   ├── rsi-bot.service          # systemd unit file template
-│   ├── check_bot.sh             # Bot health check (Linux)
-│   └── paper_trading_checklist.md  # 20-session pre-live SOP
+├── reporting/               # Performance analysis
+│   └── performance.py           # Dashboard generator
 │
-├── tests/                   # Test suite
-│   ├── test_business_logic.py       # Unit tests: SL calc, lot sizing, risk
-│   ├── test_integration.py          # Integration tests
-│   ├── verify_fixes.py              # Bug fix regression tests
-│   └── verify_residual_fixes.py     # V10 fix verification
+├── tests/                   # Safety & validation suite
+│   ├── verify_safety.py         # SL compliance audit
+│   ├── verify_multi_index.py    # Multi-index attribution
+│   └── verify_resilience.py     # System resilience tests
+│
+├── scripts/                 # Operational & utility scripts
+│   ├── daily_reconcile.py       # P&L reconciliation
+│   ├── compare_years.py         # Year-over-year comparison
+│   ├── preflight_check.py       # Live trading pre-flight
+│   └── trade_inspector.py       # Visual trade debugger
 │
 └── utils/                   # Shared utilities
-    ├── historical_lot_sizes.py  # SEBI lot size history (NIFTY/BN/SENSEX all dates)
-    ├── expiry_calendar.py       # Expiry day lookup (handles Thursday→Tuesday transition)
-    ├── nse_calendar.py          # NSE/BSE holiday calendar (2020–2026)
-    ├── symbol_parser.py         # Extract underlying from option symbol
-    ├── telegram_notifier.py     # Telegram alerts (multi-chat + owner-only)
-    ├── trade_logger.py          # CSV trade audit log
-    ├── trading_day_checker.py   # API-based trading day verification
-    └── chart_visualizer.py      # Candlestick chart generator
+    ├── historical_lot_sizes.py  # SEBI lot size history
+    ├── expiry_calendar.py       # Expiry day logic
+    └── telegram_notifier.py     # Multi-channel alerts
 ```
 
 ## Quick Start

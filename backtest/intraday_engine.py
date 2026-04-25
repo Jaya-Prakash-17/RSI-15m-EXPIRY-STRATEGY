@@ -17,13 +17,6 @@ class IntradayEngine:
         from strategy.expiry_rsi_breakout import ExpiryRSIBreakout
         self.strategy_cls = ExpiryRSIBreakout
 
-        vol_filter = config['strategy'].get('min_volume_candles_pct', 0.5)
-        if vol_filter > 0.5:
-            self.logger.warning(
-                f"[CONFIG WARNING] min_volume_candles_pct={vol_filter} is dangerously loose. "
-                f"Options with >{vol_filter*100:.0f}% zero-volume candles will be traded. "
-                f"Recommended: 0.3 for realistic backtesting."
-            )
 
         # Issue 4: Capital Isolation
         self.capital = config['capital']['initial']
@@ -80,16 +73,23 @@ class IntradayEngine:
             idx_dir = os.path.join(self.dm.config['data']['storage_path'], 'derivatives', idx)
             if os.path.exists(idx_dir):
                 for d in os.listdir(idx_dir):
-                    if not os.path.isdir(os.path.join(idx_dir, d)):
+                    subdir_path = os.path.join(idx_dir, d)
+                    if not os.path.isdir(subdir_path):
                         continue
 
-                    # Extract year from expiry date directory like "2023-05-19"
-                    m = re.match(r'^(\d{4})-\d{2}-\d{2}$', d)
-                    if m:
-                        year = int(m.group(1))
-                        if year in years_to_check:
-                            csvs = glob.glob(os.path.join(idx_dir, d, '*.csv'))
-                            total_files += len(csvs)
+                    # Support BOTH year directories (e.g. "2024") and expiry directories (e.g. "2024-01-25")
+                    m_year = re.match(r'^(\d{4})$', d)
+                    m_expiry = re.match(r'^(\d{4})-\d{2}-\d{2}$', d)
+
+                    year = None
+                    if m_year:
+                        year = int(m_year.group(1))
+                    elif m_expiry:
+                        year = int(m_expiry.group(1))
+
+                    if year and year in years_to_check:
+                        csvs = glob.glob(os.path.join(subdir_path, '*.csv'))
+                        total_files += len(csvs)
 
             if total_files == 0:
                 year_range = f"{start_date.year}-{end_date.year}"
@@ -134,7 +134,15 @@ class IntradayEngine:
 
             if should_trade and indices_to_trade:
                 self.logger.info(f"Processing {current_date.date()} - Trading {indices_to_trade}")
+                self.current_day_pnl = 0  # Portfolio-wide daily PnL tracker
                 for idx in indices_to_trade:
+                    # [PORTFOLIO-STOP] Check if limit hit by previous indices today
+                    if self.current_day_pnl <= -self.max_loss_per_day:
+                        self.logger.warning(
+                            f"🛑 Portfolio Daily loss limit reached ({self.current_day_pnl:.2f}). "
+                            f"Skipping {idx} on {current_date.date()}."
+                        )
+                        continue
                     self.process_expiry_day(idx, current_date)
             else:
                 self.logger.info(f"Skipping {current_date.date()} - No indices to trade")
@@ -182,8 +190,13 @@ class IntradayEngine:
         try:
             # Build a sample symbol for a recent date
             sample_expiry = sample_date.date() if hasattr(sample_date, 'date') else sample_date
+
+            # Use index-appropriate sample strikes to avoid false mismatches
+            sample_strike = 22500 if underlying == 'NIFTY' else 45000
+            if underlying == 'SENSEX': sample_strike = 75000
+
             sample_symbol = self.dm.build_option_symbol(
-                underlying, sample_expiry, 22500, 'CE', use_historical=True
+                underlying, sample_expiry, sample_strike, 'CE', use_historical=True
             )
 
             # Check if the file exists
@@ -197,7 +210,7 @@ class IntradayEngine:
             dir_path = os.path.join(self.dm.base_path, 'derivatives', underlying, str(year))
             if os.path.exists(dir_path):
                 existing = glob.glob(os.path.join(dir_path, "*.csv"))
-                sample_existing = os.path.basename(existing[0]) if existing else "NONE"
+                sample_existing = os.path.basename(existing[0]) if existing else "NONE (No CSV files found in directory)"
             else:
                 sample_existing = f"DIRECTORY NOT FOUND: {dir_path}"
 
@@ -221,26 +234,27 @@ class IntradayEngine:
         if df is None or df.empty:
             return False, 'empty_df'
 
-        warmup_required = self.config['strategy']['rsi'].get('warmup_periods', 100)
-        if len(df) < warmup_required + 1:
-            return False, f'insufficient_bars_{len(df)}'
+        warmup_limit = self.config['strategy']['rsi'].get('warmup_periods', 100)
+        min_limit = self.config['strategy']['rsi'].get('min_candles_for_signal', 33)
+        n_bars = len(df)
 
-        # Check volume quality on expiry day only
+        if n_bars < min_limit:
+            return False, f'insufficient_bars_{n_bars}'
+
+        if n_bars < warmup_limit + 1:
+            # V16-P-07: Soft Accept with Warning
+            return True, f'warning_warmup_only_{n_bars}_bars'
+
+        # Check for data integrity (no high<low candles)
         try:
             bd = backtest_date.date() if hasattr(backtest_date, 'date') else backtest_date
             expiry_day_data = df[df['datetime'].dt.date == bd]
             if not expiry_day_data.empty:
-                min_vol_pct = self.config['strategy'].get('min_volume_candles_pct', 0.5)
-                zero_vol_pct = (expiry_day_data['volume'] == 0).mean()
-                if zero_vol_pct > min_vol_pct:
-                    return False, f'low_volume_{zero_vol_pct:.0%}'
-
-                # Check for data integrity (no high<low candles)
                 corrupt = (expiry_day_data['high'] < expiry_day_data['low']).sum()
                 if corrupt > 0:
                     return False, f'corrupt_candles_{corrupt}'
         except Exception:
-            pass  # If date filtering fails, don't reject.
+            pass
 
         return True, 'ok'
 
@@ -280,12 +294,12 @@ class IntradayEngine:
         warmup_candles = self.config['strategy'].get('rsi', {}).get('warmup_periods', period * 2)
         # For stable RSI, fetch at least 100 candles (minimum 10 trading days)
         # This ensures RSI values are more stable and closer to broker values
-        warmup_candles = max(warmup_candles, 100)
+        # Use warmup candles from config (defaulting to period*2 if not specified)
+        warmup_candles = self.config['strategy'].get('rsi', {}).get('warmup_periods', period * 2)
 
         # 100 candles = 4 full trading days. To guarantee 8 trading days (approx 200 candles)
         # and account for weekends/holidays, we offset by 12 calendar days.
-        warmup_start = date - timedelta(days=12)
-
+        warmup_start = date - timedelta(days=5) # 5 days is sufficient for the 25 required candles of 15m data
         self.logger.info(f"Fetching data with {warmup_candles} candle warmup from {warmup_start}")
 
         spot_df = self.dm.get_spot_candles(underlying, warmup_start, date.replace(hour=23, minute=59))
@@ -334,9 +348,11 @@ class IntradayEngine:
                         if is_ok:
                             option_data[symbol] = df
                             diag['opt_symbols_loaded'] += 1
+                            if reject_reason and 'warning' in reject_reason:
+                                self.logger.warning(f"⚠️  [{symbol}] Limited warmup: {reject_reason}")
                         else:
                             diag['opt_symbols_filtered'] = diag.get('opt_symbols_filtered', 0) + 1
-                            if self.config['strategy'].get('rsi_debug', False):
+                            if self.config['strategy'].get('rsi_debug', False) or 'insufficient' in reject_reason:
                                 self.logger.debug(f"Filtered {symbol}: {reject_reason}")
                     else:
                         diag['opt_symbols_empty'] += 1
@@ -372,7 +388,9 @@ class IntradayEngine:
 
         active_trade = None
         has_traded_today = False
-        daily_pnl = 0
+        # V20: Use portfolio-wide PnL tracker initialized in run()
+        if not hasattr(self, 'current_day_pnl'):
+            self.current_day_pnl = 0
 
         # V10-P-08: Circuit breaker tracking
         consecutive_losses = 0
@@ -389,7 +407,7 @@ class IntradayEngine:
             if t.time() >= self.sq_off_time:
                 if active_trade:
                     pnl = self._close_trade(active_trade, t, "SQ_OFF", option_data)
-                    daily_pnl += pnl
+                    self.current_day_pnl += pnl
                     self.trades.append(active_trade)
                     active_trade = None
                 break
@@ -403,53 +421,55 @@ class IntradayEngine:
             prev_spot_price = prev_spot_row['close'] if prev_spot_row is not None else None
 
             if active_trade:
-                # ── PROACTIVE DAILY LOSS LIMIT (MTM) ────────────────────────
-                # Check if unrealized loss + realized daily_pnl exceeds limit
-                symbol = active_trade['symbol']
-                if symbol in option_data:
-                    current_candle = self._get_latest_candle(option_data[symbol], t)
-                    if current_candle is not None:
-                        # Use candle low for PE/CE buyer's worst case or open for simplistic check
-                        # Here we use open as the first opportunity to exit
-                        current_price = current_candle['open']
-                        unrealized_pnl = (current_price - active_trade['entry_price']) * active_trade['remaining_qty']
-                        total_pnl = daily_pnl + unrealized_pnl + active_trade.get('partial_pnl', 0)
+                # ── 1. MANAGE SL / TP (Priority 1) ──────────────────────────
+                trade_pnl_realized = self._manage_active_trade(active_trade, t, option_data)
 
-                        if total_pnl <= -self.max_loss_per_day:
-                            self.logger.warning(
-                                f"🛑 DAILY LOSS LIMIT HIT (MTM): {total_pnl:.2f} <= -{self.max_loss_per_day}. "
-                                f"Squaring off {symbol} at {current_price:.2f}"
-                            )
-                            trade_pnl_realized = self._close_trade(active_trade, t, "DAILY_LIMIT", option_data)
-                            daily_pnl += trade_pnl_realized
-                            self.trades.append(active_trade)
-                            active_trade = None
-                            break  # Stop all trading for the day
+                if active_trade['status'] == 'CLOSED':
+                    self.trades.append(active_trade)
+                    self.current_day_pnl += trade_pnl_realized
+                    active_trade = None
 
-                if active_trade:
-                    trade_pnl_realized = self._manage_active_trade(active_trade, t, option_data)
-                    if active_trade['status'] == 'CLOSED':
-                        self.trades.append(active_trade)
-                        daily_pnl += trade_pnl_realized
+                    # Hard stop for the day if daily limit hit by realized loss
+                    if self.current_day_pnl <= -self.max_loss_per_day:
+                        self.logger.warning(f"🛑 DAILY LOSS LIMIT REACHED (Realized): {self.current_day_pnl:.2f}. Done for today.")
+                        break
 
-                    # V10-P-08: Track consecutive losses for circuit breaker
+                    # Track consecutive losses for circuit breaker
                     if trade_pnl_realized < 0:
                         consecutive_losses += 1
                         if consecutive_losses >= max_consec:
-                            self.logger.info(
-                                f"[CIRCUIT BREAKER] {consecutive_losses} consecutive losses. "
-                                f"Cooling off for {cooldown_n} candles."
-                            )
+                            self.logger.info(f"[CIRCUIT BREAKER] {consecutive_losses} losses. Cooling off for {cooldown_n} candles.")
                             cooldown_candles_remaining = cooldown_n
-                            consecutive_losses = 0  # Reset after triggering
+                            consecutive_losses = 0
                     else:
-                        consecutive_losses = 0  # Reset on any win
+                        consecutive_losses = 0
 
-                    active_trade = None
-                continue
+                # ── 2. PROACTIVE DAILY LOSS LIMIT (MTM) (Priority 2) ────────
+                # If trade is still active, check if current unrealized loss breaches daily floor
+                elif active_trade:
+                    symbol = active_trade['symbol']
+                    if symbol in option_data:
+                        current_candle = self._get_latest_candle(option_data[symbol], t)
+                        if current_candle is not None:
+                            current_price = current_candle['open']
+                            unrealized_pnl = (current_price - active_trade['entry_price']) * active_trade['remaining_qty']
+                            total_pnl = self.current_day_pnl + unrealized_pnl + active_trade.get('partial_pnl', 0)
+
+                            if total_pnl <= -self.max_loss_per_day:
+                                self.logger.warning(
+                                    f"🛑 DAILY LOSS LIMIT HIT (MTM): {total_pnl:.2f} <= -{self.max_loss_per_day}. "
+                                    f"Squaring off {symbol} at candle open {current_price:.2f}"
+                                )
+                                trade_pnl_realized = self._close_trade(active_trade, t, "DAILY_LIMIT", option_data)
+                                self.current_day_pnl += trade_pnl_realized
+                                self.trades.append(active_trade)
+                                active_trade = None
+                                break # Stop trading for the day
+
+            if active_trade: continue # Trade still active, skip new signal checks
 
             if has_traded_today: continue
-            if daily_pnl <= -self.max_loss_per_day: break
+            if self.current_day_pnl <= -self.max_loss_per_day: break
             if t.time() > self.end_time: continue
 
             # V10-P-08: Circuit breaker cooldown
@@ -525,15 +545,15 @@ class IntradayEngine:
                             'symbol': symbol,
                             'signal': signal,
                             'dist': dist,
-                            'volume': row['volume'],
                             'entry_candle_open': row.get('open', signal['price']),
+
                             'entry_candle_datetime': str(row['datetime'])
                         })
                     except (ValueError, IndexError) as e:
                         self.logger.warning(f"Symbol parse failed: {symbol} - {e}")
 
             if candidates:
-                candidates.sort(key=lambda x: (x['dist'], -x['volume']))
+                candidates.sort(key=lambda x: x['dist'])
                 best = candidates[0]
                 diag['entries_attempted'] += 1
                 active_trade = self._enter_trade(best, t)
@@ -658,13 +678,18 @@ class IntradayEngine:
             'entry_price': price,
             'sl': sl,
             'targets': targets,
-            'qty': total_qty,  # Fixed: Now uses lots_per_trade multiplier
+            'qty': total_qty,
+            'remaining_qty': total_qty,  # Initialized here for MTM check
+            'tp_hits': 0,
+            'partial_pnl': 0,
             'status': 'OPEN',
             'pnl': 0,
             'cost': cost,
             'underlying': underlying,
-            'lot_size': lot_size,  # Store lot size for partial exits
-            'running_capital': self.capital, # Track capital at entry
+            'lot_size': lot_size,
+            'original_sl': sl,
+            'alert_range': targets[0] - price if targets else 0,
+            'running_capital': self.capital,
             'is_safe_sl_applied': (sl != signal.get('raw_sl', sl)) or (sl != self._round_to_tick(signal['sl'], underlying)),
             'raw_sl': signal.get('raw_sl', signal['sl'])
         }
@@ -699,14 +724,6 @@ class IntradayEngine:
         # No same-candle SL risk exists in this architecture.
 
         realized_pnl = 0
-
-        # Initialize partial exit tracking if not present
-        if 'remaining_qty' not in trade:
-            trade['remaining_qty'] = trade['qty']
-            trade['tp_hits'] = 0  # Track how many TPs have been hit
-            trade['partial_pnl'] = 0  # Track realized PnL from partial exits
-            trade['original_sl'] = trade['sl']
-            trade['alert_range'] = trade['targets'][0] - trade['entry_price']  # Range for trailing
 
         # Get exit mode from config
         exit_mode = self.config['strategy'].get('exit_mode', 'multi_lot')
