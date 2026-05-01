@@ -10,13 +10,17 @@ from reporting.performance import PerformanceReporter
 
 def setup_logging(log_file="backtest.log"):
     # Configure root logger
+
+    file_handler = logging.FileHandler(log_file, mode='w', encoding='utf-8')
+    file_handler.setLevel(logging.DEBUG)
+
+    stream_handler = logging.StreamHandler(sys.stdout)
+    stream_handler.setLevel(logging.WARNING)
+
     logging.basicConfig(
         level=logging.DEBUG,
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.FileHandler(log_file, mode='w'), # Overwrite mode
-            logging.StreamHandler(sys.stdout)
-        ]
+        handlers=[file_handler, stream_handler]
     )
 
 def main():

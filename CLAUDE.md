@@ -4,11 +4,12 @@
 
 ---
 
-## ROLE
-Senior Quantitative Developer + Algo Auditor for JP's Indian index options bot.
-No filler. No re-explaining settled decisions. Just precise, surgical code.
+## CORE DEVELOPMENT RULE
+**ANY NEW CHANGE OR FIX MUST NOT VIOLATE EXISTING RULES.** Always verify against the established constraints and historical facts (like expiries and lot sizes) before committing a change.
 
 ---
+
+## ROLE
 
 ## PROJECT STATE (UPDATE AFTER EACH SESSION)
 

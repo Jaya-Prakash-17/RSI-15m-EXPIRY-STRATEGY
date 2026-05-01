@@ -282,20 +282,29 @@ class ExpiryRSIBreakout:
 
         # 3. Apply SAFE_SL cap LAST — this is the hard ceiling, always wins
         if self.safe_sl_mode:
-            # Pre-initialise qty so post-assertion always has access to it
-            _lots = self.config['strategy'].get('lots_per_trade', 1)
-            _underlying_guess = (symbol.split('-')[1]
-                                 if len(symbol.split('-')) > 1 else 'NIFTY')
-            _lot_size = self.config['indices'].get(_underlying_guess, {}).get('lot_size', 50)
-            qty = _lots * _lot_size  # ← Now always defined before the try block
+            from datetime import datetime
+            from utils.historical_lot_sizes import get_historical_lot_size
 
+            qty = 1  # Fallback pre-initialization
             try:
                 parts = symbol.split('-')
                 underlying = parts[1] if len(parts) > 1 else 'NIFTY'
+                date_str = parts[2] if len(parts) > 2 else None
+
+                trade_date = None
+                if date_str:
+                    try:
+                        trade_date = datetime.strptime(date_str, '%d%b%y').date()
+                    except ValueError:
+                        pass
 
                 lots = self.config['strategy'].get('lots_per_trade', 1)
-                lot_size = self.config['indices'].get(underlying, {}).get('lot_size', 50)
-                qty = lots * lot_size  # ← Overrides with same value (belt + braces)
+                if trade_date:
+                    lot_size = get_historical_lot_size(underlying, trade_date)
+                else:
+                    lot_size = self.config['indices'].get(underlying, {}).get('lot_size', 50)
+
+                qty = lots * lot_size
 
                 self.logger.debug(
                     f"[SAFE_SL CALC] {symbol}: entry={entry_price}, "
@@ -438,7 +447,12 @@ class ExpiryRSIBreakout:
                             try:
                                 alert_candle_dt = datetime.fromisoformat(alert_candle_dt)
                             except ValueError:
-                                pass
+                                self.logger.error(
+                                    f"[{symbol}] SAME-BAR GUARD: Failed to parse alert_candle_dt "
+                                    f"'{alert_candle_dt}'. Blocking entry for safety."
+                                )
+                                state['_recovered_from_crash'] = False
+                                return None   # fail-closed: do NOT allow entry
 
                         if not isinstance(alert_candle_dt, str):
                             # Compare by candle bar (truncate to 15-min boundary)
@@ -504,7 +518,7 @@ class ExpiryRSIBreakout:
 
                 # Warning for "Warmup Zone" (below 100 candles)
                 if history_len < 100:
-                    self.logger.warning(
+                    self.logger.debug(
                         f"[{symbol}] Low history ({history_len} candles). "
                         f"RSI may deviate from broker. Signal quality: CAUTION."
                     )

@@ -8,11 +8,14 @@ NSE_HOLIDAYS = {
         '2020-02-21',  # Mahashivratri
         '2020-03-10',  # Holi
         '2020-04-02',  # Ram Navami
+        '2020-04-06',  # Mahavir Jayanti
         '2020-04-10',  # Good Friday
         '2020-04-14',  # Dr. Ambedkar Jayanti
         '2020-05-01',  # Maharashtra Day
+        '2020-05-25',  # Id-ul-Fitr
         '2020-10-02',  # Gandhi Jayanti
         '2020-11-16',  # Gurunanak Jayanti
+        '2020-11-30',  # Gurunanak Jayanti (Extra)
         '2020-12-25',  # Christmas
     ],
     2021: [
@@ -24,6 +27,8 @@ NSE_HOLIDAYS = {
         '2021-04-21',  # Ram Navami
         '2021-05-13',  # Eid ul-Fitr
         '2021-07-21',  # Bakri Id
+        '2021-08-19',  # Muharram
+        '2021-09-10',  # Ganesh Chaturthi
         '2021-10-15',  # Dussehra
         '2021-11-04',  # Diwali Laxmi Pujan
         '2021-11-05',  # Diwali Balipratipada
@@ -38,6 +43,7 @@ NSE_HOLIDAYS = {
         '2022-05-03',  # Eid ul-Fitr
         '2022-08-09',  # Muharram
         '2022-08-15',  # Independence Day
+        '2022-08-31',  # Ganesh Chaturthi
         '2022-10-05',  # Dussehra
         '2022-10-24',  # Diwali Laxmi Pujan
         '2022-10-26',  # Diwali Balipratipada
@@ -62,35 +68,38 @@ NSE_HOLIDAYS = {
         '2023-12-25',  # Christmas
     ],
     2024: [
+        '2024-01-22',  # Special Holiday
         '2024-01-26',  # Republic Day
+        '2024-03-08',  # Mahashivratri
         '2024-03-25',  # Holi
-        '2024-04-11',  # Id-ul-Fitr
+        '2024-03-29',  # Good Friday
+        '2024-04-11',  # Id-Ul-Fitr
         '2024-04-17',  # Ram Navami
         '2024-05-01',  # Maharashtra Day
-        '2024-05-23',  # Buddha Purnima
+        '2024-05-20',  # General Elections
         '2024-06-17',  # Bakri Id
         '2024-07-17',  # Muharram
         '2024-08-15',  # Independence Day
         '2024-10-02',  # Gandhi Jayanti
         '2024-11-01',  # Diwali Laxmi Pujan
         '2024-11-15',  # Gurunanak Jayanti
+        '2024-11-20',  # Maharashtra Assembly Elections
         '2024-12-25',  # Christmas
     ],
     2025: [
-        '2025-01-26',  # Republic Day
+        '2025-02-26',  # Mahashivratri
         '2025-03-14',  # Holi
         '2025-03-31',  # Id-Ul-Fitr
         '2025-04-10',  # Mahavir Jayanti
         '2025-04-14',  # Dr. Ambedkar Jayanti
         '2025-04-18',  # Good Friday
         '2025-05-01',  # Maharashtra Day
-        '2025-06-07',  # Bakri Id
         '2025-08-15',  # Independence Day
         '2025-08-27',  # Ganesh Chaturthi
-        '2025-10-02',  # Gandhi Jayanti
-        '2025-10-21',  # Dussehra
-        '2025-11-01',  # Diwali (Laxmi Pujan)
-        '2025-11-02',  # Diwali (Balipratipada)
+        '2025-10-02',  # Gandhi Jayanti / Dussehra
+        '2025-10-10',  # Additional Holiday
+        '2025-10-21',  # Diwali Laxmi Pujan
+        '2025-10-22',  # Diwali Balipratipada
         '2025-11-05',  # Gurunanak Jayanti
         '2025-12-25',  # Christmas
     ],

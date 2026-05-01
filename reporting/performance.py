@@ -373,8 +373,11 @@ class PerformanceReporter:
             trades_df['slippage'] = 0.0
             trades_df['pnl_net'] = trades_df['pnl_gross'] - trades_df['charges']
 
+        # CRITICAL FIX: Overwrite raw gross running_capital with TRUE NET running_capital
+        initial_cap = self.config.get('capital', {}).get('initial', 100000)
+        trades_df['running_capital'] = float(initial_cap) + trades_df['pnl_net'].cumsum()
+
         # Calculate all statistics
-        initial_cap = self.config.get('capital', {}).get('initial', None)
         stats = self.calculate_advanced_stats(trades_df, initial_cap=initial_cap)
         total_charges = trades_df['charges'].sum()
         total_slippage = trades_df['slippage'].sum()

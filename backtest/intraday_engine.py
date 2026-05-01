@@ -1,7 +1,9 @@
 # backtest/intraday_engine.py
 import pandas as pd
 import logging
+import sys
 import numpy as np
+from math import ceil
 from datetime import datetime, time, timedelta
 from utils.nse_calendar import is_trading_day
 from utils.symbol_parser import detect_underlying   # P-17: shared underlying detection
@@ -35,6 +37,14 @@ class IntradayEngine:
             return None
         idx = df['datetime'].searchsorted(pd.Timestamp(t), side='right') - 1
         return None if idx < 0 else df.iloc[idx]
+
+    def _get_closed_candle(self, df, bar_open_time):
+        """Return the candle whose datetime == bar_open_time exactly.
+        More robust than timestamp-offset hacks for 15m aligned data."""
+        if df is None or df.empty:
+            return None
+        matches = df[df['datetime'] == pd.Timestamp(bar_open_time)]
+        return matches.iloc[0] if not matches.empty else None
 
     def _round_to_tick(self, price, underlying):
         idx_cfg = self.config['indices'].get(underlying, {})
@@ -104,6 +114,8 @@ class IntradayEngine:
 
         current_date = start_date
         while current_date <= end_date:
+            sys.stdout.write(f"\r[Backtest] Processing {current_date.date()} ... ")
+            sys.stdout.flush()
             self.last_processed_candle_time = {}
 
             should_trade = False
@@ -189,7 +201,12 @@ class IntradayEngine:
 
         try:
             # Build a sample symbol for a recent date
+            from datetime import date
             sample_expiry = sample_date.date() if hasattr(sample_date, 'date') else sample_date
+
+            # Fix for false positives: SENSEX options didn't exist before May 15, 2023
+            if underlying == 'SENSEX' and sample_expiry < date(2023, 5, 15):
+                sample_expiry = date(2023, 5, 19)
 
             # Use index-appropriate sample strikes to avoid false mismatches
             sample_strike = 22500 if underlying == 'NIFTY' else 45000
@@ -217,11 +234,11 @@ class IntradayEngine:
             if os.path.exists(expected_path):
                 self.logger.info(f"[PATH CHECK] OK {underlying}: symbol format matches files on disk")
             else:
-                self.logger.error(
-                    f"[PATH CHECK] ERROR {underlying}: FORMAT MISMATCH\n"
+                self.logger.warning(
+                    f"[PATH CHECK] WARNING {underlying}: FORMAT MISMATCH or missing dummy file\n"
                     f"  Generated: {sample_symbol}_15m.csv\n"
                     f"  On disk:   {sample_existing}\n"
-                    f"  Fix: ensure build_option_symbol date format matches downloaded filenames"
+                    f"  (This is often safely ignored if the sample strike didn't exist that year)"
                 )
         except Exception as e:
             self.logger.warning(f"[PATH CHECK] Could not validate paths for {underlying}: {e}")
@@ -289,18 +306,22 @@ class IntradayEngine:
                 diag['skip_reason'] = 'sensex_not_launched_yet'
                 self._log_day_diagnostic(diag)
                 return
-        # Calculate RSI warmup correctly:
+        # Calculate RSI warmup dynamically from config
         period = self.config['strategy'].get('rsi', {}).get('period', 14)
         warmup_candles = self.config['strategy'].get('rsi', {}).get('warmup_periods', period * 2)
-        # For stable RSI, fetch at least 100 candles (minimum 10 trading days)
-        # This ensures RSI values are more stable and closer to broker values
-        # Use warmup candles from config (defaulting to period*2 if not specified)
-        warmup_candles = self.config['strategy'].get('rsi', {}).get('warmup_periods', period * 2)
+        min_candles = self.config['strategy']['rsi'].get('min_candles_for_signal', warmup_candles)
+        required_candles = max(warmup_candles, min_candles)
 
-        # 100 candles = 4 full trading days. To guarantee 8 trading days (approx 200 candles)
-        # and account for weekends/holidays, we offset by 12 calendar days.
-        warmup_start = date - timedelta(days=5) # 5 days is sufficient for the 25 required candles of 15m data
-        self.logger.info(f"Fetching data with {warmup_candles} candle warmup from {warmup_start}")
+        # Derive calendar days from candle count:
+        # 375 trading minutes per day / 15 min per candle = 25 candles per day
+        required_trading_days = ceil(required_candles * 15 / 375)
+        # Buffer 2x for weekends/holidays
+        calendar_buffer = max(required_trading_days * 2, 5)
+        warmup_start = date - timedelta(days=calendar_buffer)
+        self.logger.info(
+            f"Warmup: fetching {required_trading_days} trading days "
+            f"({required_candles} candles) | warmup_start: {warmup_start.date()}"
+        )
 
         spot_df = self.dm.get_spot_candles(underlying, warmup_start, date.replace(hour=23, minute=59))
         if spot_df.empty:
@@ -485,8 +506,12 @@ class IntradayEngine:
             candidates = []
 
             for symbol, df in option_data.items():
-                # t is the NEW spot candle timestamp - subtract 1s to get the JUST-CLOSED candle
-                row = self._get_latest_candle(df, t - timedelta(seconds=1))
+                # Get the last CLOSED candle: the candle that opened 15m before t
+                closed_candle_time = t - timedelta(minutes=15)
+                row = self._get_closed_candle(df, closed_candle_time)
+                if row is None:
+                    # Fallback to searchsorted for non-aligned timestamps
+                    row = self._get_latest_candle(df, t - timedelta(seconds=1))
                 if row is None: continue
 
                 # Issue 5: Duplicate Candle Check
@@ -502,8 +527,14 @@ class IntradayEngine:
                 symbol_rsis = rsi_cache.get(symbol)
                 if symbol_rsis is None: continue
 
-                # Get index of current candle in its own dataframe to pull RSI
-                # row.name is its index in df
+                # RSI indexing rationale:
+                # calculate_wilder_rsi(prices.values) returns rsi_values via np.diff,
+                # so len(rsi_values) = len(prices) - 1.
+                # rsi_values[i] uses close[0..i+1], i.e. prices up to DataFrame index i+1.
+                # Therefore for candle at DataFrame position curr_idx:
+                #   curr_rsi = rsi_values[curr_idx - 1]  (uses prices[0..curr_idx])
+                #   prev_rsi = rsi_values[curr_idx - 2]  (uses prices[0..curr_idx-1])
+                # This is correct: no look-ahead bias.
                 curr_idx = row.name
                 if curr_idx < 2 or curr_idx - 1 >= len(symbol_rsis): continue
 
@@ -597,10 +628,18 @@ class IntradayEngine:
         if entry_candle_open > alert_high:
             # Gap-up: SL-M fills at open price
             actual_fill = entry_candle_open
+            slippage_pct = (actual_fill - alert_high) / alert_high
+            max_slippage = self.config.get('risk', {}).get('max_slippage_pct', None)
             self.logger.info(
                 f"Gap-fill simulation: trigger=Rs.{alert_high}, open=Rs.{entry_candle_open}, "
-                f"fill=Rs.{actual_fill}"
+                f"fill=Rs.{actual_fill}, slippage={slippage_pct:.2%}"
             )
+            if max_slippage is not None and slippage_pct > max_slippage:
+                self.logger.warning(
+                    f"ENTRY BLOCKED: Gap slippage {slippage_pct:.2%} > max_slippage_pct "
+                    f"{max_slippage:.2%} for {symbol}. Trade skipped."
+                )
+                return None
         else:
             actual_fill = alert_high  # Normal fill at trigger
 

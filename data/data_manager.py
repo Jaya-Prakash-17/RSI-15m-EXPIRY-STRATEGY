@@ -100,7 +100,7 @@ class DataManager:
                     # P-04: Interval Gap Check
                     gaps = self._check_for_gaps(df, start_date, end_date, symbol)
                     if gaps:
-                        self.logger.warning(f"Detected {len(gaps)} gaps in {symbol} spot data.")
+                        self.logger.debug(f"Detected {len(gaps)} gaps in {symbol} spot data.")
                         for gs, ge in gaps:
                             self.logger.info(f"  Missing: {gs.date()} to {ge.date()}")
                         need_download = True
@@ -112,7 +112,7 @@ class DataManager:
 
         if need_download:
             if self.offline_mode:
-                self.logger.warning(f"Offline Mode: Skipping download/repair of {symbol} spot data.")
+                self.logger.debug(f"Offline Mode: Skipping download/repair of {symbol} spot data.")
             elif file_exists and not refresh:
                 # Smart fallback: file exists but has boundary/gap issues
                 # Use existing data without API call, just log the issue
@@ -147,10 +147,28 @@ class DataManager:
                 requested_end = end_date.date() if hasattr(end_date, 'date') else end_date
                 requested_start = start_date.date() if hasattr(start_date, 'date') else start_date
 
-                if file_max_date < requested_end or file_min_date > requested_start:
-                    self.logger.debug(f"Derivative {contract_name} boundary mismatch (file: {file_min_date} to {file_max_date}, need {requested_start} to {requested_end})")
+                # If file max is before requested end, we need more data at the end
+                if file_max_date < requested_end:
+                    self.logger.debug(f"Derivative {contract_name} boundary mismatch (file ends {file_max_date}, need {requested_end})")
                     need_download = True
-                elif file_max_date == requested_end:
+                else:
+                    # Check if file_min_date > requested_start
+                    if file_min_date > requested_start:
+                        try:
+                            parts = contract_name.split('-')
+                            if len(parts) >= 3:
+                                expiry_str = parts[2]
+                                expiry_dt = datetime.strptime(expiry_str, "%d%b%y").date()
+                                # If the file already contains data up to or near the expiry date, it's a complete file.
+                                # The option likely didn't trade earlier, so don't re-download.
+                                if file_max_date < expiry_dt - timedelta(days=3):
+                                    self.logger.debug(f"Derivative {contract_name} boundary mismatch (file starts {file_min_date}, need {requested_start})")
+                                    need_download = True
+                        except:
+                            self.logger.debug(f"Derivative {contract_name} boundary mismatch (file starts {file_min_date}, need {requested_start})")
+                            need_download = True
+
+                if file_max_date == requested_end:
                     from datetime import time
                     # If data truncates before 15:15 on the final day, it was likely downloaded mid-day.
                     # Flag this as incomplete to force a full EOD download for backtests.
@@ -164,7 +182,27 @@ class DataManager:
             else:
                 # File truly missing or range incomplete — must download
                 self.logger.info(f"Derivative data for {contract_name} {'updating from API...' if refresh else 'not found/incomplete locally, downloading...'}")
-                success = self.downloader.download_derivative_data(underlying, contract_name, year, start_date, end_date)
+
+                download_start = start_date
+                download_end = end_date
+
+                # Fetch the full contract lifespan to prevent sliding window infinite re-downloads
+                try:
+                    parts = contract_name.split('-')
+                    if len(parts) >= 3:
+                        expiry_str = parts[2]
+                        expiry_dt = datetime.strptime(expiry_str, "%d%b%y").date()
+                        full_start = pd.Timestamp(expiry_dt - timedelta(days=40))
+                        full_end = pd.Timestamp(expiry_dt).replace(hour=23, minute=59)
+
+                        if full_start < pd.Timestamp(start_date):
+                            download_start = full_start
+                        if full_end > pd.Timestamp(end_date):
+                            download_end = full_end
+                except Exception as e:
+                    self.logger.warning(f"Could not parse expiry from {contract_name} for optimized download: {e}")
+
+                success = self.downloader.download_derivative_data(underlying, contract_name, year, download_start, download_end)
                 if not success and not os.path.exists(filepath):
                     return pd.DataFrame()
                 if filepath in self.data_cache: del self.data_cache[filepath]
@@ -188,7 +226,8 @@ class DataManager:
             self.logger.warning(f"Empty CSV: {filepath}")
             return pd.DataFrame()
         except Exception as e:
-            self.logger.error(f"Error reading {filepath}: {e}")
+            # Downgraded to DEBUG: In offline_mode, missing files are expected and not fatal errors.
+            self.logger.debug(f"Error reading {filepath}: {e}")
             # Keep return pd.DataFrame() — don't raise here
             # (raising would crash the bot on a single bad file)
             # The DataError class is available for future use; log only for now
