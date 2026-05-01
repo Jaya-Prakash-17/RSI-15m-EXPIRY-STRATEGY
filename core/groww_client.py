@@ -161,7 +161,7 @@ class GrowwClient:
                         raise ConnectionError(f"Re-auth failed: {re_auth_err}") from re_auth_err
 
                 # Case 2: Transient/Retryable Errors (429, 5xx, or specific network strings)
-                is_retryable = any(kw in error_str for kw in ['429', '500', '502', '503', '504', 'timeout', 'connection'])
+                is_retryable = any(kw in error_str for kw in ['429', '500', '502', '503', '504', 'timeout', 'connection', 'rate limit'])
 
                 if is_retryable and attempt < max_retries:
                     delay = base_delay * (2 ** attempt) + (random.random() * 0.1)

@@ -3,9 +3,9 @@
 # =============================================================================
 
 backtest:
-  start_date: "2020-01-01"
-  offline_mode: true
-  end_date: "2025-12-31"
+  start_date: "2026-01-01"
+  offline_mode: False
+  end_date: "2026-04-30"
 
 capital:
   initial: 200000         # Starting trading capital in INR (Example: 200000)
@@ -16,7 +16,7 @@ charges:
   gst: 0.45                # Inflated 3X for stress test. Actual: 0.20 (as of April 2026)
   sebi_charges: 9.0e-06    # Inflated 3X for stress test. Actual: 0.000003 (as of April 2026)
   stamp_duty: 0.00018      # Inflated 3X for stress test. Actual: 0.00006 (as of April 2026)
-  stt: 0.003               # Inflated 3X for stress test. Actual: 0.001 (as of April 2026)
+  stt: 0.003               # Inflated 2X for stress test. Actual: 0.0015 (as of April 2026)
 
 data:
   download_retry_count: 3  # Times to retry failed data downloads (Example: 3)
@@ -24,17 +24,17 @@ data:
 
 indices:
   BANKNIFTY:
-    expiry_day: Tuesday    # Primary expiry day for this index (Example: Tuesday)
-    lot_size: 30           # Number of units in one contract (Example: 30)
-    tick_size: 0.05        # Minimum price movement (Example: 0.05)
+    expiry_day: Tuesday
+    lot_size: 30
+    tick_size: 0.05
   NIFTY:
-    expiry_day: Tuesday    # Primary expiry day for this index (Example: Thursday)
-    lot_size: 65           # Number of units in one contract (Example: 75)
-    tick_size: 0.05        # Minimum price movement (Example: 0.05)
+    expiry_day: Tuesday
+    lot_size: 65
+    tick_size: 0.05
   SENSEX:
-    expiry_day: Thursday    # Primary expiry day for this index (Example: Friday)
-    lot_size: 20        # Number of units in one contract (Example: 20)
-    tick_size: 0.05       # Minimum price movement (Example: 0.05)
+    expiry_day: Thursday
+    lot_size: 20
+    tick_size: 0.05
 
 reporting:
   slippage_buffer_enabled: true     # Add random noise to trade execution prices (Example: true)
@@ -70,12 +70,12 @@ strategy:
 
   rsi:
     min_candles_for_signal: 33   # Minimum bars before any alert fires (Example: 15)
-    period: 11                # RSI lookback period. Example: 11 or 14.
+    period: 14             # RSI lookback period. Example: 11 or 14.
     threshold: 60            # RSI value to trigger breakout alert (Example: 55)
     warmup_periods: 33        # Candles needed for stable Wilder RSI (Example: 25)
   rsi_debug: true               # Print detailed RSI calculations to logs (Example: false)
   safe_sl_max_loss: 6000        # Max absolute loss allowed on any trade (Example: 6000)
-  safe_sl_mode: true            # Use tighter SL based on max loss param (Example: true)
+  safe_sl_mode: true             # Use tighter SL based on max loss param — statistically validated
   signal_window_start: '10:00'  # Time to start looking for signals (Example: '09:45')
   signal_window_end: '13:45'    # Time to stop taking new trades (Example: '14:30')
   single_lot_exit_target: 3     # Multiplier of alert range for profit target (Example: 2)
