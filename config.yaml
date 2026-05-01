@@ -56,29 +56,34 @@ resilience:
 
   max_total_premium_deployed: 100000 # Max notional premium across all active positions
 
+# ─── SAFE SL / POSITION SIZING FORMULA (BUG-07) ──────────────────────
+# max_sl_distance = safe_sl_max_loss / (lots_per_trade × lot_size)
+# Example (1-lot NIFTY):  2000 / (1 × 65) = Rs.30.77/unit
+# Example (3-lot NIFTY):  6000 / (3 × 65) = Rs.30.77/unit  (same distance, 3× risk)
+# Rule: Always verify max_sl_distance > typical ATM premium × min_sl_pct
+# ──────────────────────────────────────────────────────────────────────
 strategy:
   alert_validity_candles: 1        # [BUG-04] Signals valid for 2 candles (30 min)
   direction_filter_enabled: false  # Enable/Disable trend following filters (Example: false)
   exit_mode: single_lot         # Method of exiting positions (Example: single_lot)
-  lots_per_trade: 3             # Number of lots per execution (Example: 3)
+  lots_per_trade: 1             # 1 for live debut, scale to 3 after validation (BUG-07)
   max_correlated_positions: 2    # Max positions allowed across different indices (Example: 2)
   max_lots: 5                   # Hard cap on total lots allowed per index (Example: 5)
   max_position_pct: 0.8         # Max capital usage per single trade (Example: 0.8)
   min_alert_range_points: 0.5   # Minimum candle range to consider for signal (Example: 0.5)
-  min_sl_pct: 0.1              # Minimum Stop Loss percentage (Example: 0.1)
-  min_volume_candles_pct: 0.5   # Filter for illiquid strikes (0.5 = 50% non-zero bars)
+  min_sl_pct: 0.05             # 5% SL floor — was 10% (BUG-07: too tight for expiry-day vol)
 
   rsi:
-    min_candles_for_signal: 33   # Minimum bars before any alert fires (Example: 15)
+    min_candles_for_signal: 42   # period*3 = safe minimum before any alert fires
     period: 14             # RSI lookback period. Example: 11 or 14.
     threshold: 60            # RSI value to trigger breakout alert (Example: 55)
-    warmup_periods: 33        # Candles needed for stable Wilder RSI (Example: 25)
+    warmup_periods: 100       # Wilder convergence: 10x period. Was 33 (BUG-04: 2-5pt RSI deviation)
   rsi_debug: true               # Print detailed RSI calculations to logs (Example: false)
-  safe_sl_max_loss: 6000        # Max absolute loss allowed on any trade (Example: 6000)
+  safe_sl_max_loss: 2000        # Rs.2000 max loss for 1-lot (was 6000 for 3-lot) (BUG-07)
   safe_sl_mode: true             # Use tighter SL based on max loss param — statistically validated
   signal_window_start: '10:00'  # Time to start looking for signals (Example: '09:45')
   signal_window_end: '13:45'    # Time to stop taking new trades (Example: '14:30')
-  single_lot_exit_target: 3     # Multiplier of alert range for profit target (Example: 2)
+  single_lot_exit_target: 2     # T2 = 2× range (higher hit rate than T3) (BUG-07)
   strike_range: 3               # Number of strikes away from ATM to trade (Example: 3)
   trade_only_on_expiry: false   # If true, only trades on expiry day (Example: false)
 

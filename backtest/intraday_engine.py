@@ -51,6 +51,15 @@ class IntradayEngine:
         tick_size = idx_cfg.get('tick_size', 0.05) if idx_cfg else 0.05
         return round(price / tick_size) * tick_size
 
+    def _get_slippage_ticks(self, underlying):
+        """BUG-09: Return (ticks, tick_size) for execution slippage if enabled."""
+        cfg = self.config.get('reporting', {})
+        if not cfg.get('slippage_buffer_enabled', False):
+            return 0, 0
+        ticks = cfg.get('slippage_ticks_per_side', 1)
+        tick_size = self.config['indices'].get(underlying, {}).get('tick_size', 0.05)
+        return ticks, tick_size
+
     def _is_expiry_day(self, underlying: str, date) -> bool:
         """
         Check if date is an expiry day for the given underlying.
@@ -315,7 +324,10 @@ class IntradayEngine:
         # Derive calendar days from candle count:
         # 375 trading minutes per day / 15 min per candle = 25 candles per day
         required_trading_days = ceil(required_candles * 15 / 375)
-        # Buffer 2x for weekends/holidays
+        # BUG-04: Buffer 2x for weekends/holidays, floor=5.
+        # With warmup=100: required_trading_days=4, calendar_buffer=8,
+        # which yields ~5-6 actual trading days even in worst-case
+        # (e.g. long weekend + holiday). This guarantees >= 100 candles.
         calendar_buffer = max(required_trading_days * 2, 5)
         warmup_start = date - timedelta(days=calendar_buffer)
         self.logger.info(
@@ -572,13 +584,17 @@ class IntradayEngine:
                     try:
                         strike = float(parts[3])
                         dist = abs(strike - current_spot_price)
+                        # BUG-06: Use the ENTRY candle's open (at time t), not the
+                        # alert candle's open (row = t-15m). The entry candle is where
+                        # the SL-M buy order fills; its open is realistic worst-case.
+                        entry_candle = self._get_closed_candle(df, t)
+                        entry_open = entry_candle['open'] if entry_candle is not None else signal['price']
                         candidates.append({
                             'symbol': symbol,
                             'signal': signal,
                             'dist': dist,
-                            'entry_candle_open': row.get('open', signal['price']),
-
-                            'entry_candle_datetime': str(row['datetime'])
+                            'entry_candle_open': entry_open,
+                            'entry_candle_datetime': str(t)
                         })
                     except (ValueError, IndexError) as e:
                         self.logger.warning(f"Symbol parse failed: {symbol} - {e}")
@@ -642,6 +658,12 @@ class IntradayEngine:
                 return None
         else:
             actual_fill = alert_high  # Normal fill at trigger
+
+        # BUG-09: Apply execution slippage at entry (buy side: price increases)
+        slip_ticks, slip_tick_size = self._get_slippage_ticks(underlying)
+        if slip_ticks > 0:
+            actual_fill += slip_ticks * slip_tick_size
+            self.logger.debug(f"[SLIPPAGE] Entry: +{slip_ticks} tick(s) → fill={actual_fill:.2f}")
 
         price = self._round_to_tick(actual_fill, underlying)
         sl = self._round_to_tick(signal['sl'], underlying)
@@ -783,6 +805,7 @@ class IntradayEngine:
                 target_idx = self.config['strategy'].get('single_lot_exit_target', 2) - 1
                 if row['high'] >= trade['targets'][target_idx]:
                     exit_price = max(row['open'], trade['targets'][target_idx])
+                    exit_price = self._apply_exit_slippage(exit_price, underlying)
                     pnl = (exit_price - trade['entry_price']) * trade['qty']
                     self.capital += exit_price * trade['qty']
                     trade['exit_time'] = time
@@ -822,6 +845,8 @@ class IntradayEngine:
                 # Normal: SL order fills AT the SL price.
                 exit_price = trade['sl']
 
+            # BUG-09: Apply execution slippage at exit (sell side: price decreases)
+            exit_price = self._apply_exit_slippage(exit_price, underlying)
             pnl = (exit_price - trade['entry_price']) * trade['remaining_qty']
             realized_pnl = pnl + trade['partial_pnl']
 
@@ -868,7 +893,7 @@ class IntradayEngine:
                 if tp_level < 2:
                     # Partial exit (TP1 or TP2)
                     exit_qty = lot_size
-                    exit_price = max(row['open'], target_price)
+                    exit_price = self._apply_exit_slippage(max(row['open'], target_price), underlying)
                     pnl = (exit_price - trade['entry_price']) * exit_qty
                     trade['remaining_qty'] -= exit_qty
                     trade['partial_pnl'] = trade.get('partial_pnl', 0) + pnl
@@ -891,7 +916,7 @@ class IntradayEngine:
                 else:
                     # TP3: final exit of remaining quantity
                     exit_qty = trade['remaining_qty']
-                    exit_price = max(row['open'], target_price)
+                    exit_price = self._apply_exit_slippage(max(row['open'], target_price), underlying)
                     pnl = (exit_price - trade['entry_price']) * exit_qty
                     realized_pnl = pnl + trade.get('partial_pnl', 0)
                     self.capital += exit_price * exit_qty
@@ -942,7 +967,7 @@ class IntradayEngine:
 
             # Now check if final configured target was breached
             if row['high'] >= trade['targets'][target_idx]:
-                exit_price = max(row['open'], trade['targets'][target_idx])
+                exit_price = self._apply_exit_slippage(max(row['open'], trade['targets'][target_idx]), underlying)
                 pnl = (exit_price - trade['entry_price']) * trade['qty']
                 self.capital += exit_price * trade['qty']
                 trade['exit_time'] = time
@@ -958,6 +983,14 @@ class IntradayEngine:
 
         return 0
 
+    def _apply_exit_slippage(self, exit_price, underlying):
+        """BUG-09: Apply execution slippage at exit (sell side: price decreases)."""
+        slip_ticks, slip_tick_size = self._get_slippage_ticks(underlying)
+        if slip_ticks > 0:
+            exit_price = self._round_to_tick(exit_price - slip_ticks * slip_tick_size, underlying)
+            self.logger.debug(f"[SLIPPAGE] Exit: -{slip_ticks} tick(s) → price={exit_price:.2f}")
+        return exit_price
+
     def _close_trade(self, trade, time, reason, option_data, price_override=None):
         symbol = trade['symbol']
         if price_override:
@@ -966,7 +999,7 @@ class IntradayEngine:
             df = option_data[symbol]
             row = self._get_latest_candle(df, time)
             if row is not None:
-                exit_price = row['close']
+                exit_price = self._apply_exit_slippage(row['close'], trade.get('underlying', 'NIFTY'))
             else:
                 exit_price = trade['entry_price']
 
