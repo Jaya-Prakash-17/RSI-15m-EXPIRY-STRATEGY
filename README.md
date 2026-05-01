@@ -8,10 +8,10 @@ Intraday Index Options Strategy based on RSI breakout on 15-minute candles, desi
 | Parameter | Value |
 |---|---|
 | **Instruments** | Index Options (NIFTY, BANKNIFTY, SENSEX) |
-| **Trade Day** | Expiry day only |
-| **Entry** | RSI (11) > 60 + High Breakout on 15m candle |
+| **Trade Day** | Flexible (Expiry day focus is a scenario test only) |
+| **Entry** | RSI (14) > 60 + High Breakout on 15m candle |
 | **Risk Cap** | `safe_sl_max_loss` (Default: Rs.2000) |
-| **Exit** | T1 (1x), T2 (2x), T3 (3x) alert range |
+| **Exit Target** | `single_lot_exit_target` (T2 recommended) |
 
 ### 2. Specialized: Morning Strangle
 | Parameter | Value |
@@ -46,12 +46,14 @@ Intraday Index Options Strategy based on RSI breakout on 15-minute candles, desi
 | Feature | Description |
 |---|---|
 | **Safe SL Cap** | `safe_sl_max_loss` enforced at entry using actual historical lot size (not config) |
-| **SL Floor** | `min_sl_pct` (8%) ensures SL is never too tight |
+| **SL Floor** | `min_sl_pct` (5%) ensures SL is never too tight (adjusted for expiry vol) |
 | **Floor/Cap Order** | Floor applied first, then cap — cap always wins |
 | **Circuit Breaker** | `max_consecutive_losses` pauses trading after N losses in a row |
 | **Intraday Gap Fix** | SL exit uses SL price (not candle open) for intraday. Only 09:15 candle uses gap logic |
 | **Historical Lot Sizes** | Correct lot sizes for all dates (NIFTY 75→65, BANKNIFTY 25→35→30, SENSEX 10→20) |
 | **Post-Backtest Audit** | `_verify_safe_sl_compliance()` scans all trades for safe_sl breaches |
+| **Momentum Only** | All volume-based filters removed; strategy is purely price/RSI driven |
+| **Capital Deployment** | `max_cap_deployed` filter removed to allow full portfolio scalability |
 
 ## Project Structure
 
@@ -160,9 +162,9 @@ python run_live.py
 | Parameter | Default | Description |
 |---|---|---|
 | `strategy.lots_per_trade` | 1 | Lots per trade (1 for live debut, 3 for backtest analysis) |
-| `strategy.safe_sl_max_loss` | 2000 | Max loss per trade in Rs. (2% of 1L capital) |
+| `strategy.safe_sl_max_loss` | 2000 | Max loss per trade in Rs. (based on 1 lot) |
 | `strategy.safe_sl_mode` | true | Enable SL distance capping |
-| `strategy.trade_only_on_expiry` | true | Only trade on index expiry days |
+| `strategy.trade_only_on_expiry` | false | Set `true` only for specific scenario testing |
 | `strategy.exit_mode` | single_lot | `single_lot` or `multi_lot` |
 | `strategy.single_lot_exit_target` | 2 | Target level for single-lot exit (1=T1, 2=T2, 3=T3) |
 | `risk.max_consecutive_losses` | 3 | Pause after N consecutive losses |

@@ -54,7 +54,6 @@ resilience:
   disconnect_emergency_threshold_mins: 10 # [SAFE-02] Mins of disconnect before emergency flatten
   reconnect_resync_gap_mins: 15           # [RECO-01] Gap size forcing full cache rebuild
 
-  max_total_premium_deployed: 100000 # Max notional premium across all active positions
 
 # ─── SAFE SL / POSITION SIZING FORMULA (BUG-07) ──────────────────────
 # max_sl_distance = safe_sl_max_loss / (lots_per_trade × lot_size)
