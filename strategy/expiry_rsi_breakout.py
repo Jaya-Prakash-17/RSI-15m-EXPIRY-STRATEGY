@@ -509,12 +509,17 @@ class ExpiryRSIBreakout:
             # Minimum candle quality guard
             if price_history is not None:
                 history_len = len(price_history)
-                if history_len < self.min_candles_for_signal:
+                strict_min = max(self.min_candles_for_signal, self.rsi_period * 3)
+                if history_len < strict_min:
                     if self.rsi_debug:
                         self.logger.debug(
-                            f"[{symbol}] Insufficient history: {history_len} < {self.min_candles_for_signal}"
+                            f"[{symbol}] Insufficient history: {history_len} < {strict_min}"
                         )
                     return None
+
+                # Log actual bars available per accepted symbol
+                if self.rsi_debug:
+                    self.logger.debug(f"[{symbol}] Admitted with {history_len} bars (min_req={strict_min})")
 
                 # Warning for "Warmup Zone" (below 100 candles)
                 if history_len < 100:

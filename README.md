@@ -13,7 +13,12 @@ Intraday Index Options Strategy based on RSI breakout on 15-minute candles, desi
 | **Risk Cap** | `safe_sl_max_loss` (Default: Rs.2000) |
 | **Exit Target** | `single_lot_exit_target` (T2 recommended) |
 
-### 2. Specialized: Morning Strangle
+### 2. Design Decisions
+- **Flexible Trading Days**: The strategy can be run on *any* trading day. The `trade_only_on_expiry` flag is strictly a scenario/testing toggle, not a hard definition of the strategy.
+- **Pure Momentum**: No volume filter is intentionally enforced. The strategy relies purely on price action and RSI momentum.
+- **Capital Scalability**: No aggregate premium or `max_cap_deployed` filter is intentionally enforced. Capital scaling is managed via lot sizing and SL caps.
+
+### 3. Specialized: Morning Strangle
 | Parameter | Value |
 |---|---|
 | **Entry** | 09:20 AM on Expiry Day |

@@ -62,7 +62,7 @@ resilience:
 # Rule: Always verify max_sl_distance > typical ATM premium × min_sl_pct
 # ──────────────────────────────────────────────────────────────────────
 strategy:
-  alert_validity_candles: 1        # [BUG-04] Signals valid for 2 candles (30 min)
+  alert_validity_candles: 1        # [BUG-04] Entry allowed only on T+1 (15 min after alert)
   direction_filter_enabled: false  # Enable/Disable trend following filters (Example: false)
   exit_mode: single_lot         # Method of exiting positions (Example: single_lot)
   lots_per_trade: 1             # 1 for live debut, scale to 3 after validation (BUG-07)

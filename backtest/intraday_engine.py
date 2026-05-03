@@ -522,9 +522,8 @@ class IntradayEngine:
                 closed_candle_time = t - timedelta(minutes=15)
                 row = self._get_closed_candle(df, closed_candle_time)
                 if row is None:
-                    # Fallback to searchsorted for non-aligned timestamps
-                    row = self._get_latest_candle(df, t - timedelta(seconds=1))
-                if row is None: continue
+                    self.logger.debug(f"MISSING_EXACT_BAR: {symbol} {closed_candle_time}")
+                    continue
 
                 # Issue 5: Duplicate Candle Check
                 last_time = self.last_processed_candle_time.get(symbol)
@@ -588,7 +587,7 @@ class IntradayEngine:
                         # alert candle's open (row = t-15m). The entry candle is where
                         # the SL-M buy order fills; its open is realistic worst-case.
                         entry_candle = self._get_closed_candle(df, t)
-                        entry_open = entry_candle['open'] if entry_candle is not None else signal['price']
+                        entry_open = entry_candle['open'] if entry_candle is not None else None
                         candidates.append({
                             'symbol': symbol,
                             'signal': signal,
@@ -639,9 +638,9 @@ class IntradayEngine:
             )
             return None
         alert_high = signal['price']  # Intended trigger price
-        entry_candle_open = candidate.get('entry_candle_open', alert_high)
+        entry_candle_open = candidate.get('entry_candle_open')
 
-        if entry_candle_open > alert_high:
+        if entry_candle_open is not None and entry_candle_open > alert_high:
             # Gap-up: SL-M fills at open price
             actual_fill = entry_candle_open
             slippage_pct = (actual_fill - alert_high) / alert_high
@@ -773,8 +772,11 @@ class IntradayEngine:
         if symbol not in option_data: return 0
 
         df = option_data[symbol]
-        row = self._get_latest_candle(df, time)
-        if row is None: return 0
+        closed_time = time - timedelta(minutes=15)
+        row = self._get_closed_candle(df, closed_time)
+        if row is None:
+            self.logger.debug(f"MISSING_EXACT_BAR (exit): {symbol} {closed_time}")
+            return 0
 
         # CRITICAL FIX (V12-P-01): Define underlying from trade dict here so it is
         # available in BOTH multi-lot and single-lot branches below.
