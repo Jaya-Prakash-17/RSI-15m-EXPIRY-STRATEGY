@@ -167,6 +167,18 @@ class TradeTracker:
             bars[symbol] = bar_time if isinstance(bar_time, str) else bar_time.isoformat()
             self._save_data(data)
 
+    def save_processed_bars_batch(self, bars_dict: dict):
+        """[RECO-02] Persist multiple processed bar timestamps in a single atomic disk write."""
+        if not bars_dict:
+            return
+        with self.lock:
+            data = self._load_data()
+            metadata = data.setdefault('metadata', {})
+            bars = metadata.setdefault('last_processed_bars', {})
+            for symbol, bar_time in bars_dict.items():
+                bars[symbol] = bar_time if isinstance(bar_time, str) else bar_time.isoformat()
+            self._save_data(data)
+
     def get_active_trades_for_index(self, underlying: str) -> list:
         """
         Returns active trades filtered to a specific underlying.

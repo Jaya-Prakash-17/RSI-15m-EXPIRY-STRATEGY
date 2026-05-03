@@ -555,10 +555,9 @@ class IntradayEngine:
                 if np.isnan(curr_rsi): continue
 
                 # Build price history up to current candle for min_candles check
-                price_slice = df['close'].iloc[:curr_idx + 1]
                 signal = strategy.check_signal(
                     symbol, row,
-                    price_history=price_slice,
+                    history_len=curr_idx + 1,
                     rsi_values=(curr_rsi, prev_rsi)
                 )
                 diag['rsi_checks'] += 1

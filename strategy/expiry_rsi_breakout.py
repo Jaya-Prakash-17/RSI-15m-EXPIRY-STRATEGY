@@ -289,20 +289,15 @@ class ExpiryRSIBreakout:
             try:
                 parts = symbol.split('-')
                 underlying = parts[1] if len(parts) > 1 else 'NIFTY'
-                date_str = parts[2] if len(parts) > 2 else None
-
-                trade_date = None
-                if date_str:
-                    try:
-                        trade_date = datetime.strptime(date_str, '%d%b%y').date()
-                    except ValueError:
-                        pass
 
                 lots = self.config['strategy'].get('lots_per_trade', 1)
-                if trade_date:
+                # Use today's date for lot size — the SL is calculated at entry time, not expiry
+                trade_date = datetime.now().date()
+                try:
                     lot_size = get_historical_lot_size(underlying, trade_date)
-                else:
+                except (ValueError, Exception):
                     lot_size = self.config['indices'].get(underlying, {}).get('lot_size', 50)
+                    self.logger.warning(f"Lot size fallback for {underlying} on {trade_date}: {lot_size}")
 
                 qty = lots * lot_size
 
@@ -356,7 +351,7 @@ class ExpiryRSIBreakout:
             self.state[symbol]['age'] = 0
             self.state[symbol]['alert_time'] = None
 
-    def check_signal(self, symbol, current_candle, price_history=None, is_tradable=True, rsi_values=None):
+    def check_signal(self, symbol, current_candle, price_history=None, is_tradable=True, rsi_values=None, history_len=None):
         """
         Checks for signals based on candle and RSI.
         STRICTLY separates Alert and Entry.
@@ -368,6 +363,7 @@ class ExpiryRSIBreakout:
             price_history: Pandas Series of closing prices ending with current_candle
             is_tradable: Boolean flag if we are inside trading window
             rsi_values: (current_rsi, prev_rsi) tuple - if provided, avoids re-calculation
+            history_len: Integer length of history, avoids len(price_history) call if provided
         """
         if symbol not in self.state:
              self.state[symbol] = {
@@ -506,9 +502,10 @@ class ExpiryRSIBreakout:
         # Only if we don't have an active alert.
         if state['alert'] is None and is_tradable:
             # Minimum candle quality guard
-            # Minimum candle quality guard
-            if price_history is not None:
+            if history_len is None and price_history is not None:
                 history_len = len(price_history)
+
+            if history_len is not None:
                 strict_min = max(self.min_candles_for_signal, self.rsi_period * 3)
                 if history_len < strict_min:
                     if self.rsi_debug:

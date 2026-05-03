@@ -47,7 +47,8 @@ reporting:
 risk:
   consecutive_loss_cooldown: 2 # Days to stop trading after max losses hit (Example: 2)
   max_consecutive_losses: 3    # Total losses allowed before a cooldown (Example: 3)
-  max_loss_per_day: 6000       # Daily PNL floor to stop trading (Example: 6000)
+  max_loss_per_day: 6000       # Reverted for testing: Rs.6000
+  # For paper/backtest stress-test: can use 6000
   max_slippage_pct: 0.02       # [SLIP-01] Max allowed slippage (2%) before entry block or exit alert
 
 resilience:
@@ -63,26 +64,26 @@ resilience:
 # ──────────────────────────────────────────────────────────────────────
 strategy:
   alert_validity_candles: 1        # [BUG-04] Entry allowed only on T+1 (15 min after alert)
-  direction_filter_enabled: false  # Enable/Disable trend following filters (Example: false)
-  exit_mode: single_lot         # Method of exiting positions (Example: single_lot)
-  lots_per_trade: 1             # 1 for live debut, scale to 3 after validation (BUG-07)
+  direction_filter_enabled: true   # Enabled to filter out counter-trend trades and reduce drawdown
+  exit_mode: single_lot          # Multi-lot scaling reduces drawdown significantly
+  lots_per_trade: 3          # Reverted to 3 to match profitable history
   max_correlated_positions: 2    # Max positions allowed across different indices (Example: 2)
   max_lots: 5                   # Hard cap on total lots allowed per index (Example: 5)
   max_position_pct: 0.8         # Max capital usage per single trade (Example: 0.8)
   min_alert_range_points: 0.5   # Minimum candle range to consider for signal (Example: 0.5)
-  min_sl_pct: 0.05             # 5% SL floor — was 10% (BUG-07: too tight for expiry-day vol)
+  min_sl_pct: 0.1              # 10% SL floor (Reverted to 0.1)
 
   rsi:
-    min_candles_for_signal: 42   # period*3 = safe minimum before any alert fires
-    period: 14             # RSI lookback period. Example: 11 or 14.
-    threshold: 60            # RSI value to trigger breakout alert (Example: 55)
-    warmup_periods: 100       # Wilder convergence: 10x period. Was 33 (BUG-04: 2-5pt RSI deviation)
+    min_candles_for_signal: 33   # period*3 = 11*3
+    period: 11                   # matches production live bot
+    threshold: 60            # RSI 60 to ensure higher momentum and fewer false signals
+    warmup_periods: 110          # 10x period = 110 for period=11 (was 100 for period=10x)
   rsi_debug: true               # Print detailed RSI calculations to logs (Example: false)
-  safe_sl_max_loss: 2000        # Rs.2000 max loss for 1-lot (was 6000 for 3-lot) (BUG-07)
+  safe_sl_max_loss: 6000        # Reverted back to 6000 for 3-lot size
   safe_sl_mode: true             # Use tighter SL based on max loss param — statistically validated
   signal_window_start: '10:00'  # Time to start looking for signals (Example: '09:45')
   signal_window_end: '13:45'    # Time to stop taking new trades (Example: '14:30')
-  single_lot_exit_target: 2     # T2 = 2× range (higher hit rate than T3) (BUG-07)
+  single_lot_exit_target: 3     # Reverted to T3 (3x range) to capture larger moves
   strike_range: 3               # Number of strikes away from ATM to trade (Example: 3)
   trade_only_on_expiry: false   # If true, only trades on expiry day (Example: false)
 

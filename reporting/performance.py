@@ -366,9 +366,9 @@ class PerformanceReporter:
                     f"{len(trades_df)} trades = Rs.{trades_df['slippage'].sum():.2f} total"
                 )
 
-            trades_df['pnl_net'] = (trades_df['pnl_gross']
-                                   - trades_df['charges']
-                                   - trades_df['slippage'])
+            trades_df['pnl_net'] = (trades_df['pnl_gross'] - trades_df['charges'])
+            # Note: Slippage is already baked into pnl_gross by intraday_engine.py _apply_entry_slippage / _apply_exit_slippage.
+            # We do NOT subtract trades_df['slippage'] again here to avoid double-counting.
         else:
             trades_df['slippage'] = 0.0
             trades_df['pnl_net'] = trades_df['pnl_gross'] - trades_df['charges']

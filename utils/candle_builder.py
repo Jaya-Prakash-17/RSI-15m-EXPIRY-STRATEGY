@@ -13,6 +13,8 @@ class CandleBuilder:
         self.bars = {}  # symbol -> deque of closed bars
         self.active_candles = {}  # symbol -> forming candle dict
         self.continuity_broken = False
+        self._continuity_broken_symbols = set()   # ADD: per-symbol tracking
+        self._max_continuity_gap_minutes = 120  # ADD: gaps <= 120 min auto-recover (lunch, circuit)
 
     def _get_boundary_time(self, dt):
         """Align datetime to the start of the 15-minute interval."""
@@ -30,17 +32,29 @@ class CandleBuilder:
             return True
 
         last_dt = self.bars[symbol][-1]['datetime']
-        expected_dt = last_dt + timedelta(minutes=self.interval_minutes)
         gap = (new_dt - last_dt).total_seconds()
 
         if gap > (self.interval_minutes * 60):
+            gap_minutes = int(gap / 60)
             self.logger.critical(
                 f"🚨 DATA CONTINUITY BROKEN for {symbol}: "
                 f"Last bar {last_dt}, Current bar {new_dt}. "
-                f"Missing {int(gap/60)} minutes."
+                f"Missing {gap_minutes} minutes."
             )
-            self.continuity_broken = True
-            return False
+            self._continuity_broken_symbols.add(symbol)
+            # Auto-recover for short gaps (circuit breaker, lunch, brief outage)
+            # Hard halt only for gaps that likely indicate data feed failure
+            if gap_minutes > self._max_continuity_gap_minutes:
+                self.continuity_broken = True   # hard halt: >2hr gap
+            return False   # reject this bar; caller will warm_up on next candle
+
+        # Gap is zero or one interval: clear per-symbol flag if previously broken
+        if symbol in self._continuity_broken_symbols:
+            self.logger.info(f"✅ Continuity restored for {symbol}")
+            self._continuity_broken_symbols.discard(symbol)
+            # Reset global flag if no symbols remain broken
+            if not self._continuity_broken_symbols:
+                self.continuity_broken = False
 
         # Also check for overlaps/duplicates if needed
         if new_dt <= last_dt:

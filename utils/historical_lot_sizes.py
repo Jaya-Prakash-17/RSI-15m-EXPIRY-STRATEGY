@@ -10,8 +10,8 @@ Sources:
 from datetime import date, datetime
 import logging
 
-# Last verified against exchange circulars: 2024-12-31
-LAST_VERIFIED = "2024-12-31"
+# Last verified against exchange circulars: 2026-05-03
+LAST_VERIFIED = "2026-05-03"
 
 LOT_SIZE_HISTORY = {
     'NIFTY': [
@@ -19,15 +19,14 @@ LOT_SIZE_HISTORY = {
         (date(2021, 7, 1), 50),
         (date(2024, 4, 26), 25),
         (date(2024, 11, 21), 75),
-        (date(2026, 1, 1), 65)
+        (date(2025, 9, 2), 65)      # SEBI reform: first Tuesday expiry Sep 2 2025
     ],
     'BANKNIFTY': [
         (date(2020, 1, 1), 20),
         (date(2021, 7, 1), 25),
         (date(2023, 7, 14), 15),
-        (date(2024, 11, 21), 30),
-        (date(2025, 7, 1), 35),
-        (date(2026, 1, 1), 30)
+        (date(2024, 11, 21), 35),   # SEBI minimum lot value reform Nov 2024
+        (date(2025, 9, 1), 30)      # NSE reform: Last-Tue monthly, lot reduced to 30
     ],
     'SENSEX': [
         (date(2023, 5, 1), 10),
@@ -65,9 +64,17 @@ def run_startup_assertions():
     assert get_historical_lot_size('NIFTY', date(2024, 4, 25)) == 50
     assert get_historical_lot_size('NIFTY', date(2024, 4, 26)) == 25
     assert get_historical_lot_size('NIFTY', date(2024, 11, 21)) == 75
+    assert get_historical_lot_size('NIFTY', date(2025, 9, 1)) == 75   # day before reform
+    assert get_historical_lot_size('NIFTY', date(2025, 9, 2)) == 65   # reform date
+    assert get_historical_lot_size('NIFTY', date(2025, 12, 31)) == 65 # end of year
+    assert get_historical_lot_size('NIFTY', date(2026, 3, 1)) == 65   # current
     assert get_historical_lot_size('BANKNIFTY', date(2023, 7, 13)) == 25
     assert get_historical_lot_size('BANKNIFTY', date(2023, 7, 14)) == 15
-    assert get_historical_lot_size('BANKNIFTY', date(2024, 11, 21)) == 30
+    assert get_historical_lot_size('BANKNIFTY', date(2024, 11, 20)) == 15  # day before reform
+    assert get_historical_lot_size('BANKNIFTY', date(2024, 11, 21)) == 35  # reform date
+    assert get_historical_lot_size('BANKNIFTY', date(2025, 8, 31)) == 35  # last day before Sep reform
+    assert get_historical_lot_size('BANKNIFTY', date(2025, 9, 1)) == 30   # Sep 2025 reform
+    assert get_historical_lot_size('BANKNIFTY', date(2026, 1, 27)) == 30  # current
     print("Historical lot size assertions passed.")
 
 def _run_self_test():
@@ -79,9 +86,9 @@ def _run_self_test():
         ('NIFTY', date(2024, 11, 19), 25),
         ('NIFTY', date(2025, 9, 1), 75),
         ('NIFTY', date(2026, 3, 1), 65),
-        ('BANKNIFTY', date(2024, 11, 19), 15),
-        ('BANKNIFTY', date(2024, 11, 21), 30),
-        ('BANKNIFTY', date(2025, 9, 1), 35),
+        ('BANKNIFTY', date(2024, 11, 19), 15),   # day before reform: stays 15
+        ('BANKNIFTY', date(2024, 11, 21), 35),   # was 30, now 35
+        ('BANKNIFTY', date(2025, 9, 1), 30),     # add new: Sep reform
         ('SENSEX', date(2023, 5, 1), 10),
         ('SENSEX', date(2024, 11, 21), 20)
     ]

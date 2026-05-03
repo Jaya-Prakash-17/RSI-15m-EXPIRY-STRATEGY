@@ -531,9 +531,12 @@ class LiveTrader:
             expiry_date = self.expiry_dates.get(underlying, datetime.now().date())
 
             try:
-                # V16-BUG-002: Use refresh=True ONLY on the first underlying or a global sync
-                # Passing refresh=True on every call re-parses CSV and checks gaps unnecessarily.
-                spot_df = self.dm.get_spot_candles(spot_symbol, warmup_start, now, refresh=(underlying == self.underlyings[0]))
+                # Refresh spot for all underlyings — each has a distinct cache key (symbol-based)
+                # so refreshing BANKNIFTY does not evict NIFTY cache
+                spot_df = self.dm.get_spot_candles(
+                    spot_symbol, warmup_start, now,
+                    refresh=True   # always fetch fresh spot for accurate strike universe
+                )
             except Exception as e:
                 self.logger.error(f"Failed to fetch spot data for {underlying}: {e}")
                 continue
@@ -671,10 +674,10 @@ class LiveTrader:
                             self.logger.debug(f"Local bar closed for {symbol} at {closed_bar['datetime']}")
 
                             # [CONT-02] Check for broken continuity
-                            if self.candle_builder.continuity_broken:
-                                self.logger.critical(f"🛑 TRADING HALTED: Continuity gap detected for {symbol}. Manual resync required.")
+                            if self.candle_builder.continuity_broken:   # only True for >2hr gaps
                                 self.circuit_breaker_active = True
-                                self.telegram._send_to_owner(f"🚨 <b>Trading Halted</b>\nContinuity gap detected for {symbol}. System in lock-down.")
+                                self.logger.critical(f"🛑 TRADING HALTED: Critical continuity gap (>2hr) for {symbol}.")
+                                self.telegram._send_to_owner(f"🚨 <b>Trading Halted</b>\nCritical data gap (>2hr) for {symbol}. Restart required.")
 
                             # Starvation tracking: update last closure time
                             self._last_bar_close_time = datetime.now()
@@ -787,6 +790,7 @@ class LiveTrader:
                     self.logger.error(f"[CONC-01] Parallel fetch failed for {u}: {e}")
 
         # Process each underlying index
+        _bars_to_persist: dict = {}
         for underlying in self.underlyings:
             spot_df = spot_data_map.get(underlying)
             spot_price = 0
@@ -886,8 +890,7 @@ class LiveTrader:
                     )
 
                     self.last_processed_candle_time[symbol] = current_candle_time
-                    # [RECO-02] Segment 2: Persist processed bar to disk
-                    self.tracker.save_processed_bar(symbol, current_candle_time)
+                    _bars_to_persist[symbol] = current_candle_time    # accumulate
 
                     # Build price history up to current candle for min_candles check
                     price_slice = df['close']
@@ -1022,6 +1025,10 @@ class LiveTrader:
                     self.logger.info(f"[{index_name}] Other candidates for index (not selected): {others}")
 
                 self._place_pending_entry(best)
+
+        # [RECO-02] Batch persist all processed bars in single disk write
+        if _bars_to_persist:
+            self.tracker.save_processed_bars_batch(_bars_to_persist)
 
     def _cancel_pending_entry(self, symbol, reason):
         """Cancel a pending entry order when alert is negated or expired.
@@ -2039,15 +2046,19 @@ class LiveTrader:
             self.logger.info(f"📈 [PAPER] Trailing SL to ₹{new_sl}")
 
         # CRITICAL FIX: Calculate partial P&L for paper trades too
-        lot_size = self.config['indices'][underlying]['lot_size']
-        lots = self.config['strategy'].get('lots_per_trade', 3)
-        lots_per_tp = lots // 3
-        remainder = lots - (2 * lots_per_tp)
+        # Use actual trade quantities, not config — config may differ from entry-time values
+        total_qty = int(trade.get('qty', 0))
+        lot_size = self.config['indices'].get(underlying, {}).get('lot_size', 1)
+        lots = total_qty // lot_size if lot_size > 0 else 1
+        lots_per_tp = max(1, lots // 3)    # floor to at least 1 to avoid zero exit
+        remainder = total_qty - (2 * lots_per_tp * lot_size)
+        if remainder < 0:
+            remainder = lot_size   # fallback: 1 lot
 
         if tp_level == 1 or tp_level == 2:
             partial_qty = lots_per_tp * lot_size
         else:
-            partial_qty = remainder * lot_size
+            partial_qty = int(trade.get('remaining_qty', remainder))   # use actual remaining at TP3
 
         partial_profit = (fill_price - float(trade['entry_price'])) * partial_qty
         self.daily_pnl += partial_profit
