@@ -45,6 +45,9 @@ class ExpiryRSIBreakout:
 
         # V16-P-01: Minimum alert range guard (data quality)
         self.min_alert_range = config['strategy'].get('min_alert_range_points', 0.5)
+        if self.min_alert_range <= 0:
+            self.logger.warning(f"min_alert_range_points={self.min_alert_range} is invalid. Enforcing 0.5 minimum.")
+            self.min_alert_range = 0.5
 
         # Risk management: SAFE_SL Mode
         self.safe_sl_mode = config['strategy'].get('safe_sl_mode', False)
@@ -450,12 +453,11 @@ class ExpiryRSIBreakout:
                                 state['_recovered_from_crash'] = False
                                 return None   # fail-closed: do NOT allow entry
 
-                        if not isinstance(alert_candle_dt, str):
-                            # Compare by candle bar (truncate to 15-min boundary)
-                            def _bar(dt): return dt.replace(second=0, microsecond=0, minute=(dt.minute // 15) * 15)
-                            if _bar(current_time) == _bar(alert_candle_dt):
-                                self.logger.warning(f"[{symbol}] Blocking same-bar entry post crash-recovery")
-                                return None
+                        # Compare by candle bar (truncate to 15-min boundary)
+                        def _bar(dt): return dt.replace(second=0, microsecond=0, minute=(dt.minute // 15) * 15)
+                        if _bar(current_time) == _bar(alert_candle_dt):
+                            self.logger.warning(f"[{symbol}] Blocking same-bar entry post crash-recovery")
+                            return None
                     state['_recovered_from_crash'] = False  # clear after first safe check
 
                 # ... breakout logic ...

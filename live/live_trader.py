@@ -763,7 +763,6 @@ class LiveTrader:
 
         self.logger.info("Processing Strategy Logic...")
         now = datetime.now()
-        warmup_start = self._get_warmup_start_time()
 
         alert_candidates = []  # New alerts to place pending orders
         is_tradable = (self.start_time <= now.time() <= self.end_time)
