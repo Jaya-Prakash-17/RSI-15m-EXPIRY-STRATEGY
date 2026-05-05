@@ -82,8 +82,8 @@ strategy:
   safe_sl_max_loss: 10000        # Reverted back to 6000 for 3-lot size
   safe_sl_mode: true             # Use tighter SL based on max loss param — statistically validated
   signal_window_start: '10:00'  # Time to start looking for signals (Example: '09:45')
-  signal_window_end: '13:45'    # Time to stop taking new trades (Example: '14:30')
-  single_lot_exit_target: 3     # Reverted to T3 (3x range) to capture larger moves
+  signal_window_end: '14:45'    # Time to stop taking new trades (Example: '14:30')
+  single_lot_exit_target: 2    # Reverted to T3 (3x range) to capture larger moves
   strike_range: 3               # Number of strikes away from ATM to trade (Example: 3)
   trade_only_on_expiry: false   # If true, only trades on expiry day (Example: false)
 
