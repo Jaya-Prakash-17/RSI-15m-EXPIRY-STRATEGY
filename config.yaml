@@ -3,9 +3,9 @@
 # =============================================================================
 
 backtest:
-  start_date: "2026-01-01"
+  start_date: "2020-01-01"
   offline_mode: False
-  end_date: "2026-04-30"
+  end_date: "2025-12-31"
 
 capital:
   initial: 200000         # Starting trading capital in INR (Example: 200000)
@@ -79,7 +79,7 @@ strategy:
     threshold: 60            # RSI 60 to ensure higher momentum and fewer false signals
     warmup_periods: 110          # 10x period = 110 for period=11 (was 100 for period=10x)
   rsi_debug: true               # Print detailed RSI calculations to logs (Example: false)
-  safe_sl_max_loss: 6000        # Reverted back to 6000 for 3-lot size
+  safe_sl_max_loss: 10000        # Reverted back to 6000 for 3-lot size
   safe_sl_mode: true             # Use tighter SL based on max loss param — statistically validated
   signal_window_start: '10:00'  # Time to start looking for signals (Example: '09:45')
   signal_window_end: '13:45'    # Time to stop taking new trades (Example: '14:30')
@@ -90,6 +90,7 @@ strategy:
 trading:
   order_poll_interval_seconds: 5 # How often to check for order completion (Example: 5)
   paper_trading: true            # Use simulated execution vs real orders (Example: true)
+  sqoff_fill_wait_seconds: 8     # Total time to wait for SQ_OFF exit order to fill (Example: 8)
   trade_log_file: logs/PAPER_TRADES_LOG.csv # File path for recording trades (Example: logs/LIVE_LOG.csv)
   window:
     start: '09:45'           # Broker connection start time (Example: '09:15')

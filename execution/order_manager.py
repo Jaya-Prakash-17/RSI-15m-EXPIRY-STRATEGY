@@ -128,65 +128,7 @@ class OrderManager:
         self.logger.error(f"Entry Order Failed: {resp}")
         return None
 
-    def check_order_fill(self, order_id, timeout=30):
-        """
-        Polls order status until filled or timeout.
 
-        Returns:
-            float: The fill price if the order was filled.
-            None:  If the order was cancelled, rejected, or timed out.
-
-        Note: Automatically cancels the order on timeout to prevent orphaned fills.
-        """
-        start = time.time()
-        while time.time() - start < timeout:
-            status = self.client.get_order_status(order_id)
-            if not status or status.get('status') == 'ERROR':
-                self.logger.error(f"Error checking status for {order_id}")
-                time.sleep(1)
-                continue
-
-            s = status.get('status')
-            filled_qty = int(status.get('filled_quantity', 0))
-            fill_price = float(status.get('fill_price', 0) or 0)
-
-            if is_order_filled(s):
-                self.logger.info(f"Order {order_id} FILLED: Qty={filled_qty}, Price=₹{fill_price}")
-                return fill_price  # Returning just price for backward compatibility
-
-            elif is_partially_filled(s):
-                # For options, partial fills are rare, but handle it
-                self.logger.warning(f"Order {order_id} PARTIALLY FILLED: {filled_qty} filled")
-                # Wait a bit more to see if it completes
-                time.sleep(2)
-                continue
-
-            elif s in ['REJECTED', 'CANCELLED', 'FAILED']:
-                self.logger.error(f"Order {order_id} {s}")
-                return None
-
-            time.sleep(1)
-
-        # Timeout - cancel the order to prevent orphaned fills
-        self.logger.warning(f"Order {order_id} check timed out after {timeout}s. Cancelling to prevent orphan fill...")
-        try:
-            cancel_resp = self.client.cancel_order(order_id)
-            if cancel_resp:
-                self.logger.warning(f"Order {order_id} cancelled after timeout")
-            else:
-                self.logger.error(f"Failed to cancel order {order_id} after timeout — may still fill!")
-
-            # Final status check — order may have filled between timeout and cancel
-            time.sleep(2)
-            final_status = self.client.get_order_status(order_id)
-            if final_status and is_order_filled(final_status.get('status', '')):
-                fill_price = float(final_status.get('fill_price', 0) or 0)
-                self.logger.info(f"Order {order_id} filled during final check: ₹{fill_price}")
-                return fill_price
-        except Exception as e:
-            self.logger.error(f"Error during timeout handling: {e}")
-
-        return None
 
     def place_exit_order(self, symbol, qty, trading_symbol, reason="TARGET"):
         self.logger.info(f"Placing EXIT for {symbol} (TS: {trading_symbol}) Qty: {qty} Reason: {reason}")

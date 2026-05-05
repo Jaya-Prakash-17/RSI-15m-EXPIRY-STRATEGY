@@ -892,11 +892,9 @@ class LiveTrader:
                     self.last_processed_candle_time[symbol] = current_candle_time
                     _bars_to_persist[symbol] = current_candle_time    # accumulate
 
-                    # Build price history up to current candle for min_candles check
-                    price_slice = df['close']
                     signal = self.strategy.check_signal(
                         symbol, last_row,
-                        price_history=price_slice,  # Pass history to enforce minimum guards
+                        history_len=len(df),
                         is_tradable=is_tradable,
                         rsi_values=rsi_pair         # Pre-computed (current, prev)
                     )
@@ -2468,7 +2466,7 @@ class LiveTrader:
                                 if history:
                                     self.tracker.save_candle_state(symbol, history)
                     except Exception as e:
-                        self.logger.debug(f"Heartbeat write failed: {e}")
+                        self.logger.warning(f"Heartbeat write failed: {e}")
 
                     # Circuit breaker awareness
                     if not self._is_market_open():
@@ -2539,9 +2537,14 @@ class LiveTrader:
                         # Actual fill Detection (PROMPT 16 - Tiered approach)
                         actual_fill = None
                         exit_order_id = None  # V11-P-01: init before conditional to prevent NameError
+
+                        sqoff_wait = self.config.get('trading', {}).get('sqoff_fill_wait_seconds', 8)
+                        tier1_wait = min(3, sqoff_wait)
+                        tier2_wait = max(0, sqoff_wait - tier1_wait)
+
                         if exit_resp and exit_resp.get('groww_order_id'):
                             exit_order_id = exit_resp['groww_order_id']
-                            time.sleep(3)  # Allow time to fill
+                            time.sleep(tier1_wait)  # Allow time to fill
                             try:
                                 exit_status = self.client.get_order_status(exit_order_id)
                                 if exit_status and is_order_filled(exit_status.get('status', '')):
@@ -2551,9 +2554,9 @@ class LiveTrader:
                                 self.logger.error(f"SQ_OFF fill check failed: {e}")
 
                         # --- TIER 2: Retry our exit order after longer wait (market orders take 2-10s) ---
-                        if not actual_fill and exit_order_id:
+                        if not actual_fill and exit_order_id and tier2_wait > 0:
                             try:
-                                time.sleep(5)   # additional wait for settlement
+                                time.sleep(tier2_wait)   # additional wait for settlement
                                 retry_status = self.client.get_order_status(exit_order_id)
                                 if retry_status and is_order_filled(retry_status.get('status', '')):
                                     actual_fill = retry_status.get('fill_price')
@@ -2618,9 +2621,14 @@ class LiveTrader:
                         # Tier 1: Actual fill from our exit order response
                         actual_fill = None
                         exit_order_id = None  # V11-P-01: init before conditional to prevent NameError
+
+                        sqoff_wait = self.config.get('trading', {}).get('sqoff_fill_wait_seconds', 8)
+                        tier1_wait = min(3, sqoff_wait)
+                        tier2_wait = max(0, sqoff_wait - tier1_wait)
+
                         if exit_resp and exit_resp.get('groww_order_id'):
                             exit_order_id = exit_resp['groww_order_id']
-                            time.sleep(3)  # Allow time to fill
+                            time.sleep(tier1_wait)  # Allow time to fill
                             try:
                                 exit_status = self.client.get_order_status(exit_order_id)
                                 if exit_status and is_order_filled(exit_status.get('status', '')):
@@ -2630,9 +2638,9 @@ class LiveTrader:
                                 self.logger.error(f"DAILY_LOSS fill check failed: {e}")
 
                         # --- TIER 2: Retry our exit order after longer wait (market orders take 2-10s) ---
-                        if not actual_fill and exit_order_id:
+                        if not actual_fill and exit_order_id and tier2_wait > 0:
                             try:
-                                time.sleep(5)   # additional wait for settlement
+                                time.sleep(tier2_wait)   # additional wait for settlement
                                 retry_status = self.client.get_order_status(exit_order_id)
                                 if retry_status and is_order_filled(retry_status.get('status', '')):
                                     actual_fill = retry_status.get('fill_price')
