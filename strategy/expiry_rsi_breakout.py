@@ -184,17 +184,22 @@ class ExpiryRSIBreakout:
             return None
 
         # Get the latest non-NaN RSI value
-        latest_rsi = rsi_series.iloc[-1]
+        rsi_arr = np.asarray(rsi_series)
+        valid_idx = np.where(~np.isnan(rsi_arr))[0]
+        if len(valid_idx) == 0:
+            return (None, None) if return_prev else None
+
+        latest_rsi = float(rsi_arr[valid_idx[-1]])
 
         # Debug logging for validation
         if self.rsi_debug and not pd.isna(latest_rsi):
             latest_time = prices.index[-1] if hasattr(prices, 'index') else len(prices)-1
-            latest_price = prices.iloc[-1]
+            latest_price = prices.iloc[-1] if hasattr(prices, 'iloc') else prices[-1]
             candle_count = len(prices)
             self.logger.debug(f"RSI Debug | Time: {latest_time} | Close: {latest_price:.2f} | RSI: {latest_rsi:.2f} | Candles: {candle_count}")
         # Get the previous non-NaN RSI value if requested
         if return_prev:
-            prev_rsi = rsi_series.iloc[-2] if len(rsi_series) > 1 else np.nan
+            prev_rsi = float(rsi_arr[valid_idx[-2]]) if len(valid_idx) > 1 else np.nan
             return (
                 latest_rsi if not pd.isna(latest_rsi) else None,
                 prev_rsi if not pd.isna(prev_rsi) else None
@@ -227,8 +232,6 @@ class ExpiryRSIBreakout:
             - Pre-computes shared constants (alpha, inv_n) once
         """
         n = self.rsi_period
-        alpha = (n - 1) / n
-        inv_n = 1.0 / n
         min_len = n + 1
         results = {}
         for symbol, prices in symbols_closes.items():
@@ -342,8 +345,11 @@ class ExpiryRSIBreakout:
                     corrected_dist = self.safe_sl_max_loss / qty
                     effective_sl = round(entry_price - corrected_dist, 2)
                     is_safe_applied = True
-            except Exception:
-                pass  # qty may not be defined if safe_sl_mode parsing failed above
+            except Exception as e:
+                self.logger.error(
+                    f"[SAFE_SL POST-ASSERT] Could not verify SL cap for {symbol}: {e}. "
+                    f"effective_sl={effective_sl:.2f}. Proceeding with caution."
+                )
 
         return effective_sl, is_safe_applied, raw_sl
 

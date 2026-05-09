@@ -388,7 +388,35 @@ class TradeTracker:
         """Clear pending entries file atomically."""
         self.save_pending_entries({})
 
-    # --- Candle State Persistence (Phase 2) ---
+    # --- Candle State Persistence (Phase 2) ---    def save_candle_state_batch(self, all_states: dict):
+        """Persist candle history for multiple symbols in a single atomic write."""
+        with self.lock:
+            import os
+            candles_dir = os.path.join(os.path.dirname(self.filepath), "candles")
+            os.makedirs(candles_dir, exist_ok=True)
+            filepath = os.path.join(candles_dir, "candles_batch.json")
+            dir_name = os.path.dirname(os.path.abspath(filepath))
+            temp_path = None
+            try:
+                import tempfile
+                with tempfile.NamedTemporaryFile(mode='w', dir=dir_name, delete=False, suffix='.tmp') as tf:
+                    import json
+                    from datetime import datetime
+                    json.dump({
+                        "last_updated": datetime.now().isoformat(),
+                        "states": all_states
+                    }, tf, indent=2, default=str)
+                    temp_path = tf.name
+                os.replace(temp_path, filepath)
+            except Exception as e:
+                self.logger.error(f"Error saving candle state batch: {e}")
+                if temp_path and os.path.exists(temp_path):
+                    try:
+                        os.remove(temp_path)
+                    except Exception:
+                        pass
+
+
 
     def save_candle_state(self, symbol: str, bars_data: list):
         """
@@ -429,10 +457,29 @@ class TradeTracker:
         Returns list of OHLCV bars.
         """
         with self.lock:
+            import os, json
             candles_dir = os.path.join(os.path.dirname(self.filepath), "candles")
-            filepath = os.path.join(candles_dir, f"{symbol.replace(' ', '_')}.json")
+            batch_filepath = os.path.join(candles_dir, "candles_batch.json")
+            if os.path.exists(batch_filepath):
+                try:
+                    with open(batch_filepath, 'r') as f:
+                        data = json.load(f)
+                        if "states" in data and symbol in data["states"]:
+                            return data["states"][symbol]
+                except Exception as e:
+                    self.logger.error(f"Error loading from candle state batch: {e}")
 
+            # Fallback to individual file
+            filepath = os.path.join(candles_dir, f"{symbol.replace(' ', '_')}.json")
             if not os.path.exists(filepath):
+                return []
+
+            try:
+                with open(filepath, 'r') as f:
+                    data = json.load(f)
+                    return data.get("bars", [])
+            except Exception as e:
+                self.logger.error(f"Error loading candle state for {symbol}: {e}")
                 return []
 
             try:

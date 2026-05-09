@@ -691,13 +691,16 @@ class LiveTrader:
                 for symbol, ltp in batch_results.items():
                     if ltp:
                         self._ltp_cache[symbol] = (ltp, now)
-
             except RateLimitExceededError as e:
                 self._consecutive_ltp_failures += 1
                 self.logger.critical(f"LTP POLLING HALTED: {e}")
-                if self._consecutive_ltp_failures == 1: # only alert once per burst
-                    self.telegram._send_to_owner(f"🚨 <b>Rate Limit Exceeded</b>\nLTP polling paused. Retrying with backoff.")
-                return # skip this poll tick
+                if self._consecutive_ltp_failures == 1:
+                    self.telegram._send_to_owner(f"🚨 <b>Rate Limit Exceeded</b>
+LTP polling paused. Retrying with backoff.")
+                backoff = min(30, 2 ** self._consecutive_ltp_failures)
+                self.logger.warning(f"Rate limit hit. Backing off {backoff}s.")
+                import time as _t; _t.sleep(backoff)
+                return
             except Exception as e:
                 self.logger.error(f"Error in batch LTP polling: {e}")
 
@@ -850,6 +853,9 @@ class LiveTrader:
                     # [DATA-01] Starvation / Health Guard
                     if not last_row.get('is_healthy', True):
                         self.logger.warning(f"[{symbol}] Skipping signal scan: candle at {last_row['datetime']} is STARVED (insufficient ticks)")
+                        continue
+                    if current_candle_time >= closed_candle_cutoff:
+                        self.logger.debug(f"[{symbol}] Skipping: candle at {current_candle_time} not closed (cutoff {closed_candle_cutoff})")
                         continue
 
                     # Prevent duplicate processing
@@ -1620,6 +1626,7 @@ class LiveTrader:
             if test_ltp and test_ltp > 0:
                 self.logger.info("✅ Reconnect Resync: Connectivity verified.")
                 self.telegram._send("⚡ <b>Reconnect Resync</b>\nAPI connectivity restored. Caches cleared, fresh data will be fetched in next sweep.")
+                self._is_reconnecting = False
             else:
                 self.logger.warning("⚠️ Reconnect Resync: Connectivity still unreliable.")
         except Exception as e:
@@ -1719,7 +1726,7 @@ class LiveTrader:
             if exit_mode == 'single_lot' and len(targets) > 0:
                 ltp = self._get_ltp_cached(symbol)
                 if ltp is not None:
-                    target_idx = self.config.get('strategy', {}).get('single_lot_exit_target', 2) - 1
+                    target_idx = self.config.get('strategy', {}).get('single_lot_exit_target', 3) - 1
                     for tp in range(trail_state, target_idx):
                         if tp < len(targets) and ltp >= targets[tp]:
                             entry_price = float(trade['entry_price'])
@@ -1734,8 +1741,10 @@ class LiveTrader:
                                 if new_sl_price > current_sl:
                                     self.logger.info(f"📈 TRAILING SL to ₹{new_sl_price} (TP{tp+1} crossed @ ₹{ltp})")
                                     # Modified actual SL order if live
-                                    if sl_order_id and not (self.paper_trading and sl_order_id.startswith('PAPER_')):
-                                        self.om.modify_sl_order(sl_order_id, new_sl_price, symbol, new_qty=trade['remaining_qty'])
+                                    if sl_order_id and not self.paper_trading:
+                                self.om.modify_sl_order
+                            elif sl_order_id and self.paper_trading and not sl_order_id.startswith(\'PAPER_\'):
+                                self.om.modify_sl_order(sl_order_id, new_sl_price, symbol, new_qty=trade['remaining_qty'])
 
                                     exit_orders['current_sl'] = new_sl_price
                                     exit_orders['trail_state'] = tp + 1
@@ -1766,7 +1775,7 @@ class LiveTrader:
 
                 if trailed_sl_above_entry:
                     if exit_mode == 'single_lot':
-                        target_idx = self.config.get('strategy', {}).get('single_lot_exit_target', 2) - 1
+                        target_idx = self.config.get('strategy', {}).get('single_lot_exit_target', 3) - 1
                         target_price = targets[target_idx] if target_idx < len(targets) else targets[-1]
                         if ltp >= target_price:
                             # Target takes priority
@@ -1794,7 +1803,7 @@ class LiveTrader:
 
                 # Check single lot final target
                 if exit_mode == 'single_lot':
-                    target_idx = self.config.get('strategy', {}).get('single_lot_exit_target', 2) - 1
+                    target_idx = self.config.get('strategy', {}).get('single_lot_exit_target', 3) - 1
                     target_price = targets[target_idx] if target_idx < len(targets) else targets[-1]
                     if ltp >= target_price:
                         self._close_paper_trade_hit_target(trade, target_idx, target_price, ltp)
@@ -2459,11 +2468,14 @@ class LiveTrader:
                             json.dump(heartbeat_data, hf)
 
                         # PHASE 2: Periodic Candle State Backup (every heartbeat)
+                        all_states = {}
                         for underlying in self.underlyings:
                             for symbol in self.tracked_options.get(underlying, {}):
                                 history = self.candle_builder.get_history(symbol)
                                 if history:
-                                    self.tracker.save_candle_state(symbol, history)
+                                    all_states[symbol] = history
+                        if all_states:
+                            self.tracker.save_candle_state_batch(all_states)
                     except Exception as e:
                         self.logger.warning(f"Heartbeat write failed: {e}")
 
@@ -2730,7 +2742,8 @@ class LiveTrader:
                     self._monitor_active_trades()
                     last_order_poll = now
 
-                consecutive_poll_failures = 0
+                if consecutive_poll_failures > 0:
+                    consecutive_poll_failures = max(0, consecutive_poll_failures - 1)
                 time.sleep(1)
 
             except Exception as e:
