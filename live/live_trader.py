@@ -25,6 +25,13 @@ IST = pytz.timezone('Asia/Kolkata')
 MARKET_OPEN_IST = datetime_time(9, 15)    # 9:15 AM IST
 MARKET_CLOSE_IST = datetime_time(15, 30)  # 3:30 PM IST
 
+def _ist_now() -> datetime:
+    """Return current IST time as a timezone-naive datetime.
+    All timestamps in this module MUST use this helper to ensure
+    IST consistency regardless of the server's system timezone.
+    """
+    return datetime.now(IST).replace(tzinfo=None)
+
 # Operational Kill Switch — Touch this file to force graceful shutdown
 # e.g., touch /tmp/rsi_bot_kill (Linux) or %TEMP%\rsi_bot_kill (Windows)
 KILL_SWITCH_FILE = os.path.join(tempfile.gettempdir(), 'rsi_bot_kill')
@@ -143,12 +150,29 @@ class LiveTrader:
 
         # Hardening: LTP & Starvation trackers
         self._consecutive_ltp_failures = 0
-        self._last_bar_close_time = datetime.now()
+        self._last_bar_close_time = _ist_now()
         self._starvation_alert_sent = False
 
         # Phase 07 Resilience Tracking
         self._is_reconnecting = False
         self._emergency_halt_active = False
+
+        # [BUG-SLIPPAGE-CFG-01] Resolve slippage abort threshold at init
+        self.slippage_abort_pct = config.get('risk', {}).get('slippage_abort_pct')
+        if self.slippage_abort_pct is None:
+            self.slippage_abort_pct = config.get('risk', {}).get('gap_abort_pct', 0.04)
+            self.logger.warning(
+                f"'slippage_abort_pct' not set in config['risk']. "
+                f"Falling back to gap_abort_pct={self.slippage_abort_pct:.2%}. "
+                f"Add 'slippage_abort_pct' to your config YAML."
+            )
+        if 'gap_abort_pct' in config.get('risk', {}):
+            self.logger.warning("'gap_abort_pct' is deprecated. Rename to 'slippage_abort_pct' in config YAML.")
+        self.logger.info(f"Slippage abort threshold: {self.slippage_abort_pct:.2%}")
+
+        # [BUG-STALE-LTP-COUNTER-01] LTP failure window for flapping detection
+        from collections import deque
+        self._ltp_failure_window = deque(maxlen=10)
 
 
     def _get_tradeable_indices(self):
@@ -204,6 +228,20 @@ class LiveTrader:
     def _initialize_day(self):
         """Initialize trading for the day."""
         from utils.expiry_calendar import run_startup_assertions
+
+        # [BUG-TZ-01] Verify server resolves to IST+5:30
+        try:
+            ist_offset = datetime.now(IST).utcoffset().total_seconds()
+            if ist_offset != 19800:
+                self.logger.critical(f"\U0001f6a8 IST offset mismatch: expected 19800s, got {ist_offset}s")
+                self.telegram._send_to_owner(
+                    f"\U0001f6a8 <b>Timezone Error</b>\nServer IST offset: {ist_offset}s (expected 19800s).\n"
+                    f"Timestamps will be wrong. Fix server timezone."
+                )
+            else:
+                self.logger.info("\u2705 IST timezone assertion passed (UTC+5:30)")
+        except Exception as e:
+            self.logger.critical(f"\U0001f6a8 IST timezone check failed: {e}")
 
         # P-08 / P-20 / BUG-05: Clear memory caches from previous days to prevent leaks
         self._candle_cache.clear()
@@ -367,7 +405,8 @@ class LiveTrader:
                         continue
 
                     try:
-                        status = self.client.get_order_status(order_id)
+                        self.rate_limiter.acquire()  # [BUG-RATELIMIT-01]
+            status = self.client.get_order_status(order_id)
                         if not status:
                             self.logger.warning(f"Could not check order {order_id} for {symbol}")
                             continue
@@ -415,10 +454,24 @@ class LiveTrader:
             return None
         idx = df['datetime'].searchsorted(pd.Timestamp(t), side='right') - 1
         return None if idx < 0 else df.iloc[idx]
+    def _get_confirmed_candle(self, spot_df, bar_interval_minutes=15):
+        """[BUG-FORMING-01] Return the most recent fully closed candle.
+        Ensures signal logic and direction filters do not use noise from forming bars.
+        """
+        if spot_df is None or spot_df.empty:
+            return None
+        now = _ist_now()
+        # idx is the forming candle (latest at or before now)
+        idx = spot_df['datetime'].searchsorted(pd.Timestamp(now), side='right') - 1
+        if idx < 0: return None
+        # Confirmed candle is exactly one bar behind forming
+        confirmed_idx = idx - 1
+        return None if confirmed_idx < 0 else spot_df.iloc[confirmed_idx]
+
 
     def _get_ltp_cached(self, symbol: str):
         """P-20: Return LTP from 1-second TTL cache, or fetch fresh from broker."""
-        now = datetime.now()
+        now = _ist_now()
         cached = self._ltp_cache.get(symbol)
         if cached:
             price, ts = cached
@@ -522,7 +575,7 @@ class LiveTrader:
         days_back = max(7, (warmup_candles // 25) + 4)
 
         # Start from market open today
-        now = datetime.now()
+        now = _ist_now()
         market_open = now.replace(hour=9, minute=15, second=0, microsecond=0)
 
         # Go back safely across weekends and holidays
@@ -534,7 +587,7 @@ class LiveTrader:
 
     def _update_option_universe(self, warmup_start=None):
         """Update tracked option universe based on current spot price for ALL indices."""
-        now = datetime.now()
+        now = _ist_now()
         if warmup_start is None:
             warmup_start = self._get_warmup_start_time()
 
@@ -562,7 +615,7 @@ class LiveTrader:
                 self.logger.warning(f"Spot data for {underlying} missing 'datetime' column. Skipping.")
                 continue
 
-            current_spot_row = self._get_latest_candle(spot_df, now)
+            current_spot_row = self._get_latest_candle(spot_df, now)  # FORMING_OK (strike selection)
             if current_spot_row is None:
                 self.logger.warning(f"No spot candle found for {underlying} at current time.")
                 continue
@@ -630,7 +683,7 @@ class LiveTrader:
         if warmup_start is None:
             warmup_start = self._get_warmup_start_time()
 
-        now = datetime.now()
+        now = _ist_now()
         first_underlying = self.underlyings[0] if self.underlyings else None
         if not first_underlying:
             return False
@@ -639,7 +692,8 @@ class LiveTrader:
 
         try:
             spot_df = self.dm.get_spot_candles(spot_symbol, warmup_start, now, refresh=True)
-            latest_candle = self._get_latest_candle(spot_df, now)
+            # [BUG-FORMING-01] Use confirmed bar only to detect 15m boundary close
+            latest_candle = self._get_confirmed_candle(spot_df)
             if latest_candle is None: return False
             latest_candle_time = latest_candle['datetime']
 
@@ -675,9 +729,10 @@ class LiveTrader:
                 # BATCH LTP POLLING (Hardening Step 1)
                 batch_results = self.client.get_batch_ltp(symbols)
                 self._consecutive_ltp_failures = 0  # reset on successful batch call
+                self._ltp_failure_window.append(True)
 
                 # Capture accurate capture-time for boundary alignment
-                now = datetime.now()
+                now = _ist_now()
                 for symbol, ltp in batch_results.items():
                     if ltp:
                         closed_bar = self.candle_builder.feed(symbol, ltp, timestamp=now)
@@ -692,19 +747,26 @@ class LiveTrader:
                                 self.telegram._send_to_owner(f"🚨 <b>Trading Halted</b>\nCritical data gap (>2hr) for {symbol}. Restart required.")
 
                             # Starvation tracking: update last closure time
-                            self._last_bar_close_time = datetime.now()
+                            self._last_bar_close_time = _ist_now()
                             self._starvation_alert_sent = False
 
                             # Save state immediately on closure (Phase 2 atomic persistence)
                             self.tracker.save_candle_state(symbol, self.candle_builder.get_history(symbol))
 
                 # Update LTP cache for other methods to use
-                now = datetime.now()
+                now = _ist_now()
                 for symbol, ltp in batch_results.items():
                     if ltp:
                         self._ltp_cache[symbol] = (ltp, now)
             except RateLimitExceededError as e:
                 self._consecutive_ltp_failures += 1
+                self._ltp_failure_window.append(False)
+                # [BUG-STALE-LTP-COUNTER-01] Flapping detection
+                if self._ltp_failure_window.count(False) >= 6 and not self._halt_connectivity_alert_sent:
+                    self.telegram._send_to_owner("\u26a0\ufe0f LTP instability: >60% failure rate in last 10 polls.")
+                    self._halt_connectivity_alert_sent = True
+                if len(self._ltp_failure_window) >= 5 and all(list(self._ltp_failure_window)[-5:]):
+                    self._halt_connectivity_alert_sent = False
                 self.logger.critical(f"LTP POLLING HALTED: {e}")
                 if self._consecutive_ltp_failures == 1:
                     self.telegram._send_to_owner(
@@ -779,7 +841,7 @@ class LiveTrader:
             return
 
         self.logger.info("Processing Strategy Logic...")
-        now = datetime.now()
+        now = _ist_now()
 
         alert_candidates = []  # New alerts to place pending orders
         is_tradable = (self.start_time <= now.time() <= self.end_time)
@@ -838,7 +900,8 @@ class LiveTrader:
                 continue
 
             try:
-                current_spot_row = self._get_latest_candle(spot_df, now)
+                # [BUG-FORMING-01] Anchor strategy logic to confirmed (fully closed) spot price
+                current_spot_row = self._get_confirmed_candle(spot_df)
                 if current_spot_row is not None:
                     spot_price = current_spot_row['close']
             except Exception as e:
@@ -1086,6 +1149,7 @@ class LiveTrader:
         # For real orders only: check fill status BEFORE attempting cancel
         if order_id and not (self.paper_trading and order_id.startswith('PAPER_')):
             try:
+                self.rate_limiter.acquire()  # [BUG-RATELIMIT-01]
                 status = self.client.get_order_status(order_id)
                 if status and is_order_filled(status.get('status', '')):
                     # Order already filled — activate trade instead of cancelling
@@ -1183,6 +1247,7 @@ class LiveTrader:
             order_id = pending.get('order_id', '')
             if order_id and not order_id.startswith('PAPER_'):
                 try:
+                    self.rate_limiter.acquire()  # [BUG-RATELIMIT-01]
                     status_info = self.client.get_order_status(order_id)
                     if status_info and is_order_filled(status_info.get('status', '').upper()):
                         fill_price = status_info.get('fill_price') or pending['trigger_price']
@@ -1299,7 +1364,7 @@ class LiveTrader:
                     'expiry_date': expiry_date,
                     'strike': candidate['strike'],
                     'opt_type': candidate['opt_type'],
-                    'placed_at': datetime.now()
+                    'placed_at': _ist_now()
                 }
                 # Persist to disk for crash recovery
                 self.tracker.save_pending_entries(self.pending_entries)
@@ -1347,7 +1412,7 @@ class LiveTrader:
 
         # ─── GAP-FILL GUARD ────────────────────────────────────────────────
         gap_pct = (fill_price - trigger_price) / trigger_price if trigger_price > 0 else 0
-        ABORT_THRESHOLD = self.config['strategy'].get('gap_abort_pct', 0.04)
+        ABORT_THRESHOLD = self.slippage_abort_pct  # [BUG-SLIPPAGE-CFG-01] resolved at init
         RECALC_THRESHOLD = self.config['strategy'].get('gap_recalc_pct', 0.02)
 
         if gap_pct > ABORT_THRESHOLD:
@@ -1374,7 +1439,17 @@ class LiveTrader:
                 self.logger.critical(f"[GAP-RECALC] alert_range={alert_range:.2f} <= 0 for {original_symbol}. "
                                      f"Using original signal targets to prevent inverted orders.")
                 signal = {**signal}  # copy only — do NOT mutate
-                # Skip recalc entirely; fall through with original targets
+                # [BUG-INV-01] Guard: original SL inverted relative to fill_price
+                orig_sl = float(signal.get('sl', 0))
+                if orig_sl >= fill_price:
+                    self.logger.critical(
+                        f"[ABORT] Inverted SL {orig_sl} >= fill {fill_price} on fallthrough. "
+                        f"Aborting trade for {original_symbol}."
+                    )
+                    self.om.place_exit_order(trading_symbol, qty, trading_symbol, "INVERTED_SL_ABORT")
+                    self.strategy.consume_alert(original_symbol)
+                    self.telegram._send_to_owner(f"\U0001f6a8 Inverted SL abort: {original_symbol}")
+                    return
             else:
                 new_sl = round(fill_price - alert_range, 2)
 
@@ -1583,6 +1658,7 @@ class LiveTrader:
                     continue
 
                 # LIVE TRADING: Check actual broker order status
+                self.rate_limiter.acquire()  # [BUG-RATELIMIT-01]
                 order_status = self.client.get_order_status(order_id)
 
                 if order_status is None:
@@ -1737,6 +1813,17 @@ class LiveTrader:
                 self.logger.info("✅ Reconnect Resync: Connectivity verified.")
                 self.telegram._send("⚡ <b>Reconnect Resync</b>\nAPI connectivity restored. Caches cleared, fresh data will be fetched in next sweep.")
                 self._is_reconnecting = False
+                # [BUG-RECONNECT-01] Run post-resync state sanitization
+                try:
+                    self.logger.info("[RECONNECT] Running post-resync state sanitization...")
+                    self._sanitize_restored_state(reason="RECONNECT")
+                    self.logger.info("[RECONNECT] State sanitization complete.")
+                except Exception as sanitize_err:
+                    self.logger.critical(f"[RECONNECT] State sanitization failed: {sanitize_err}")
+                    self.telegram._send_to_owner(
+                        f"🚨 <b>Reconnect Sanitize Failed</b>\n{sanitize_err}\n"
+                        f"Bot continuing but positions may be stale."
+                    )
             else:
                 self.logger.warning("⚠️ Reconnect Resync: Connectivity still unreliable.")
         except Exception as e:
@@ -1984,7 +2071,8 @@ class LiveTrader:
             if not self.paper_trading:
                 # 1. Check SL Order Status
                 if sl_order_id:
-                    sl_status = self.client.get_order_status(sl_order_id)
+                    self.rate_limiter.acquire()  # [BUG-RATELIMIT-01]
+                sl_status = self.client.get_order_status(sl_order_id)
                     if sl_status:
                         sl_state = sl_status.get('status', '').upper()
 
@@ -2096,6 +2184,7 @@ class LiveTrader:
                     if exit_mode == 'multi_lot' and tp_level <= trail_state:
                         continue
 
+                    self.rate_limiter.acquire()  # [BUG-RATELIMIT-01]
                     t_status = self.client.get_order_status(tid)
                     if t_status:
                         s = t_status.get('status', '').upper()
@@ -2360,6 +2449,7 @@ class LiveTrader:
             # Verify cancellation
             time.sleep(1)
             try:
+                self.rate_limiter.acquire()  # [BUG-RATELIMIT-01]
                 status = self.client.get_order_status(order_id)
                 order_status = (status or {}).get('status', '').upper()
                 if order_status in ('CANCELLED', 'REJECTED', 'COMPLETE', 'COMPLETED'):
@@ -2475,8 +2565,10 @@ class LiveTrader:
         elif 'SQ_OFF' in reason or 'DAILY_LOSS' in reason:
             self.telegram.square_off(symbol, ltp, entry_price, remaining_qty, reason)
 
-    def _sanitize_restored_state(self):
-        """[INTE-01] Validates active trades on startup against current LTP."""
+    def _sanitize_restored_state(self, reason: str = "STARTUP"):
+        """[INTE-01] Validates active trades against current LTP.
+        Called at startup and after reconnect to detect SL/TP breaches during downtime.
+        """
         active_trades = self.tracker.get_active_trades()
         if not active_trades:
             return
@@ -2517,7 +2609,7 @@ class LiveTrader:
         self._sanitize_restored_state()
 
         # Heartbeat counter
-        last_heartbeat = datetime.now()
+        last_heartbeat = _ist_now()
         heartbeat_interval = 60  # Show status every 60 seconds
 
         # Outage detection variables
@@ -2530,18 +2622,18 @@ class LiveTrader:
         # Groww has API rate limits; 5s is sufficient for a 15-min candle strategy.
         ORDER_POLL_INTERVAL = self.config.get('trading', {}).get('order_poll_interval_seconds', 5)
         # Forces monitoring to run on the first loop iteration, then every ORDER_POLL_INTERVAL seconds
-        last_order_poll = datetime.now() - timedelta(seconds=ORDER_POLL_INTERVAL + 1)
+        last_order_poll = _ist_now() - timedelta(seconds=ORDER_POLL_INTERVAL + 1)
 
         ltp_poll_interval = 2
-        last_poll_at = datetime.now() - timedelta(seconds=ltp_poll_interval + 1)
+        last_poll_at = _ist_now() - timedelta(seconds=ltp_poll_interval + 1)
 
         import json
-        session_start_time = datetime.now()
+        session_start_time = _ist_now()
 
         # Main loop
         while True:
             try:
-                now = datetime.now()
+                now = _ist_now()
                 warmup_start = self._get_warmup_start_time()
 
                 # Kill switch check — touch /tmp/rsi_bot_kill to trigger graceful shutdown
@@ -2694,6 +2786,7 @@ class LiveTrader:
                             exit_order_id = exit_resp['groww_order_id']
                             time.sleep(tier1_wait)  # Allow time to fill
                             try:
+                                self.rate_limiter.acquire()  # [BUG-RATELIMIT-01]
                                 exit_status = self.client.get_order_status(exit_order_id)
                                 if exit_status and is_order_filled(exit_status.get('status', '')):
                                     actual_fill = exit_status.get('fill_price')
@@ -2705,6 +2798,7 @@ class LiveTrader:
                         if not actual_fill and exit_order_id and tier2_wait > 0:
                             try:
                                 time.sleep(tier2_wait)   # additional wait for settlement
+                                self.rate_limiter.acquire()  # [BUG-RATELIMIT-01]
                                 retry_status = self.client.get_order_status(exit_order_id)
                                 if retry_status and is_order_filled(retry_status.get('status', '')):
                                     actual_fill = retry_status.get('fill_price')
@@ -2778,6 +2872,7 @@ class LiveTrader:
                             exit_order_id = exit_resp['groww_order_id']
                             time.sleep(tier1_wait)  # Allow time to fill
                             try:
+                                self.rate_limiter.acquire()  # [BUG-RATELIMIT-01]
                                 exit_status = self.client.get_order_status(exit_order_id)
                                 if exit_status and is_order_filled(exit_status.get('status', '')):
                                     actual_fill = exit_status.get('fill_price')
@@ -2789,6 +2884,7 @@ class LiveTrader:
                         if not actual_fill and exit_order_id and tier2_wait > 0:
                             try:
                                 time.sleep(tier2_wait)   # additional wait for settlement
+                                self.rate_limiter.acquire()  # [BUG-RATELIMIT-01]
                                 retry_status = self.client.get_order_status(exit_order_id)
                                 if retry_status and is_order_filled(retry_status.get('status', '')):
                                     actual_fill = retry_status.get('fill_price')
@@ -2891,7 +2987,7 @@ class LiveTrader:
                 self.logger.error(f"Main loop error [{consecutive_poll_failures}/10]: {e}", exc_info=True)
 
                 if consecutive_poll_failures >= 10:
-                    now = datetime.now()
+                    now = _ist_now()
                     if last_outage_alert_time is None or (now - last_outage_alert_time).total_seconds() > 300:
                         self.telegram._send("🚨 <b>NET OUTAGE</b> detected.")
                         last_outage_alert_time = now
