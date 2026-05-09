@@ -248,7 +248,19 @@ class ExpiryRSIBreakout:
                      continue
 
                  curr_val = float(rsi_arr[valid_idx[-1]])
-                 prev_val = float(rsi_arr[valid_idx[-2]]) if len(valid_idx) > 1 else None
+
+                 last_valid_idx = valid_idx[-1]
+                 second_valid_idx = valid_idx[-2] if len(valid_idx) > 1 else None
+
+                 if second_valid_idx is not None:
+                     gap = last_valid_idx - second_valid_idx
+                     if gap > 1:
+                         self.logger.debug(f"[{symbol}] RSI gap of {gap} candles — prev_rsi suppressed.")
+                         results[symbol] = (curr_val, None)
+                         continue
+                     prev_val = float(rsi_arr[second_valid_idx])
+                 else:
+                     prev_val = None
 
                  results[symbol] = (
                       curr_val if not np.isnan(curr_val) else None,
@@ -292,7 +304,13 @@ class ExpiryRSIBreakout:
             from datetime import datetime
             from utils.historical_lot_sizes import get_historical_lot_size
 
-            qty = 1  # Fallback pre-initialization
+            # Fallback pre-initialization using first index's lot_size (SAFE-04)
+            indices_cfg = self.config.get('indices', {})
+            fallback_underlying = list(indices_cfg.keys())[0] if indices_cfg else 'NIFTY'
+            fallback_lots = self.config['strategy'].get('lots_per_trade', 1)
+            fallback_lot_size = indices_cfg.get(fallback_underlying, {}).get('lot_size', 50)
+            qty = fallback_lots * fallback_lot_size
+
             try:
                 parts = symbol.split('-')
                 underlying = parts[1] if len(parts) > 1 else 'NIFTY'

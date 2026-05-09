@@ -104,6 +104,10 @@ class LiveTrader:
         self.max_position_pct = config['risk'].get('max_position_pct', 0.20)
         self.logger.info(f"Position size cap: {self.max_position_pct*100:.0f}% of available balance")
 
+        max_consec = config.get('risk', {}).get('max_consecutive_losses', 3)
+        if max_consec >= 10:
+            self.logger.warning(f"WARNING: max_consecutive_losses={max_consec} is very high — circuit breaker effectively disabled. Recommended: 3.")
+
         # P-08: Incremental candle cache — full download once, append-only after
         self._candle_cache: dict = {}   # symbol → pd.DataFrame
 
@@ -1179,6 +1183,16 @@ class LiveTrader:
             order_id = pending.get('order_id', '')
             if order_id and not order_id.startswith('PAPER_'):
                 try:
+                    status_info = self.client.get_order_status(order_id)
+                    if status_info and is_order_filled(status_info.get('status', '').upper()):
+                        fill_price = status_info.get('fill_price') or pending['trigger_price']
+                        self.logger.warning("SQ-OFF: Order already filled — activating trade for immediate square-off in next cycle.")
+                        self._activate_trade_from_pending(pending, fill_price=float(fill_price))
+                        continue
+                except Exception as e:
+                    self.logger.error(f"Error checking status for {order_id} at sq-off: {e}")
+
+                try:
                     result = self.om.cancel_order(order_id)
                     if result:
                         self.logger.info(f"Cancelled pending entry {order_id} for {symbol}")
@@ -1594,8 +1608,29 @@ class LiveTrader:
                     trigger_price = float(pending['trigger_price'])
                     slippage_pct = (fill_price - trigger_price) / trigger_price
                     max_slip = self.config.get('risk', {}).get('max_slippage_pct', 0.02)
+                    slippage_abort_pct = self.config.get('risk', {}).get('slippage_abort_pct', self.config.get('risk', {}).get('gap_abort_pct', 0.04))
 
-                    if slippage_pct > max_slip:
+                    if slippage_pct > slippage_abort_pct:
+                        self.logger.warning(
+                            f"🚨 SLIPPAGE ABORT for {symbol}: {slippage_pct:.2%} "
+                            f"(Limit: {slippage_abort_pct:.2%}). Fill: {fill_price}, Trigger: {trigger_price}"
+                        )
+                        original_symbol = pending.get('original_symbol', symbol)
+                        trading_symbol = pending.get('trading_symbol', symbol)
+                        self.om.place_exit_order(trading_symbol, broker_filled_qty, trading_symbol, "SLIPPAGE_ABORT")
+                        self.strategy.consume_alert(original_symbol)
+                        self.telegram._send(
+                            f"🚨 <b>Slippage Abort</b>\n"
+                            f"Symbol: <code>{symbol}</code>\n"
+                            f"Slippage: {slippage_pct:.2%}\n"
+                            f"Fill: ₹{fill_price} | Trigger: ₹{trigger_price}\n"
+                            f"Reason: SLIPPAGE_ABORT"
+                        )
+                        del self.pending_entries[symbol]
+                        self.tracker.save_pending_entries(self.pending_entries)
+                        self._save_strategy_state()
+                        continue
+                    elif slippage_pct > max_slip:
                         self.logger.warning(
                             f"🚨 HIGH SLIPPAGE detected for {symbol}: {slippage_pct:.2%} "
                             f"(Limit: {max_slip:.2%}). Fill: {fill_price}, Trigger: {trigger_price}"
@@ -1689,6 +1724,8 @@ class LiveTrader:
         self.logger.info("⚡ Disconnect detected. Initiating Reconnect Resync Path...")
         self._ltp_cache.clear()
         self._candle_cache.clear()
+        self._spot_cache.clear()
+        self.logger.info("Cleared spot cache on reconnect.")
         self._is_reconnecting = True
 
         # Verify connectivity
@@ -2124,18 +2161,16 @@ class LiveTrader:
 
         # CRITICAL FIX: Calculate partial P&L for paper trades too
         # Use actual trade quantities, not config — config may differ from entry-time values
-        total_qty = int(trade.get('qty', 0))
-        lot_size = self.config['indices'].get(underlying, {}).get('lot_size', 1)
-        lots = total_qty // lot_size if lot_size > 0 else 1
-        lots_per_tp = max(1, lots // 3)    # floor to at least 1 to avoid zero exit
-        remainder = total_qty - (2 * lots_per_tp * lot_size)
-        if remainder < 0:
-            remainder = lot_size   # fallback: 1 lot
-
+        remaining_at_entry = int(trade.get('qty', 0))
+        current_remaining = TradeTracker.get_remaining_qty(trade)
         if tp_level == 1 or tp_level == 2:
-            partial_qty = lots_per_tp * lot_size
+            # Exit up to 1/3 of original qty, capped at what's actually remaining
+            partial_qty = min(max(1, remaining_at_entry // 3), current_remaining)
         else:
-            partial_qty = int(trade.get('remaining_qty', remainder))   # use actual remaining at TP3
+            partial_qty = current_remaining  # TP3: exit everything left
+
+        if partial_qty <= 0:
+            return
 
         partial_profit = (fill_price - float(trade['entry_price'])) * partial_qty
         self.daily_pnl += partial_profit
@@ -2329,7 +2364,7 @@ class LiveTrader:
 
     def _update_circuit_breaker(self, trade_pnl: float, reason: str) -> None:
         """V11-P-02: Update consecutive loss counter and activate circuit breaker if needed."""
-        max_consec = self.config.get('risk', {}).get('max_consecutive_losses', 999)
+        max_consec = self.config.get('risk', {}).get('max_consecutive_losses', 3)
 
         if trade_pnl < 0 or 'SL' in reason:
             self.consecutive_losses += 1
@@ -2471,6 +2506,10 @@ class LiveTrader:
         ORDER_POLL_INTERVAL = self.config.get('trading', {}).get('order_poll_interval_seconds', 5)
         # Forces monitoring to run on the first loop iteration, then every ORDER_POLL_INTERVAL seconds
         last_order_poll = datetime.now() - timedelta(seconds=ORDER_POLL_INTERVAL + 1)
+
+        static_poll_interval = 2
+        last_ltp_poll = datetime.now() - timedelta(seconds=static_poll_interval + 1)
+
         import json
         session_start_time = datetime.now()
 
@@ -2494,11 +2533,13 @@ class LiveTrader:
                         os.remove(KILL_SWITCH_FILE)
                     except Exception:
                         pass
-                    # The prompt suggested `break` here assuming a finally block existed.
-                    # Since square-off is handled IN the loop at `self.sq_off_time`, we
-                    # trigger it by advancing the square off time to midnight, ensuring
-                    # it triggers synchronously on this exact iteration.
-                    self.sq_off_time = datetime_time(0, 0)
+                    self._cancel_all_pending_entries_at_sqoff()
+                    for trade in self.tracker.get_active_trades():
+                        remaining_qty = TradeTracker.get_remaining_qty(trade)
+                        if remaining_qty > 0:
+                            self.om.place_exit_order(trade['symbol'], remaining_qty, trade.get('trading_symbol', trade['symbol']), 'KILL_SWITCH')
+                    self.telegram._send("🛑 Kill switch activated. All positions squared off.")
+                    break
 
                 # HEARTBEAT
                 if (now - last_heartbeat).total_seconds() >= heartbeat_interval:
@@ -2792,9 +2833,9 @@ class LiveTrader:
 
                 # Poll LTPs for CandleBuilder (P-21) every 2s
                 # Throttled by internal LTP cache and loop cadence
-                static_poll_interval = 2
-                if int(now.timestamp()) % static_poll_interval == 0:
+                if (now - last_ltp_poll).total_seconds() >= static_poll_interval:
                     self._poll_option_ltps()
+                    last_ltp_poll = now
 
                 # Candle Starvation Check (Hardening Step 3)
                 # If no bar has closed in 20 minutes (15m interval + 5m buffer), alert.

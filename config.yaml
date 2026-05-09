@@ -45,8 +45,8 @@ reporting:
   slippage_ticks_per_side: 1        # Extra price points to add for slippage (Example: 1)
 
 risk:
-  consecutive_loss_cooldown: 2 # Days to stop trading after max losses hit (Example: 2)
-  max_consecutive_losses: 3    # Total losses allowed before a cooldown (Example: 3)
+  max_consecutive_losses: 3     # Circuit breaker: halt after N consecutive losses
+  consecutive_loss_cooldown: 0  # 0 = no new trades for rest of session
   max_loss_per_day: 6000       # Reverted for testing: Rs.6000
   # For paper/backtest stress-test: can use 6000
   max_slippage_pct: 0.02       # [SLIP-01] Max allowed slippage (2%) before entry block or exit alert
