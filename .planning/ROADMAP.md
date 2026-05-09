@@ -55,4 +55,25 @@ Plans:
 **Plans:** 0 plans
 
 Plans:
-- [ ] TBD (run /gsd-plan-phase 14 to break down)
+### Phase 15: Hardening Live Trading Reliability [COMPLETED 2026-05-09]
+- [x] Implement emergency flatten hardening (live SL/target cancellation).
+- [x] Fix SQ-OFF pending-entry race conditions.
+- [x] Implement deterministic LTP polling cadence.
+- [x] Hardening reconnect cache resync.
+- [x] Implement live slippage abort gate.
+- [x] Fix paper partial-exit quantity logic.
+- Deliverable: Robust live trading bot with zero-incident safety guardrails.
+
+**Goal:** Implement a series of critical safety and reliability patches to ensure robust live trading performance.
+**Requirements:**
+- Emergency flatten must cancel all live orders before exiting.
+- Pending orders must be status-checked before cancellation at SQ-OFF.
+- LTP polling must be time-delta based, not modulo based.
+- Caches must be cleared on reconnect.
+- High slippage must abort trades immediately.
+- Paper trading must handle partial exits correctly for all lot sizes.
+**Depends on:** Phase 14
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (run /gsd-plan-phase 15 to break down)

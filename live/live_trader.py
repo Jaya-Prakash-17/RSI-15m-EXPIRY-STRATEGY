@@ -1723,9 +1723,11 @@ class LiveTrader:
         """
         self.logger.info("⚡ Disconnect detected. Initiating Reconnect Resync Path...")
         self._ltp_cache.clear()
+        self.logger.info("Reconnect Resync: LTP cache cleared.")
         self._candle_cache.clear()
+        self.logger.info("Reconnect Resync: Candle cache cleared.")
         self._spot_cache.clear()
-        self.logger.info("Cleared spot cache on reconnect.")
+        self.logger.info("Reconnect Resync: Spot cache cleared.")
         self._is_reconnecting = True
 
         # Verify connectivity
@@ -1748,20 +1750,34 @@ class LiveTrader:
         self.logger.critical("🚨 EMERGENCY FLATTEN TRIGGERED: Prolonged Disconnect detected.")
         self.telegram._send("🚨 <b>EMERGENCY FLATTEN</b>\nProlonged disconnect detected. Attempting to close all positions via MARKET orders.")
 
-        active_trades = self.tracker.get_active_trades()
+        active_trades = list(self.tracker.get_active_trades())
         if not active_trades:
             self.logger.info("Emergency Flatten: No active positions to close.")
             return
 
         for trade in active_trades:
-            symbol = trade['symbol']
-            qty = trade['remaining_qty']
-            self.logger.warning(f"Emergency Flatten: Closing {qty} units of {symbol} (MARKET)")
+            symbol = trade.get('symbol')
+            trade_id = trade.get('trade_id')
+            qty = TradeTracker.get_remaining_qty(trade)
 
+            if qty <= 0:
+                continue
+
+            # 1. CANCEL ALL LIVE SL/TARGET ORDERS FIRST
+            exit_orders = trade.get('exit_orders', {})
+            for order_type, order_id in exit_orders.items():
+                if order_id and not str(order_id).startswith('PAPER_'):
+                    try:
+                        self.logger.info(f"Emergency Flatten: Cancelling {order_type} ({order_id}) for {symbol}")
+                        self.om.cancel_order(order_id)
+                    except Exception as e:
+                        self.logger.critical(f"🚨 Emergency Flatten: FAILED TO CANCEL {order_type} for {symbol}: {e}")
+
+            # 2. PLACE EMERGENCY MARKET EXIT
+            self.logger.warning(f"Emergency Flatten: Closing {qty} units of {symbol} (MARKET)")
             try:
-                # Fire MARKET SELL directly to broker (bypassing normal trackers for speed/certainty)
                 resp = self.client.place_order(
-                    symbol=symbol,
+                    symbol=trade.get('trading_symbol', symbol),
                     qty=qty,
                     side='SELL',
                     order_type='MARKET',
@@ -1771,6 +1787,15 @@ class LiveTrader:
             except Exception as e:
                 self.logger.error(f"Emergency Flatten: FAILED for {symbol}: {e}")
                 self.telegram._send(f"🚨 <b>Emergency Flatten FAILED</b> for {symbol}\nManual intervention required!")
+
+            # 3. FORCE CLOSE TRACKER STATE
+            try:
+                # Use current LTP if available, otherwise entry_price as placeholder
+                ltp = self._get_ltp_cached(symbol) or trade.get('entry_price', 0)
+                self.tracker.close_trade(trade_id, ltp, "EMERGENCY_FLATTEN", trade.get('partial_pnl', 0))
+                self.logger.info(f"Emergency Flatten: Tracker state closed for {trade_id}")
+            except Exception as e:
+                self.logger.error(f"Emergency Flatten: Error closing tracker for {trade_id}: {e}")
 
         # Stop the bot after emergency flatten to prevent rogue re-entries
         self.logger.critical("Emergency Flatten complete. Activating Kill Switch.")
@@ -2507,8 +2532,8 @@ class LiveTrader:
         # Forces monitoring to run on the first loop iteration, then every ORDER_POLL_INTERVAL seconds
         last_order_poll = datetime.now() - timedelta(seconds=ORDER_POLL_INTERVAL + 1)
 
-        static_poll_interval = 2
-        last_ltp_poll = datetime.now() - timedelta(seconds=static_poll_interval + 1)
+        ltp_poll_interval = 2
+        last_poll_at = datetime.now() - timedelta(seconds=ltp_poll_interval + 1)
 
         import json
         session_start_time = datetime.now()
@@ -2833,9 +2858,9 @@ class LiveTrader:
 
                 # Poll LTPs for CandleBuilder (P-21) every 2s
                 # Throttled by internal LTP cache and loop cadence
-                if (now - last_ltp_poll).total_seconds() >= static_poll_interval:
+                if (now - last_poll_at).total_seconds() >= ltp_poll_interval:
                     self._poll_option_ltps()
-                    last_ltp_poll = now
+                    last_poll_at = now
 
                 # Candle Starvation Check (Hardening Step 3)
                 # If no bar has closed in 20 minutes (15m interval + 5m buffer), alert.
