@@ -239,19 +239,20 @@ class ExpiryRSIBreakout:
             rsi_data = self.calculate_wilder_rsi(prices)
 
             if rsi_data is not None and len(rsi_data) > 0:
-                 # BUG: Series[-1] fails if index is numeric. Convert to array for position indexing.
+                 # Convert to array for safe position indexing (Series[-1] fails on numeric index)
                  rsi_arr = np.asarray(rsi_data)
-                 arr_len = len(rsi_arr)
-                 curr_val = rsi_arr[-1]
+                 valid_idx = np.where(~np.isnan(rsi_arr))[0]
 
-                 if arr_len < n + 2:
-                     results[symbol] = (float(curr_val) if not np.isnan(curr_val) else None, None)
+                 if len(valid_idx) == 0:
+                     results[symbol] = (None, None)
                      continue
 
-                 prev_val = rsi_arr[-2] if arr_len > 1 else np.nan
+                 curr_val = float(rsi_arr[valid_idx[-1]])
+                 prev_val = float(rsi_arr[valid_idx[-2]]) if len(valid_idx) > 1 else None
+
                  results[symbol] = (
-                      float(curr_val) if not np.isnan(curr_val) else None,
-                      float(prev_val) if not np.isnan(prev_val) else None
+                      curr_val if not np.isnan(curr_val) else None,
+                      prev_val if (prev_val is not None and not np.isnan(prev_val)) else None
                  )
             else:
                  results[symbol] = (None, None)

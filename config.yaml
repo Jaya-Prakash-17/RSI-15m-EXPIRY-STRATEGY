@@ -65,7 +65,7 @@ resilience:
 strategy:
   alert_validity_candles: 1        # [BUG-04] Entry allowed only on T+1 (15 min after alert)
   direction_filter_enabled: true   # Enabled to filter out counter-trend trades and reduce drawdown
-  exit_mode: single_lot          # Multi-lot scaling reduces drawdown significantly
+  exit_mode: multi_lot          # Multi-lot scaling reduces drawdown significantly
   lots_per_trade: 3          # Reverted to 3 to match profitable history
   max_correlated_positions: 2    # Max positions allowed across different indices (Example: 2)
   max_lots: 5                   # Hard cap on total lots allowed per index (Example: 5)

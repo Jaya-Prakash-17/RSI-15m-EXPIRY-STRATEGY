@@ -199,3 +199,16 @@ class CandleBuilder:
         if symbol not in self.bars:
             return []
         return list(self.bars[symbol])
+
+    def get_last_bar_close_time(self, symbol):
+        """Return the datetime of the most recently closed bar for this symbol.
+
+        Used by _process_strategy_logic to anchor the closed-candle cutoff
+        to the actual CandleBuilder boundary instead of a fragile heuristic.
+
+        Returns:
+            datetime or None if no closed bars exist for symbol.
+        """
+        if symbol not in self.bars or not self.bars[symbol]:
+            return None
+        return self.bars[symbol][-1]['datetime']

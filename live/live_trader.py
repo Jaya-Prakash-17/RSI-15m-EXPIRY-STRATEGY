@@ -37,6 +37,7 @@ GAP_FILL_ABORT_PCT         = 0.04  # Abort trade if fill > trigger × (1 + this)
 GAP_FILL_RECALC_PCT        = 0.02  # Recalculate SL/targets if fill > this
 PAPER_GAP_THRESHOLD_PCT    = 0.02  # Gap simulation threshold in paper mode
 LTP_CACHE_TTL_SECONDS      = 1     # Re-use LTP if fetched within last second
+SPOT_CACHE_TTL_SECONDS     = 10    # BUG-05: Re-use spot data if fetched within 10s
 
 class LiveTrader:
     def __init__(self, config):
@@ -108,6 +109,12 @@ class LiveTrader:
 
         # P-20: LTP TTL cache — avoids redundant API calls within 1s window
         self._ltp_cache: dict = {}      # symbol → (price, timestamp)
+
+        # BUG-05: Spot data cache — avoid full HTTP round-trip every loop tick
+        self._spot_cache: dict = {}     # spot_symbol → (df, fetch_timestamp)
+
+        # BUG-06: Guard against mid-execution duplicate activation
+        self._activating_now: set = set()
 
         # P-05: Market halt detection state
         self._market_halted: bool = False
@@ -194,9 +201,10 @@ class LiveTrader:
         """Initialize trading for the day."""
         from utils.expiry_calendar import run_startup_assertions
 
-        # P-08 / P-20: Clear memory caches from previous days to prevent leaks
+        # P-08 / P-20 / BUG-05: Clear memory caches from previous days to prevent leaks
         self._candle_cache.clear()
         self._ltp_cache.clear()
+        self._spot_cache.clear()
 
         # [RECO-02] Restore state instead of clearing if it's the same day
         raw_bars = self.tracker.get_last_processed_bars()
@@ -695,8 +703,10 @@ class LiveTrader:
                 self._consecutive_ltp_failures += 1
                 self.logger.critical(f"LTP POLLING HALTED: {e}")
                 if self._consecutive_ltp_failures == 1:
-                    self.telegram._send_to_owner(f"🚨 <b>Rate Limit Exceeded</b>
-LTP polling paused. Retrying with backoff.")
+                    self.telegram._send_to_owner(
+                        f"🚨 <b>Rate Limit Exceeded</b>\n"
+                        f"LTP polling paused. Retrying with backoff."
+                    )
                 backoff = min(30, 2 ** self._consecutive_ltp_failures)
                 self.logger.warning(f"Rate limit hit. Backing off {backoff}s.")
                 import time as _t; _t.sleep(backoff)
@@ -774,22 +784,36 @@ LTP polling paused. Retrying with backoff.")
 
 
         # [CONC-01] Parallel Spot Ingestion for all underlyings
+        # BUG-05: Check spot cache first, only fetch stale entries
         from concurrent.futures import ThreadPoolExecutor, as_completed
         spot_data_map = {}
+        underlyings_to_fetch = []
 
-        with ThreadPoolExecutor(max_workers=len(self.underlyings)) as executor:
-            futures = {
-                executor.submit(self.dm.get_spot_candles, self.spot_symbols.get(u, u), warmup_start, now, refresh=True): u
-                for u in self.underlyings
-            }
+        for u in self.underlyings:
+            spot_symbol = self.spot_symbols.get(u, u)
+            cached = self._spot_cache.get(spot_symbol)
+            if cached and (now - cached[1]).total_seconds() < SPOT_CACHE_TTL_SECONDS:
+                spot_data_map[u] = cached[0]
+            else:
+                underlyings_to_fetch.append(u)
 
+        if underlyings_to_fetch:
+            with ThreadPoolExecutor(max_workers=len(underlyings_to_fetch)) as executor:
+                futures = {
+                    executor.submit(self.dm.get_spot_candles, self.spot_symbols.get(u, u), warmup_start, now, refresh=True): u
+                    for u in underlyings_to_fetch
+                }
 
-            for future in as_completed(futures):
-                u = futures[future]
-                try:
-                    spot_data_map[u] = future.result()
-                except Exception as e:
-                    self.logger.error(f"[CONC-01] Parallel fetch failed for {u}: {e}")
+                for future in as_completed(futures):
+                    u = futures[future]
+                    try:
+                        df = future.result()
+                        spot_data_map[u] = df
+                        # BUG-05: Store in cache
+                        spot_symbol = self.spot_symbols.get(u, u)
+                        self._spot_cache[spot_symbol] = (df, now)
+                    except Exception as e:
+                        self.logger.error(f"[CONC-01] Parallel fetch failed for {u}: {e}")
 
         # Process each underlying index
         _bars_to_persist: dict = {}
@@ -825,12 +849,8 @@ LTP polling paused. Retrying with backoff.")
             symbol_candle_data = {}   # {symbol: (df, last_row, current_candle_time)}
             symbols_closes = {}       # {symbol: np.array of close prices}
 
-            if self.prev_closed_candle_time:
-                closed_candle_cutoff = self.prev_closed_candle_time + timedelta(seconds=30)
-            elif self.last_candle_time:
-                closed_candle_cutoff = self.last_candle_time - timedelta(seconds=1)
-            else:
-                closed_candle_cutoff = now - timedelta(minutes=15)
+            # BUG-02: closed_candle_cutoff is now per-symbol, anchored to
+            # CandleBuilder's actual bar boundary. The old +30s heuristic is removed.
 
             for symbol in list(self.tracked_options[underlying].keys()):
                 try:
@@ -854,8 +874,16 @@ LTP polling paused. Retrying with backoff.")
                     if not last_row.get('is_healthy', True):
                         self.logger.warning(f"[{symbol}] Skipping signal scan: candle at {last_row['datetime']} is STARVED (insufficient ticks)")
                         continue
-                    if current_candle_time >= closed_candle_cutoff:
-                        self.logger.debug(f"[{symbol}] Skipping: candle at {current_candle_time} not closed (cutoff {closed_candle_cutoff})")
+
+                    # BUG-02: Anchor closed-bar cutoff to CandleBuilder's actual boundary
+                    bar_end = self.candle_builder.get_last_bar_close_time(symbol)
+                    if bar_end is None:
+                        continue  # no closed bar yet for this symbol
+                    cutoff = bar_end + timedelta(seconds=5)  # 5s grace only
+                    if current_candle_time < bar_end:
+                        continue  # stale bar
+                    if current_candle_time >= cutoff:
+                        self.logger.debug(f"[{symbol}] Skipping: candle at {current_candle_time} not closed (cutoff {cutoff})")
                         continue
 
                     # Prevent duplicate processing
@@ -918,12 +946,17 @@ LTP polling paused. Retrying with backoff.")
                                 try:
                                     from datetime import date
                                     today = datetime.now().date()
-                                    today_spot = spot_df[spot_df['datetime'].dt.date == today]
-                                    if len(today_spot) < 2:
-                                        self.logger.debug(f"[{symbol}] Direction filter: insufficient today candles ({len(today_spot)}). Skipping filter.")
+                                    # BUG-03: Filter to CLOSED candles only (exclude forming bar)
+                                    if self.prev_closed_candle_time:
+                                        closed_spot = spot_df[spot_df['datetime'] < self.prev_closed_candle_time]
                                     else:
-                                        prev_spot = today_spot.iloc[-2]['close']
-                                        curr_spot = today_spot.iloc[-1]['close']
+                                        closed_spot = spot_df
+                                    today_closed = closed_spot[closed_spot['datetime'].dt.date == today]
+                                    if len(today_closed) < 2:
+                                        self.logger.debug(f"[{symbol}] Direction filter: insufficient closed candles ({len(today_closed)}). Skipping filter.")
+                                    else:
+                                        prev_spot = today_closed.iloc[-2]['close']
+                                        curr_spot = today_closed.iloc[-1]['close']
                                         opt_type = symbol.split('-')[4]
 
                                         if opt_type == 'CE' and curr_spot < prev_spot:
@@ -1510,10 +1543,29 @@ LTP polling paused. Retrying with backoff.")
                             f"🎯 [PAPER] PENDING ENTRY FILLED: {symbol} @ ₹{simulated_fill} "
                             f"(trigger: ₹{trigger_price})"
                         )
-                        self._activate_trade_from_pending(pending, fill_price=simulated_fill)
-                        del self.pending_entries[symbol]
-                        self.tracker.save_pending_entries(self.pending_entries)
-                        self._save_strategy_state()
+                        # BUG-06: Guard against duplicate activation
+                        if symbol in self._activating_now:
+                            self.logger.warning(f"[{symbol}] Activation already in progress. Skipping.")
+                            continue
+                        self._activating_now.add(symbol)
+                        try:
+                            self._activate_trade_from_pending(pending, fill_price=simulated_fill)
+                            del self.pending_entries[symbol]
+                            self.tracker.save_pending_entries(self.pending_entries)
+                            self._save_strategy_state()
+                        except Exception as e:
+                            self.logger.critical(
+                                f"[{symbol}] Activation failed mid-execution: {e}. "
+                                f"Sending Telegram alert. Manual intervention required."
+                            )
+                            self.telegram._send_to_owner(
+                                f"🚨 PARTIAL ACTIVATION for {symbol}. "
+                                f"Check Groww for orphaned SL/target orders."
+                            )
+                            del self.pending_entries[symbol]  # always remove to prevent retry loop
+                            self.tracker.save_pending_entries(self.pending_entries)
+                        finally:
+                            self._activating_now.discard(symbol)
                     continue
 
                 # LIVE TRADING: Check actual broker order status
@@ -1556,11 +1608,30 @@ LTP polling paused. Retrying with backoff.")
                         )
 
                     self.logger.info(f"🎯 PENDING ENTRY FILLED: {symbol} @ ₹{fill_price} (Qty: {broker_filled_qty})")
-                    self._activate_trade_from_pending(pending, fill_price=fill_price, override_qty=broker_filled_qty)
 
-                    del self.pending_entries[symbol]
-                    self.tracker.save_pending_entries(self.pending_entries)
-                    self._save_strategy_state()
+                    # BUG-06: Guard against duplicate activation
+                    if symbol in self._activating_now:
+                        self.logger.warning(f"[{symbol}] Activation already in progress. Skipping.")
+                        continue
+                    self._activating_now.add(symbol)
+                    try:
+                        self._activate_trade_from_pending(pending, fill_price=fill_price, override_qty=broker_filled_qty)
+                        del self.pending_entries[symbol]
+                        self.tracker.save_pending_entries(self.pending_entries)
+                        self._save_strategy_state()
+                    except Exception as e:
+                        self.logger.critical(
+                            f"[{symbol}] Activation failed mid-execution: {e}. "
+                            f"Sending Telegram alert. Manual intervention required."
+                        )
+                        self.telegram._send_to_owner(
+                            f"🚨 PARTIAL ACTIVATION for {symbol}. "
+                            f"Check Groww for orphaned SL/target orders."
+                        )
+                        del self.pending_entries[symbol]  # always remove to prevent retry loop
+                        self.tracker.save_pending_entries(self.pending_entries)
+                    finally:
+                        self._activating_now.discard(symbol)
 
 
                 elif status in ['PARTIALLY_FILLED', 'PARTIAL']:
@@ -1742,9 +1813,9 @@ LTP polling paused. Retrying with backoff.")
                                     self.logger.info(f"📈 TRAILING SL to ₹{new_sl_price} (TP{tp+1} crossed @ ₹{ltp})")
                                     # Modified actual SL order if live
                                     if sl_order_id and not self.paper_trading:
-                                self.om.modify_sl_order
-                            elif sl_order_id and self.paper_trading and not sl_order_id.startswith(\'PAPER_\'):
-                                self.om.modify_sl_order(sl_order_id, new_sl_price, symbol, new_qty=trade['remaining_qty'])
+                                        self.om.modify_sl_order(sl_order_id, new_sl_price, symbol, new_qty=trade['remaining_qty'])
+                                    elif sl_order_id and self.paper_trading and not sl_order_id.startswith('PAPER_'):
+                                        self.om.modify_sl_order(sl_order_id, new_sl_price, symbol, new_qty=trade['remaining_qty'])
 
                                     exit_orders['current_sl'] = new_sl_price
                                     exit_orders['trail_state'] = tp + 1
@@ -2712,7 +2783,10 @@ LTP polling paused. Retrying with backoff.")
                     self._market_halted = False
                     self._halt_alert_sent = False
                 # Process Candle Logic
-                if self._poll_candle_close(warmup_start):
+                # BUG-04: Gate strategy processing behind EITHER spot candle close
+                # OR CandleBuilder closed bars, so we never scan on non-close ticks
+                spot_close_detected = self._poll_candle_close(warmup_start)
+                if spot_close_detected or self._pending_closed_bars:
                     self._update_option_universe(warmup_start)
                     self._process_strategy_logic(warmup_start)
 

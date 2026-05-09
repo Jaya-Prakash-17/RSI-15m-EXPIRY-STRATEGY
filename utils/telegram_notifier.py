@@ -189,6 +189,7 @@ class TelegramNotifier:
         validity_mins = alert_validity_candles * 15
         expiry_str = str(expiry_date) if expiry_date else "today"
 
+        candle_word = "candle" if alert_validity_candles == 1 else "candles"
         msg = (
             f"🔔 <b>TRADE SETUP ALERT</b>\n"
             f"━━━━━━━━━━━━━━━━━━━\n"
@@ -204,7 +205,7 @@ class TelegramNotifier:
             f"🎯 Target 2:   <b>₹{t2:.2f}</b>  (+{round(t2-alert_high,2):.2f} | {t2_r}R)\n"
             f"🎯 Target 3:   <b>₹{t3:.2f}</b>  (+{round(t3-alert_high,2):.2f} | {t3_r}R)\n\n"
             f"──── INFO ────\n"
-            f"⏳ Valid for next <b>{validity_mins} mins</b> ({alert_validity_candles} candle)\n"
+            f"⏳ Valid for next <b>{validity_mins} mins</b> ({alert_validity_candles} {candle_word})\n"
             f"📋 Symbol: <code>{symbol}</code>"
         )
         self._send(msg)
@@ -338,8 +339,17 @@ class TelegramNotifier:
         pnl = round((price - entry_price) * qty, 2)
         icon = "🟢" if pnl >= 0 else "🔴"
 
+        REASON_MAP = {
+            "SQ_OFF": "End-of-Day Square-Off",
+            "DAILY_LOSS_LIMIT": "Daily Loss Limit Reached",
+            "MANUAL": "Manual Close",
+            "GAP_FILL_ABORT": "Entry Aborted (Gap)",
+            "RECONNECT_CLOSE": "Closed on Reconnect",
+        }
+        display_reason = REASON_MAP.get(reason, reason)
+
         msg = (
-            f"🔔 <b>POSITION CLOSED — {reason}</b>\n"
+            f"🔔 <b>POSITION CLOSED — {display_reason}</b>\n"
             f"━━━━━━━━━━━━━━━━━━━\n"
             f"📌 <code>{symbol}</code>\n"
             f"🕐 {self._now()}\n\n"
@@ -404,8 +414,8 @@ class TelegramNotifier:
             f"🕐 {self._now()}\n\n"
             f"📉 Daily P&L:  <b>₹{daily_pnl:+.2f}</b>\n"
             f"🔴 Limit:      ₹{limit:.2f}\n\n"
-            f"🛑 Bot will not take new trades today.\n"
-            f"Close any open positions manually."
+            f"🛑 Bot has auto-closed all open positions via MARKET EXIT.\n"
+            f"No further action needed — verify fills on Groww."
         )
         self._send_to_owner(msg)
 
@@ -417,6 +427,50 @@ class TelegramNotifier:
             f"🕐 {self._now()}\n\n"
             f"Keyboard Interrupt (Ctrl+C) detected.\n"
             f"Bot has stopped. <b>Trades remain OPEN</b> for manual management."
+        )
+        self._send_to_owner(msg)
+
+    def gap_fill_aborted(self, symbol: str, expected_price: float, fill_price: float, gap_pct: float):
+        """Fires when _activate_trade_from_pending aborts entry due to gap > GAP_FILL_ABORT_PCT."""
+        msg = (
+            f"🚫 <b>ENTRY ABORTED — GAP TOO LARGE</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━\n"
+            f"📌 <code>{symbol}</code>\n"
+            f"🕐 {self._now()}\n\n"
+            f"⚡ Expected fill:  ₹{expected_price:.2f}\n"
+            f"📉 Actual fill:    ₹{fill_price:.2f}\n"
+            f"📊 Gap:            <b>{gap_pct:.1f}%</b> (limit: 4%)\n\n"
+            f"🛑 Trade NOT activated. No position open. No action needed."
+        )
+        self._send_to_owner(msg)
+
+    def gap_fill_recalculated(self, symbol: str, old_sl: float, new_sl: float,
+                               old_targets: list, new_targets: list, fill_price: float, gap_pct: float):
+        """Fires when R:R is recalculated due to gap > GAP_FILL_RECALC_PCT."""
+        msg = (
+            f"⚠️ <b>ENTRY GAP — SL & TARGETS RECALCULATED</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━\n"
+            f"📌 <code>{symbol}</code>\n"
+            f"🕐 {self._now()}\n\n"
+            f"📉 Filled at ₹{fill_price:.2f}  (gap: {gap_pct:.1f}%)\n\n"
+            f"──── OLD vs NEW ────\n"
+            f"🔴 SL:  ₹{old_sl:.2f} → <b>₹{new_sl:.2f}</b>\n"
+            f"🎯 T1:  ₹{old_targets[0]:.2f} → <b>₹{new_targets[0]:.2f}</b>\n"
+            f"🎯 T2:  ₹{old_targets[1]:.2f} → <b>₹{new_targets[1]:.2f}</b>\n"
+            f"🎯 T3:  ₹{old_targets[2]:.2f} → <b>₹{new_targets[2]:.2f}</b>\n\n"
+            f"⚠️ Trade is LIVE with adjusted levels. Check Groww SL order."
+        )
+        self._send_to_owner(msg)
+
+    def bot_reconnected(self, downtime_seconds: float):
+        """Fires after _reconnect_resync() completes successfully."""
+        msg = (
+            f"🔄 <b>BOT RECONNECTED</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━\n"
+            f"🕐 {self._now()}\n\n"
+            f"⏱️ Downtime: <b>{downtime_seconds:.0f}s</b>\n"
+            f"✅ State re-synced from broker.\n"
+            f"🔍 Check open positions are intact."
         )
         self._send_to_owner(msg)
 
