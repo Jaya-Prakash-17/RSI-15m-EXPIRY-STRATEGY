@@ -91,6 +91,7 @@ trading:
   order_poll_interval_seconds: 5 # How often to check for order completion (Example: 5)
   paper_trading: true            # Use simulated execution vs real orders (Example: true)
   sqoff_fill_wait_seconds: 8     # Total time to wait for SQ_OFF exit order to fill (Example: 8)
+  api_calls_per_second: 5.0      # [BUG-RATELIMIT-INIT-01] Shared rate limiter budget (default: 5.0)
   trade_log_file: logs/PAPER_TRADES_LOG.csv # File path for recording trades (Example: logs/LIVE_LOG.csv)
   window:
     start: '09:45'           # Broker connection start time (Example: '09:15')

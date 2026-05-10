@@ -14,6 +14,7 @@ from execution.order_manager import OrderManager, is_order_filled
 from execution.trade_tracker import TradeTracker
 from strategy.expiry_rsi_breakout import ExpiryRSIBreakout
 from core.groww_client import GrowwClient
+from core.rate_limiter import RateLimiter
 from utils.trade_logger import TradeLogger
 from utils.telegram_notifier import TelegramNotifier
 from utils.symbol_parser import detect_underlying
@@ -50,6 +51,7 @@ class LiveTrader:
     def __init__(self, config):
         self.logger = logging.getLogger("LiveTrader")
         self.client = GrowwClient()
+        self.rate_limiter = RateLimiter(calls_per_second=config.get('trading', {}).get('api_calls_per_second', 5.0))
         self.config = config
         self.dm = DataManager(config, client=self.client)
 
@@ -406,7 +408,7 @@ class LiveTrader:
 
                     try:
                         self.rate_limiter.acquire()  # [BUG-RATELIMIT-01]
-            status = self.client.get_order_status(order_id)
+                        status = self.client.get_order_status(order_id)
                         if not status:
                             self.logger.warning(f"Could not check order {order_id} for {symbol}")
                             continue
@@ -1397,6 +1399,20 @@ class LiveTrader:
         trigger_price = float(pending['trigger_price'])
         fill_price = float(fill_price)
 
+        # [BUG-ZERO-QTY-SL-01] Zero-qty hard reject
+        if qty <= 0:
+            self.logger.critical(
+                f"[ABORT] _activate_trade_from_pending called with qty={qty} for {original_symbol}. "
+                f"order_id={order_id}. This is a data integrity error — no trade will be created."
+            )
+            self.telegram._send_to_owner(
+                f"🚨 <b>Zero-Qty Trade Abort</b>\n"
+                f"Symbol: <code>{original_symbol}</code>\n"
+                f"qty={qty} — possible partial-fill data corruption. No position opened."
+            )
+            self.strategy.consume_alert(original_symbol)
+            return
+
         # [SAFE-01] Zero-Fill Hard Reject (Bug #8)
         if fill_price <= 0:
             self.logger.critical(f"🛑 REJECTED: Order {order_id} has fill_price={fill_price}. Data corruption risk.")
@@ -1498,8 +1514,40 @@ class LiveTrader:
         # Consume the alert
         self.strategy.consume_alert(original_symbol)
 
+        # [BUG-INV-SL-NORMAL-PATH-01] Guard: inverted SL on normal (non-gap) path
+        if signal.get('sl', 0) >= fill_price:
+            self.logger.critical(
+                f"[ABORT] Inverted SL {signal.get('sl')} >= fill {fill_price} on normal path. "
+                f"Aborting trade for {original_symbol}."
+            )
+            self.om.place_exit_order(trading_symbol, qty, trading_symbol, "INVERTED_SL_ABORT")
+            self.strategy.consume_alert(original_symbol)
+            self.telegram._send_to_owner(
+                f"🚨 Inverted SL abort (normal path): {original_symbol} "
+                f"sl={signal.get('sl')} fill={fill_price}"
+            )
+            return
+
         # Place SL order — CRITICAL: retry up to 3 times, emergency exit if all fail
         sl_price = self._round_to_tick(signal['sl'], underlying)
+
+        # [BUG-INV-SL-NORMAL-PATH-01] Secondary defense: assert SL < fill after tick rounding
+        try:
+            assert sl_price < fill_price, (
+                f"Tick-rounded SL {sl_price} >= fill {fill_price} for {original_symbol}"
+            )
+        except AssertionError:
+            self.logger.critical(
+                f"[ABORT] Post-rounding inverted SL {sl_price} >= fill {fill_price}. "
+                f"Aborting trade for {original_symbol}."
+            )
+            self.om.place_exit_order(trading_symbol, qty, trading_symbol, "INVERTED_SL_ABORT")
+            self.telegram._send_to_owner(
+                f"🚨 Post-rounding inverted SL abort: {original_symbol} "
+                f"sl_price={sl_price} fill={fill_price}"
+            )
+            return
+
         sl_order_id = None
 
         for attempt in range(1, 4):
@@ -1545,7 +1593,7 @@ class LiveTrader:
             'qty': qty,
             'remaining_qty': qty,
             'entry_price': fill_price,
-            'entry_time': datetime.now().isoformat(),
+            'entry_time': _ist_now().isoformat(),
             'sl': sl_price,
             'targets': targets,
             # Order IDs for tracking
@@ -1627,6 +1675,18 @@ class LiveTrader:
                         else:
                             # Normal fill — at trigger price
                             simulated_fill = trigger_price
+
+                        # [BUG-PAPER-SLIPPAGE-01] Mirror live slippage abort in paper mode
+                        paper_slip_pct = (simulated_fill - trigger_price) / trigger_price if trigger_price > 0 else 0
+                        if paper_slip_pct > self.slippage_abort_pct:
+                            self.logger.warning(
+                                f"[PAPER] SLIPPAGE ABORT: {symbol} gap {paper_slip_pct:.2%} "
+                                f"> {self.slippage_abort_pct:.2%} threshold. Trade NOT activated."
+                            )
+                            self.strategy.consume_alert(pending.get('original_symbol', symbol))
+                            del self.pending_entries[symbol]
+                            self.tracker.save_pending_entries(self.pending_entries)
+                            continue
 
                         self.logger.info(
                             f"🎯 [PAPER] PENDING ENTRY FILLED: {symbol} @ ₹{simulated_fill} "
@@ -2052,7 +2112,7 @@ class LiveTrader:
                     self.daily_pnl += final_pnl
                     reason = "TP3_HIT"
                     trade['exit_price'] = tp3_fill
-                    trade['exit_time'] = datetime.now().isoformat()
+                    trade['exit_time'] = _ist_now().isoformat()
                     trade['reason'] = reason
                     trade['pnl'] = total_pnl
                     self.tracker.close_trade(trade_id, tp3_fill, reason, total_pnl)
@@ -2072,7 +2132,7 @@ class LiveTrader:
                 # 1. Check SL Order Status
                 if sl_order_id:
                     self.rate_limiter.acquire()  # [BUG-RATELIMIT-01]
-                sl_status = self.client.get_order_status(sl_order_id)
+                    sl_status = self.client.get_order_status(sl_order_id)
                     if sl_status:
                         sl_state = sl_status.get('status', '').upper()
 
@@ -2539,7 +2599,7 @@ class LiveTrader:
 
         # Update trade record with exit info
         trade['exit_price'] = ltp
-        trade['exit_time'] = datetime.now().isoformat()
+        trade['exit_time'] = _ist_now().isoformat()
         trade['reason'] = reason
         trade['pnl'] = total_pnl
 
@@ -2664,7 +2724,8 @@ class LiveTrader:
                     last_heartbeat = now
 
                     # [SAFE-02] Resilience: Check for prolonged disconnect
-                    poll_gap_seconds = (now - self.client.last_success_at).total_seconds()
+                    last_success = getattr(self.client, 'last_success_at', now)
+                    poll_gap_seconds = (now - last_success).total_seconds()
                     emer_threshold_seconds = self.config.get('resilience', {}).get('disconnect_emergency_threshold_mins', 10) * 60
 
 
@@ -2951,6 +3012,8 @@ class LiveTrader:
                 if spot_close_detected or self._pending_closed_bars:
                     self._update_option_universe(warmup_start)
                     self._process_strategy_logic(warmup_start)
+                    # Clear after processing to prevent duplicate scan on next tick
+                    self._pending_closed_bars.clear()
 
                 # Poll LTPs for CandleBuilder (P-21) every 2s
                 # Throttled by internal LTP cache and loop cadence
