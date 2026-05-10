@@ -63,6 +63,33 @@ class CandleBuilder:
 
         return True
 
+    def clear_continuity_flag(self, symbol):
+        """Reset continuity flags when data feed recovers."""
+        if symbol in self._continuity_broken_symbols:
+            self.logger.info(f"✅ Continuity restored for {symbol}")
+            self._continuity_broken_symbols.discard(symbol)
+            if not self._continuity_broken_symbols:
+                self.continuity_broken = False
+
+    def missed_candles(self, symbol, current_time=None):
+        """
+        Calculate number of missed intervals since the last closed bar.
+        Returns the count of consecutive missed 15m intervals.
+        """
+        if symbol not in self.bars or not self.bars[symbol]:
+            return 0
+
+        last_dt = self.bars[symbol][-1]['datetime']
+        now = current_time or datetime.now()
+        current_boundary = self._get_boundary_time(now)
+
+        if not current_boundary:
+            return 0
+
+        gap_minutes = (current_boundary - last_dt).total_seconds() / 60
+        missed = int(gap_minutes // self.interval_minutes) - 1
+        return max(0, missed)
+
     def warm_up_from_df(self, symbol, df):
         """Seed the builder with historical candles to avoid cold RSI."""
         if df is None or df.empty:

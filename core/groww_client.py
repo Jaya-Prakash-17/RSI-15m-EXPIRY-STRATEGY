@@ -465,6 +465,18 @@ class GrowwClient:
             self.logger.error(f"Failed to fetch balance: {e}")
             return None
 
+    def get_positions(self):
+        """Fetch open positions from the broker."""
+        try:
+            if not self.client: self._authenticate()
+            resp = self._safe_call(self.client.get_positions)
+            if hasattr(resp, 'get'):
+                return resp.get('positions', [])
+            return resp
+        except Exception as e:
+            self.logger.error(f"Failed to fetch positions: {e}")
+            return []
+
     def clear_instrument_cache(self):
         """Clear instrument cache. Call at session start or during testing."""
         self._instrument_cache.clear()

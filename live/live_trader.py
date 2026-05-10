@@ -15,6 +15,7 @@ from execution.trade_tracker import TradeTracker
 from strategy.expiry_rsi_breakout import ExpiryRSIBreakout
 from core.groww_client import GrowwClient
 from core.rate_limiter import RateLimiter
+import threading
 from utils.trade_logger import TradeLogger
 from utils.telegram_notifier import TelegramNotifier
 from utils.symbol_parser import detect_underlying
@@ -125,6 +126,7 @@ class LiveTrader:
 
         # BUG-05: Spot data cache — avoid full HTTP round-trip every loop tick
         self._spot_cache: dict = {}     # spot_symbol → (df, fetch_timestamp)
+        self._spot_lock = threading.Lock()
 
         # BUG-06: Guard against mid-execution duplicate activation
         self._activating_now: set = set()
@@ -171,6 +173,8 @@ class LiveTrader:
         if 'gap_abort_pct' in config.get('risk', {}):
             self.logger.warning("'gap_abort_pct' is deprecated. Rename to 'slippage_abort_pct' in config YAML.")
         self.logger.info(f"Slippage abort threshold: {self.slippage_abort_pct:.2%}")
+
+        self.slippage_abort_min_points = config.get('risk', {}).get('slippage_abort_min_points', 5)
 
         # [BUG-STALE-LTP-COUNTER-01] LTP failure window for flapping detection
         from collections import deque
@@ -743,10 +747,26 @@ class LiveTrader:
                             self.logger.debug(f"Local bar closed for {symbol} at {closed_bar['datetime']}")
 
                             # [CONT-02] Check for broken continuity
-                            if self.candle_builder.continuity_broken:   # only True for >2hr gaps
-                                self.circuit_breaker_active = True
-                                self.logger.critical(f"🛑 TRADING HALTED: Critical continuity gap (>2hr) for {symbol}.")
-                                self.telegram._send_to_owner(f"🚨 <b>Trading Halted</b>\nCritical data gap (>2hr) for {symbol}. Restart required.")
+                            missed = self.candle_builder.missed_candles(symbol, current_time=now)
+                            if not hasattr(self, 'circuit_breaker_active_symbols'):
+                                self.circuit_breaker_active_symbols = set()
+                            if not hasattr(self, '_continuity_alert_timestamps'):
+                                self._continuity_alert_timestamps = {}
+
+                            if missed >= 1:
+                                self.logger.warning(f"[{symbol}] DATA GAP DETECTED: missed {missed} candles ({missed * 15} min).")
+                                last_alert = self._continuity_alert_timestamps.get(symbol, 0)
+                                if (now.timestamp() - last_alert) > 3600:
+                                    self.telegram._send_to_owner(f"⚠️ <b>Data Gap Warning</b>\n{symbol} missed {missed} candles.")
+                                    self._continuity_alert_timestamps[symbol] = now.timestamp()
+
+                                if missed >= 2:
+                                    self.circuit_breaker_active_symbols.add(symbol)
+                                    self.logger.critical(f"🛑 SIGNAL HALTED for {symbol}: >=30m data gap.")
+                            else:
+                                if symbol in self.circuit_breaker_active_symbols:
+                                    self.circuit_breaker_active_symbols.discard(symbol)
+                                self.candle_builder.clear_continuity_flag(symbol)
 
                             # Starvation tracking: update last closure time
                             self._last_bar_close_time = _ist_now()
@@ -796,10 +816,35 @@ class LiveTrader:
         """
         total_unrealized = 0.0
         active_trades = self.tracker.get_active_trades()
+
+        # [BUG-MTM-QTY-MISMATCH-01] Verify with broker if live trading
+        broker_positions = {}
+        if not self.paper_trading and active_trades:
+            try:
+                self.rate_limiter.acquire()
+                positions = self.client.get_positions()
+                if positions:
+                    for pos in positions:
+                        # Depending on GrowwAPI, the symbol key might be different. usually 'groww_symbol' or 'contract_name'
+                        symbol = pos.get('groww_symbol') or pos.get('contract_name', '')
+                        broker_positions[symbol] = int(pos.get('net_quantity', 0))
+            except Exception as e:
+                self.logger.error(f"Failed to fetch broker positions for MTM check: {e}")
+
         for trade in active_trades:
-            ltp = self._get_ltp_cached(trade.get('symbol', ''))  # P-20 cached
+            symbol = trade.get('symbol', '')
+            remaining_qty = TradeTracker.get_remaining_qty(trade)
+
+            if not self.paper_trading and broker_positions:
+                broker_qty = broker_positions.get(symbol, 0)
+                if broker_qty != remaining_qty:
+                    self.logger.critical(
+                        f"🚨 MTM QTY MISMATCH for {symbol}: Local={remaining_qty}, Broker={broker_qty}. "
+                        f"MTM calculated using local qty, but integrity is broken."
+                    )
+
+            ltp = self._get_ltp_cached(symbol)  # P-20 cached
             if ltp and ltp > 0:
-                remaining_qty = TradeTracker.get_remaining_qty(trade)
                 entry_price = float(trade.get('entry_price', 0))
                 unrealized = (ltp - entry_price) * remaining_qty
                 total_unrealized += unrealized
@@ -859,7 +904,8 @@ class LiveTrader:
 
         for u in self.underlyings:
             spot_symbol = self.spot_symbols.get(u, u)
-            cached = self._spot_cache.get(spot_symbol)
+            with self._spot_lock:
+                cached = self._spot_cache.get(spot_symbol)
             if cached and (now - cached[1]).total_seconds() < SPOT_CACHE_TTL_SECONDS:
                 spot_data_map[u] = cached[0]
             else:
@@ -879,7 +925,8 @@ class LiveTrader:
                         spot_data_map[u] = df
                         # BUG-05: Store in cache
                         spot_symbol = self.spot_symbols.get(u, u)
-                        self._spot_cache[spot_symbol] = (df, now)
+                        with self._spot_lock:
+                            self._spot_cache[spot_symbol] = (df, now)
                     except Exception as e:
                         self.logger.error(f"[CONC-01] Parallel fetch failed for {u}: {e}")
 
@@ -930,6 +977,10 @@ class LiveTrader:
 
                     last_row_data = df.iloc[-1].to_dict()
                     last_row = pd.Series(last_row_data)
+
+                    if hasattr(self, 'circuit_breaker_active_symbols') and symbol in self.circuit_breaker_active_symbols:
+                        self.logger.debug(f"[{symbol}] Skipping: per-symbol circuit breaker active (data gap)")
+                        continue
 
                     # Thin Bar Guard
                     min_range = self.config['strategy'].get('min_alert_range_points', 0)
@@ -1247,7 +1298,15 @@ class LiveTrader:
         for symbol in list(self.pending_entries.keys()):
             pending = self.pending_entries[symbol]
             order_id = pending.get('order_id', '')
-            if order_id and not order_id.startswith('PAPER_'):
+            if order_id.startswith('PAPER_'):
+                if self.paper_trading:
+                    ltp = self.client.get_ltp(symbol)
+                    trigger = pending.get('trigger_price', 0)
+                    if ltp is not None and ltp >= trigger:
+                        self.logger.warning(f"SQ-OFF [PAPER]: LTP {ltp} >= Trigger {trigger} — activating for immediate sq-off.")
+                        self._activate_trade_from_pending(pending, fill_price=float(trigger))
+                        continue
+            else:
                 try:
                     self.rate_limiter.acquire()  # [BUG-RATELIMIT-01]
                     status_info = self.client.get_order_status(order_id)
@@ -1428,10 +1487,12 @@ class LiveTrader:
 
         # ─── GAP-FILL GUARD ────────────────────────────────────────────────
         gap_pct = (fill_price - trigger_price) / trigger_price if trigger_price > 0 else 0
+        gap_points = fill_price - trigger_price
         ABORT_THRESHOLD = self.slippage_abort_pct  # [BUG-SLIPPAGE-CFG-01] resolved at init
+        MIN_POINTS = self.slippage_abort_min_points
         RECALC_THRESHOLD = self.config['strategy'].get('gap_recalc_pct', 0.02)
 
-        if gap_pct > ABORT_THRESHOLD:
+        if gap_pct > ABORT_THRESHOLD and gap_points > MIN_POINTS:
             # Gap too large — R:R is completely broken, exit immediately
             self.logger.warning(
                 f"🚫 GAP-FILL ABORT: {original_symbol} | "
@@ -1510,9 +1571,6 @@ class LiveTrader:
         # ─── END GAP-FILL GUARD ────────────────────────────────────────────
 
         targets = [self._round_to_tick(t, underlying) for t in signal.get('targets', [])]
-
-        # Consume the alert
-        self.strategy.consume_alert(original_symbol)
 
         # [BUG-INV-SL-NORMAL-PATH-01] Guard: inverted SL on normal (non-gap) path
         if signal.get('sl', 0) >= fill_price:
@@ -1635,6 +1693,9 @@ class LiveTrader:
             qty=qty,
             mode=exit_mode
         )
+
+        # Consume the alert ONLY after all API calls succeed (idempotent, but guarantees no orphans)
+        self.strategy.consume_alert(original_symbol)
 
     def _monitor_pending_entries(self):
         """Monitor pending entry orders for fills.
@@ -1806,15 +1867,37 @@ class LiveTrader:
 
 
                 elif status in ['PARTIALLY_FILLED', 'PARTIAL']:
-                    # Update local tracking for partial fills
+                    # [BUG-PARTIAL-FILL-SL-UPDATE-01]
                     if broker_filled_qty > pending.get('filled_qty', 0):
                         self.logger.info(
                             f"⏳ PARTIAL FILL detected for {symbol}: {broker_filled_qty}/{pending['qty']} "
                             f"filled at avg ₹{broker_fill_price}"
                         )
-                        pending['filled_qty'] = broker_filled_qty
-                        pending['avg_fill_price'] = broker_fill_price
-                        self.tracker.save_pending_entries(self.pending_entries)
+                        # Activate trade immediately for the filled portion
+                        if symbol in self._activating_now:
+                            continue
+                        self._activating_now.add(symbol)
+                        try:
+                            self._activate_trade_from_pending(pending, fill_price=broker_fill_price, override_qty=broker_filled_qty)
+
+                            # Attempt to cancel the remaining unfilled portion of the SL-M order
+                            self.logger.info(f"Cancelling remainder of partially filled order {order_id} for {symbol}")
+                            self._cancel_with_retry(order_id, context=f"Cancel partial fill remainder for {symbol}")
+
+                            del self.pending_entries[symbol]
+                            self.tracker.save_pending_entries(self.pending_entries)
+                            self._save_strategy_state()
+                        except Exception as e:
+                            self.logger.critical(
+                                f"[{symbol}] Partial activation failed: {e}. "
+                                f"Manual intervention required."
+                            )
+                            self.telegram._send_to_owner(
+                                f"🚨 PARTIAL ACTIVATION FAILED for {symbol}.\n"
+                                f"Check Groww for orphaned SL/target orders."
+                            )
+                        finally:
+                            self._activating_now.discard(symbol)
 
                 elif status in ['REJECTED', 'CANCELLED', 'FAILED', 'EXPIRED']:
                     # Reconcile any partial fills before clearing (Stub Trade logic)
