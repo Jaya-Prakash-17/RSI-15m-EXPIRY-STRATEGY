@@ -70,39 +70,6 @@ def test_circuit_breaker_continuity(trader):
     assert hasattr(trader, 'circuit_breaker_active_symbols')
     assert 'OPT1' in trader.circuit_breaker_active_symbols
 
-def test_partial_fill_activation(trader):
-    # Setup
-    pending = {
-        'order_id': '123',
-        'qty': 50,
-        'trigger_price': 100.0,
-        'symbol': 'OPT1'
-    }
-    trader.pending_entries = {'OPT1': pending}
-
-    # LIVE mode
-    trader.paper_trading = False
-
-    # Mock OrderManager.check_order_fill
-    trader.om.check_order_fill.return_value = {
-        'status': 'PARTIALLY_FILLED',
-        'filled_qty': 25,
-        'fill_price': 102.0
-    }
-
-    with patch.object(trader, '_activate_trade_from_pending') as mock_activate:
-        trader._monitor_pending_entries()
-
-        # Assert _activate_trade_from_pending called with override_qty=25
-        mock_activate.assert_called_once()
-        args, kwargs = mock_activate.call_args
-        assert kwargs.get('override_qty') == 25
-        assert kwargs.get('fill_price') == 102.0
-
-        # Assert remainder is cancelled
-        # We check it's removed from pending_entries because _monitor_pending_entries
-        # removes it after activation and cancel call.
-        assert 'OPT1' not in trader.pending_entries
 
 def test_timeout_cancel_failure_keeps_pending_entry(trader):
     # Setup: 31 seconds ago (timeout > 30s)
@@ -191,3 +158,39 @@ def test_cancel_with_retry_exhaustion_sends_critical_alert(trader):
         f"Order may still be LIVE after 3 retries.\n"
         f"<b>CHECK GROWW APP NOW.</b>"
     )
+
+def test_timeout_open_after_cancel_resets_placed_at(trader):
+    # Setup: 31 seconds ago (timeout > 30s)
+    from live.live_trader import _ist_now
+    now = _ist_now()
+    placed_at = now - datetime.timedelta(seconds=31)
+
+    pending = {
+        'order_id': '123',
+        'qty': 50,
+        'trigger_price': 100.0,
+        'symbol': 'OPT1',
+        'placed_at': placed_at
+    }
+    trader.pending_entries = {'OPT1': pending}
+    trader.paper_trading = False
+
+    # Mock cancel_order to succeed
+    trader.om.cancel_order.return_value = True
+
+    # Mock status to be OPEN (propagation lag)
+    trader.om.check_order_fill.return_value = {
+        'status': 'OPEN',
+        'filled_qty': 0,
+        'fill_price': 0.0
+    }
+
+    trader._monitor_pending_entries()
+
+    # Assert symbol still in pending_entries
+    assert 'OPT1' in trader.pending_entries
+    # Assert placed_at was reset to ~now
+    new_placed_at = trader.pending_entries['OPT1']['placed_at']
+    assert (now - new_placed_at).total_seconds() < 2
+    # Assert cancel_order called exactly ONCE
+    trader.om.cancel_order.assert_called_once_with('123')

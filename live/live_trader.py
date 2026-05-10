@@ -139,6 +139,10 @@ class LiveTrader:
         self._state_save_alert_sent: bool = False
         self._halt_alert_sent: bool = False
 
+        self.circuit_breaker_active_symbols: set = set()   # Per-symbol data gap breakers
+        self._continuity_restore_alert_timestamps: dict = {}  # debounce for restore alerts
+        self._continuity_alert_timestamps: dict = {}         # debounce for gap alerts
+
         # Trading window
         self.start_time = datetime.strptime(config['trading']['window']['start'], "%H:%M").time()
         self.end_time = datetime.strptime(config['trading']['window']['end'], "%H:%M").time()
@@ -750,11 +754,6 @@ class LiveTrader:
 
                             # [CONT-02] Check for broken continuity
                             missed = self.candle_builder.missed_candles(symbol, current_time=now)
-                            if not hasattr(self, 'circuit_breaker_active_symbols'):
-                                self.circuit_breaker_active_symbols = set()
-                            if not hasattr(self, '_continuity_alert_timestamps'):
-                                self._continuity_alert_timestamps = {}
-
                             if missed >= 1:
                                 self.logger.warning(f"[{symbol}] DATA GAP DETECTED: missed {missed} candles ({missed * 15} min).")
                                 last_alert = self._continuity_alert_timestamps.get(symbol, 0)
@@ -811,9 +810,6 @@ class LiveTrader:
         [BUG-CONTINUITY-RESTORE-TIMING-01] Check if data continuity is restored
         on every tick to clear the circuit breaker faster.
         """
-        if not hasattr(self, 'circuit_breaker_active_symbols'):
-            self.circuit_breaker_active_symbols = set()
-
         if symbol not in self.circuit_breaker_active_symbols:
             return
 
@@ -824,13 +820,10 @@ class LiveTrader:
             self.candle_builder.clear_continuity_flag(symbol)
 
             # Debounced Telegram alert (max once per hour per symbol)
-            if not hasattr(self, '_continuity_restore_alerts'):
-                self._continuity_restore_alerts = {}
-
-            last_alert = self._continuity_restore_alerts.get(symbol, 0)
+            last_alert = self._continuity_restore_alert_timestamps.get(symbol, 0)
             if (now.timestamp() - last_alert) > 3600:
                 self.telegram._send_to_owner(f"✅ <b>Continuity Restored</b>\n{symbol} is now tradable again.")
-                self._continuity_restore_alerts[symbol] = now.timestamp()
+                self._continuity_restore_alert_timestamps[symbol] = now.timestamp()
 
     def _round_to_tick(self, price, underlying=None):
         """Round price to tick size for given underlying."""
@@ -1008,7 +1001,7 @@ class LiveTrader:
                     last_row_data = df.iloc[-1].to_dict()
                     last_row = pd.Series(last_row_data)
 
-                    if hasattr(self, 'circuit_breaker_active_symbols') and symbol in self.circuit_breaker_active_symbols:
+                    if symbol in self.circuit_breaker_active_symbols:
                         self.logger.debug(f"[{symbol}] Skipping: per-symbol circuit breaker active (data gap)")
                         continue
 
@@ -1861,9 +1854,12 @@ class LiveTrader:
                         # If still OPEN/TRIGGER_PENDING after cancel call, keep it for next sweep.
                         if status not in ['COMPLETE', 'FILLED', 'EXECUTED', 'COMPLETED', 'CANCELLED', 'REJECTED', 'FAILED']:
                             self.logger.warning(
-                                f"⏳ Order {order_id} ({symbol}) still {status} after cancel. "
-                                f"Retaining in pending_entries for re-check."
+                                f"[TIMEOUT] {symbol} ({order_id}) still {status} after cancel. "
+                                f"Marking placed_at=now to prevent re-cancel storm. "
+                                f"Will re-check next cycle."
                             )
+                            # Reset placed_at to prevent re-triggering timeout next cycle
+                            self.pending_entries[symbol]['placed_at'] = _ist_now()
                             continue
 
                 if is_order_filled(status):

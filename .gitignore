@@ -34,7 +34,9 @@ planning/
 .windsurfrules
 CLAUDE.md
 
-# Persistence
+# Runtime-generated state files (do not commit)
 data/strategy_state.json
+data/bot_trades.json
 data/trades.json
 data/pending_entries.json
+data/candle_state/
