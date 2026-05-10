@@ -20,6 +20,7 @@ class DataManager:
         # Cache for option chain mapping: (underlying, date) -> { (strike, type): trading_symbol }
         self.chain_cache = {}
         self.expiry_cache = {}
+        self.failed_downloads = set()  # P-08: Negative cache for failed API downloads
 
     def clear_cache(self, clear_spot=False):
         """
@@ -202,9 +203,15 @@ class DataManager:
                 except Exception as e:
                     self.logger.warning(f"Could not parse expiry from {contract_name} for optimized download: {e}")
 
-                success = self.downloader.download_derivative_data(underlying, contract_name, year, download_start, download_end)
-                if not success and not os.path.exists(filepath):
+                if contract_name in self.failed_downloads:
+                    self.logger.debug(f"Skipping known unavailable contract: {contract_name}")
                     return pd.DataFrame()
+
+                success = self.downloader.download_derivative_data(underlying, contract_name, year, download_start, download_end)
+                if not success:
+                    self.failed_downloads.add(contract_name)
+                    if not os.path.exists(filepath):
+                        return pd.DataFrame()
                 if filepath in self.data_cache: del self.data_cache[filepath]
 
         df = self._load_csv(filepath)

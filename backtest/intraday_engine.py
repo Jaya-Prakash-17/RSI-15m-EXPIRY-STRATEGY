@@ -252,7 +252,7 @@ class IntradayEngine:
         except Exception as e:
             self.logger.warning(f"[PATH CHECK] Could not validate paths for {underlying}: {e}")
 
-    def _is_option_data_tradeable(self, df, backtest_date, warmup_start):
+    def _is_option_data_tradeable(self, df, backtest_date, warmup_start, underlying=None):
         """
         V16-P-05: Data quality filter for option symbols.
         Returns (is_ok, reject_reason).
@@ -265,6 +265,11 @@ class IntradayEngine:
         n_bars = len(df)
 
         if n_bars < min_limit:
+            # V16-P-09: Leniency for SENSEX 2023 (newly launched, sparse data)
+            bd_year = backtest_date.year if hasattr(backtest_date, 'year') else backtest_date.year
+            if underlying == 'SENSEX' and bd_year == 2023 and n_bars >= 20:
+                    return True, f'warning_sensex_2023_low_bars_{n_bars}'
+
             return False, f'insufficient_bars_{n_bars}'
 
         if n_bars < warmup_limit + 1:
@@ -377,7 +382,7 @@ class IntradayEngine:
                     if not df.empty:
                         df = df.sort_values('datetime').reset_index(drop=True)
                         # V16-P-05: Data quality filter
-                        is_ok, reject_reason = self._is_option_data_tradeable(df, date, warmup_start)
+                        is_ok, reject_reason = self._is_option_data_tradeable(df, date, warmup_start, underlying=underlying)
                         if is_ok:
                             option_data[symbol] = df
                             diag['opt_symbols_loaded'] += 1

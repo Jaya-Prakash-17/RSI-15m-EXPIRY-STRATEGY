@@ -125,10 +125,25 @@ class HistoricalDownloader:
                 df = self.client.get_historical_candles(symbol, interval, start_date, end_date)
 
                 # P-03: Suspicious Empty Handle
-                # If df is empty but we requested a multi-day range, it might be a transient API glitch.
-                # Retrying 1-2 times before accepting "No Data" as terminal.
                 if df is not None and df.empty:
-                    # Do not retry on empty df since it's likely just unavailable historical data.
+                    # If this is a derivative contract and we requested a long range,
+                    # try a narrower window (listing date might be after our start_date).
+                    days_diff = (end_date - start_date).days
+                    if days_diff > 14 and '-' in symbol:
+                        self.logger.info(f"Empty data for {symbol} over {days_diff} days. Retrying with 7-day window...")
+                        short_start = end_date - timedelta(days=7)
+                        return self._download_with_retry(symbol, interval, short_start, end_date)
+
+                    # Try uppercase month variation if it's a SENSEX symbol (BSE API is picky)
+                    if "SENSEX" in symbol and any(c.islower() for c in symbol):
+                        # Convert 14Jul23 to 14JUL23
+                        parts = symbol.split('-')
+                        if len(parts) >= 3:
+                            parts[2] = parts[2].upper()
+                            upper_symbol = "-".join(parts)
+                            self.logger.info(f"Retrying SENSEX with uppercase symbol: {upper_symbol}")
+                            return self._download_with_retry(upper_symbol, interval, start_date, end_date)
+
                     return df
 
                 if df is not None and not df.empty:
