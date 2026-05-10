@@ -782,6 +782,7 @@ class LiveTrader:
                         self._ltp_cache[symbol] = (ltp, now)
             except RateLimitExceededError as e:
                 self._consecutive_ltp_failures += 1
+                self._consecutive_halt_failures += 1 # [BUG-HALT-SYNC-01] Count towards market halt
                 self._ltp_failure_window.append(False)
                 # [BUG-STALE-LTP-COUNTER-01] Flapping detection
                 if self._ltp_failure_window.count(False) >= 6 and not self._halt_connectivity_alert_sent:
@@ -1778,24 +1779,30 @@ class LiveTrader:
                             self._activating_now.discard(symbol)
                     continue
 
-                # LIVE TRADING: Check actual broker order status
-                self.rate_limiter.acquire()  # [BUG-RATELIMIT-01]
-                order_status = self.client.get_order_status(order_id)
+                # LIVE TRADING: Check actual broker order status via OrderManager
+                self.rate_limiter.acquire()
+                fill_info = self.om.check_order_fill(order_id, symbol)
 
-                if order_status is None:
-                    continue
+                status = fill_info['status']
+                broker_fill_price = fill_info['fill_price']
+                broker_filled_qty = fill_info['filled_qty']
 
-                status = order_status.get('status', '').upper()
-                broker_fill_price = float(order_status.get('fill_price', 0) or 0)
-                broker_filled_qty = int(order_status.get('filled_quantity', 0) or 0)
-
-                # Task 4: Zero-Fill Reject [SAFE-01]
-                if broker_filled_qty > 0 and broker_fill_price <= 0:
-                    self.logger.critical(
-                        f"🚨 INVALID FILL DATA: Broker reported price ₹{broker_fill_price} "
-                        f"for {broker_filled_qty} units of {symbol}. Logic aborted for this sweep."
-                    )
-                    continue
+                # Task 1.2: 30s Timeout logic for UNFILLED entries
+                placed_at = pending.get('placed_at')
+                is_timeout = False
+                if placed_at and not self.paper_trading:
+                    elapsed = (_ist_now() - placed_at).total_seconds()
+                    if elapsed > 30 and status not in ['COMPLETE', 'FILLED', 'EXECUTED', 'COMPLETED', 'CANCELLED', 'REJECTED']:
+                        self.logger.warning(f"⏳ Entry order {order_id} for {symbol} timed out (>30s). Cancelling...")
+                        is_timeout = True
+                        # Attempt cancellation
+                        cancel_resp = self.om.cancel_order(order_id)
+                        # Re-check status one last time after cancellation to catch race-condition fills
+                        self.rate_limiter.acquire()
+                        fill_info = self.om.check_order_fill(order_id, symbol)
+                        status = fill_info['status']
+                        broker_fill_price = fill_info['fill_price']
+                        broker_filled_qty = fill_info['filled_qty']
 
                 if is_order_filled(status):
                     # ORDER FILLED - Create active trade
@@ -2855,7 +2862,11 @@ class LiveTrader:
                     # Circuit breaker awareness
                     if not self._is_market_open():
                         if not self._halt_alert_sent:
-                            self.logger.warning("NIFTY LTP unavailable — possible market halt or circuit breaker")
+                            self.logger.warning("NIFTY LTP unavailable — possible market halt or circuit breaker. Performing safety checkpoint.")
+                            # PHASE 3: Explicit state checkpoint on halt
+                            self._save_strategy_state()
+                            self.tracker.save_pending_entries(self.pending_entries)
+
                             self.telegram._send(
                                 f"⚠️ <b>Possible Market Halt</b>\n"
                                 f"🕐 {datetime.now().strftime('%H:%M:%S')}\n"

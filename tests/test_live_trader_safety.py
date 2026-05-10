@@ -83,10 +83,10 @@ def test_partial_fill_activation(trader):
     # LIVE mode
     trader.paper_trading = False
 
-    # Mock order status PARTIALLY_FILLED
-    trader.client.get_order_status.return_value = {
+    # Mock OrderManager.check_order_fill
+    trader.om.check_order_fill.return_value = {
         'status': 'PARTIALLY_FILLED',
-        'filled_quantity': 25,
+        'filled_qty': 25,
         'fill_price': 102.0
     }
 

@@ -160,6 +160,38 @@ class OrderManager:
     def check_order_status(self, order_id):
         return self.client.get_order_status(order_id)
 
+    def check_order_fill(self, order_id, symbol):
+        """
+        Unified order fill checker with partial fill support.
+        Returns: {'status': str, 'fill_price': float, 'filled_qty': int}
+        """
+        if self.paper_trading:
+            # Paper trading doesn't have real order IDs, usually handled in LiveTrader
+            # but we return a safe structure if called.
+            return {'status': 'PAPER', 'fill_price': 0.0, 'filled_qty': 0}
+
+        try:
+            status_info = self.client.get_order_status(order_id)
+            if not status_info:
+                return {'status': 'NOT_FOUND', 'fill_price': 0.0, 'filled_qty': 0}
+
+            status = status_info.get('status', '').upper()
+            fill_price = float(status_info.get('fill_price', 0) or 0)
+            filled_qty = int(status_info.get('filled_quantity', 0) or 0)
+
+            # Task 4: Zero-Fill Reject [SAFE-01]
+            if filled_qty > 0 and fill_price <= 0:
+                self.logger.error(f"Invalid fill data for {order_id}: qty={filled_qty} price={fill_price}")
+
+            return {
+                'status': status,
+                'fill_price': fill_price,
+                'filled_qty': filled_qty
+            }
+        except Exception as e:
+            self.logger.error(f"Error checking fill for {order_id}: {e}")
+            return {'status': 'ERROR', 'fill_price': 0.0, 'filled_qty': 0}
+
     def place_partial_exits(self, symbol, trading_symbol, signal, entry_price, actual_qty=None):
         """
         Place partial exit orders for multi-lot mode.
