@@ -1,0 +1,80 @@
+# =============================================================================
+# NIFTY Futures RSI-60 Breakout Strategy -- Configuration
+# Long-only NIFTY Spot signal, Futures execution
+# =============================================================================
+
+backtest:
+  start_date: "2020-01-01"
+  end_date: "2025-12-31"
+  offline_mode: false
+
+capital:
+  initial: 500000           # Starting capital (margin for 1 lot NIFTY Futures)
+
+# Realistic charges for FUTURES segment (much lower than Options)
+# Source: NSE/BSE circulars, Groww fee schedule 2024-2025
+charges:
+  brokerage_per_trade: 20   # Flat brokerage per leg (Rs.20 each side)
+  stt: 0.001               # STT on sell side (Futures: 0.01% = 0.0001)
+  exchange_txn_fee: 0.00019 # NSE exchange txn charges for futures
+  gst: 0.25                 # GST on brokerage + exchange fee
+  sebi_charges: 0.000001    # SEBI charges (Rs.10 per crore)
+  stamp_duty: 0.00002       # Stamp duty on buy side (Rs.200 per crore)
+
+data:
+  download_retry_count: 3
+  storage_path: data         # Reuses existing spot data directory
+
+# NIFTY futures use the same tick size; lot sizes are resolved historically
+indices:
+  NIFTY:
+    tick_size: 0.05
+    lot_size: 65             # Current lot size (historical lookup overrides this)
+
+reporting:
+  slippage_buffer_enabled: true
+  slippage_model: position_scaled
+  slippage_ticks_per_side: 1
+  slippage_min_per_trade: 30
+  slippage_max_per_trade: 300
+
+risk:
+  max_loss_per_day: 6500     # Daily loss limit in INR
+  max_consecutive_losses: 5
+  consecutive_loss_cooldown: 0
+
+strategy:
+  # RSI Configuration
+  rsi:
+    period: 11
+    threshold: 60            # RSI crossover level
+    warmup_periods: 110      # 10x period for stable RSI
+    min_candles_for_signal: 33  # period * 3
+
+  # Signal Timing
+  signal_window_start: "09:45"   # Start scanning after 9:45 AM
+  signal_window_end: "14:45"     # Stop taking new entries
+
+  # Entry Rules
+  alert_validity_candles: 1      # Entry allowed only on NEXT candle after alert
+
+  # Risk Management
+  lots_per_trade: 1              # 1 lot of NIFTY Futures
+  exit_mode: single_lot          # Single lot with trailing SL
+  single_lot_exit_target: 3      # Exit at T3 (3x range)
+
+  # SL Config
+  min_sl_pct: 0.001              # 0.1% SL floor (minimal for index futures)
+  safe_sl_mode: false
+  safe_sl_max_loss: 5000
+
+  # Other
+  direction_filter_enabled: false
+  rsi_debug: false
+  max_position_pct: 1.0          # Allow full capital allocation
+
+trading:
+  window:
+    start: "09:15"
+    end: "15:30"
+    auto_square_off: "15:15"
