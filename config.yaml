@@ -48,6 +48,7 @@ risk:
   max_consecutive_losses: 3     # Circuit breaker: halt after N consecutive losses
   consecutive_loss_cooldown: 0  # 0 = no new trades for rest of session
   max_loss_per_day: 6000       # Reverted for testing: Rs.6000
+  slippage_abort_min_points: 2 # ₹2 absolute gap threshold for OTM options
   # For paper/backtest stress-test: can use 6000
   max_slippage_pct: 0.02       # [SLIP-01] Max allowed slippage (2%) before entry block or exit alert
 

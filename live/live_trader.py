@@ -172,9 +172,11 @@ class LiveTrader:
             )
         if 'gap_abort_pct' in config.get('risk', {}):
             self.logger.warning("'gap_abort_pct' is deprecated. Rename to 'slippage_abort_pct' in config YAML.")
-        self.logger.info(f"Slippage abort threshold: {self.slippage_abort_pct:.2%}")
-
-        self.slippage_abort_min_points = config.get('risk', {}).get('slippage_abort_min_points', 5)
+        self.slippage_abort_min_points = config.get('risk', {}).get('slippage_abort_min_points', 2)
+        self.logger.info(
+            f"Slippage abort: pct={self.slippage_abort_pct:.2%} AND "
+            f"pts={self.slippage_abort_min_points} (both must be exceeded)"
+        )
 
         # [BUG-STALE-LTP-COUNTER-01] LTP failure window for flapping detection
         from collections import deque
@@ -780,6 +782,7 @@ class LiveTrader:
                 for symbol, ltp in batch_results.items():
                     if ltp:
                         self._ltp_cache[symbol] = (ltp, now)
+                        self._check_and_restore_continuity(symbol, now)
             except RateLimitExceededError as e:
                 self._consecutive_ltp_failures += 1
                 self._consecutive_halt_failures += 1 # [BUG-HALT-SYNC-01] Count towards market halt
@@ -802,6 +805,32 @@ class LiveTrader:
                 return
             except Exception as e:
                 self.logger.error(f"Error in batch LTP polling: {e}")
+
+    def _check_and_restore_continuity(self, symbol, now):
+        """
+        [BUG-CONTINUITY-RESTORE-TIMING-01] Check if data continuity is restored
+        on every tick to clear the circuit breaker faster.
+        """
+        if not hasattr(self, 'circuit_breaker_active_symbols'):
+            self.circuit_breaker_active_symbols = set()
+
+        if symbol not in self.circuit_breaker_active_symbols:
+            return
+
+        missed = self.candle_builder.missed_candles(symbol, now)
+        if missed == 0:
+            self.logger.info(f"[{symbol}] Data continuity restored. Clearing circuit breaker.")
+            self.circuit_breaker_active_symbols.discard(symbol)
+            self.candle_builder.clear_continuity_flag(symbol)
+
+            # Debounced Telegram alert (max once per hour per symbol)
+            if not hasattr(self, '_continuity_restore_alerts'):
+                self._continuity_restore_alerts = {}
+
+            last_alert = self._continuity_restore_alerts.get(symbol, 0)
+            if (now.timestamp() - last_alert) > 3600:
+                self.telegram._send_to_owner(f"✅ <b>Continuity Restored</b>\n{symbol} is now tradable again.")
+                self._continuity_restore_alerts[symbol] = now.timestamp()
 
     def _round_to_tick(self, price, underlying=None):
         """Round price to tick size for given underlying."""
@@ -1471,12 +1500,15 @@ class LiveTrader:
                 f"qty={qty} — possible partial-fill data corruption. No position opened."
             )
             self.strategy.consume_alert(original_symbol)
+            self._save_strategy_state()
             return
 
         # [SAFE-01] Zero-Fill Hard Reject (Bug #8)
         if fill_price <= 0:
             self.logger.critical(f"🛑 REJECTED: Order {order_id} has fill_price={fill_price}. Data corruption risk.")
             self.telegram._send_to_owner(f"🚨 <b>Order Rejected</b>\nInvalid fill price {fill_price} for {original_symbol}. Logic aborted.")
+            self.strategy.consume_alert(original_symbol)
+            self._save_strategy_state()
             return
 
         if override_qty is not None and override_qty != pending['qty']:
@@ -1508,6 +1540,7 @@ class LiveTrader:
                 f"Trigger: \u20b9{trigger_price} | Fill: \u20b9{fill_price} | Gap: {gap_pct*100:.1f}%\n"
                 f"R:R too degraded — position closed immediately."
             )
+            self._save_strategy_state()
             return  # Do NOT create any trade record
 
         elif gap_pct > RECALC_THRESHOLD:
@@ -1526,6 +1559,7 @@ class LiveTrader:
                     )
                     self.om.place_exit_order(trading_symbol, qty, trading_symbol, "INVERTED_SL_ABORT")
                     self.strategy.consume_alert(original_symbol)
+                    self._save_strategy_state()
                     self.telegram._send_to_owner(f"\U0001f6a8 Inverted SL abort: {original_symbol}")
                     return
             else:
@@ -1540,6 +1574,7 @@ class LiveTrader:
                     )
                     self.om.place_exit_order(trading_symbol, qty, trading_symbol, "INVERTED_SL_ABORT")
                     self.strategy.consume_alert(original_symbol)
+                    self._save_strategy_state()
                     self.telegram._send(
                         f"🚨 <b>Inverted SL Abort</b>\nSymbol: <code>{original_symbol}</code>\n"
                         f"new_sl={new_sl} >= fill={fill_price}. Position closed immediately."
@@ -1581,6 +1616,7 @@ class LiveTrader:
             )
             self.om.place_exit_order(trading_symbol, qty, trading_symbol, "INVERTED_SL_ABORT")
             self.strategy.consume_alert(original_symbol)
+            self._save_strategy_state()
             self.telegram._send_to_owner(
                 f"🚨 Inverted SL abort (normal path): {original_symbol} "
                 f"sl={signal.get('sl')} fill={fill_price}"
@@ -1601,6 +1637,8 @@ class LiveTrader:
                 f"Aborting trade for {original_symbol}."
             )
             self.om.place_exit_order(trading_symbol, qty, trading_symbol, "INVERTED_SL_ABORT")
+            self.strategy.consume_alert(original_symbol)
+            self._save_strategy_state()
             self.telegram._send_to_owner(
                 f"🚨 Post-rounding inverted SL abort: {original_symbol} "
                 f"sl_price={sl_price} fill={fill_price}"
@@ -1795,14 +1833,38 @@ class LiveTrader:
                     if elapsed > 30 and status not in ['COMPLETE', 'FILLED', 'EXECUTED', 'COMPLETED', 'CANCELLED', 'REJECTED']:
                         self.logger.warning(f"⏳ Entry order {order_id} for {symbol} timed out (>30s). Cancelling...")
                         is_timeout = True
-                        # Attempt cancellation
+                        # BUG-TIMEOUT-CANCEL-RACE-01: Check cancel response and add propagation delay
                         cancel_resp = self.om.cancel_order(order_id)
+                        if not cancel_resp:
+                            self.logger.critical(
+                                f"[TIMEOUT] Cancel FAILED for {order_id} ({symbol}). "
+                                f"Keeping in pending_entries for re-check next cycle."
+                            )
+                            self.telegram._send_to_owner(
+                                f"🚨 <b>Timeout Cancel Failed</b>\n"
+                                f"Symbol: <code>{symbol}</code>\nOrder: {order_id}\n"
+                                f"SL-M order may still be live. Check Groww NOW."
+                            )
+                            continue  # DO NOT remove from pending_entries
+
+                        # Add 1s propagation delay before final status check
+                        time.sleep(1)
+
                         # Re-check status one last time after cancellation to catch race-condition fills
                         self.rate_limiter.acquire()
                         fill_info = self.om.check_order_fill(order_id, symbol)
                         status = fill_info['status']
                         broker_fill_price = fill_info['fill_price']
                         broker_filled_qty = fill_info['filled_qty']
+
+                        # Only remove if status is confirmed as terminal.
+                        # If still OPEN/TRIGGER_PENDING after cancel call, keep it for next sweep.
+                        if status not in ['COMPLETE', 'FILLED', 'EXECUTED', 'COMPLETED', 'CANCELLED', 'REJECTED', 'FAILED']:
+                            self.logger.warning(
+                                f"⏳ Order {order_id} ({symbol}) still {status} after cancel. "
+                                f"Retaining in pending_entries for re-check."
+                            )
+                            continue
 
                 if is_order_filled(status):
                     # ORDER FILLED - Create active trade

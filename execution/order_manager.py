@@ -163,25 +163,43 @@ class OrderManager:
     def check_order_fill(self, order_id, symbol):
         """
         Unified order fill checker with partial fill support.
-        Returns: {'status': str, 'fill_price': float, 'filled_qty': int}
+        Ensures a consistent return schema: {'status', 'fill_price', 'filled_qty'}.
         """
         if self.paper_trading:
-            # Paper trading doesn't have real order IDs, usually handled in LiveTrader
-            # but we return a safe structure if called.
+            # Paper trading doesn't have real order IDs
             return {'status': 'PAPER', 'fill_price': 0.0, 'filled_qty': 0}
 
         try:
             status_info = self.client.get_order_status(order_id)
             if not status_info:
+                self.logger.warning(f"No status info returned from broker for {order_id} ({symbol})")
                 return {'status': 'NOT_FOUND', 'fill_price': 0.0, 'filled_qty': 0}
 
-            status = status_info.get('status', '').upper()
-            fill_price = float(status_info.get('fill_price', 0) or 0)
-            filled_qty = int(status_info.get('filled_quantity', 0) or 0)
+            # BUG-ORDER-MGR-FILL-SCHEMA-01: Normalize Groww response keys defensively
+            status = str(status_info.get('status', 'UNKNOWN')).upper()
+
+            # Use multiple possible keys for robustness
+            raw_fill_price = status_info.get('fill_price') or status_info.get('avg_price') or 0.0
+            raw_filled_qty = status_info.get('filled_quantity') or status_info.get('filled_qty') or 0
+
+            try:
+                fill_price = float(raw_fill_price)
+            except (ValueError, TypeError):
+                self.logger.warning(f"Malformed fill_price '{raw_fill_price}' for {order_id}. Defaulting to 0.0")
+                fill_price = 0.0
+
+            try:
+                filled_qty = int(raw_filled_qty)
+            except (ValueError, TypeError):
+                self.logger.warning(f"Malformed filled_qty '{raw_filled_qty}' for {order_id}. Defaulting to 0")
+                filled_qty = 0
 
             # Task 4: Zero-Fill Reject [SAFE-01]
             if filled_qty > 0 and fill_price <= 0:
-                self.logger.error(f"Invalid fill data for {order_id}: qty={filled_qty} price={fill_price}")
+                self.logger.error(
+                    f"INVALID FILL DATA: Broker reported qty={filled_qty} but price=₹{fill_price} "
+                    f"for {symbol} ({order_id}). Status: {status}. Raw: {status_info}"
+                )
 
             return {
                 'status': status,
@@ -189,7 +207,7 @@ class OrderManager:
                 'filled_qty': filled_qty
             }
         except Exception as e:
-            self.logger.error(f"Error checking fill for {order_id}: {e}")
+            self.logger.error(f"Critical error in check_order_fill for {order_id}: {e}", exc_info=True)
             return {'status': 'ERROR', 'fill_price': 0.0, 'filled_qty': 0}
 
     def place_partial_exits(self, symbol, trading_symbol, signal, entry_price, actual_qty=None):
