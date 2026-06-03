@@ -370,8 +370,9 @@ class IntradayEngine:
         strikes = range(int(min_strike), int(max_strike) + strike_step, strike_step)
 
         option_data = {}
+        allowed_types = self.config['strategy'].get('allowed_opt_types', ['CE', 'PE'])
         for strike in strikes:
-            for opt_type in ['CE', 'PE']:
+            for opt_type in allowed_types:
                 symbol = self.dm.build_option_symbol(underlying, date.date(), strike, opt_type, use_historical=True)  # Use historical expiry for backtests
                 diag['opt_symbols_attempted'] += 1
                 try:

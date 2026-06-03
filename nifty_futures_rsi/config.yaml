@@ -11,15 +11,37 @@ backtest:
 capital:
   initial: 500000           # Starting capital (margin for 1 lot NIFTY Futures)
 
-# Realistic charges for FUTURES segment (much lower than Options)
-# Source: NSE/BSE circulars, Groww fee schedule 2024-2025
+
+# ============================================================
+# NIFTY FUTURES CHARGES — NSE/SEBI APRIL 2026
+# Conservative/Pessimistic config for robust backtesting
+# ============================================================
 charges:
-  brokerage_per_trade: 20   # Flat brokerage per leg (Rs.20 each side)
-  stt: 0.001               # STT on sell side (Futures: 0.01% = 0.0001)
-  exchange_txn_fee: 0.00019 # NSE exchange txn charges for futures
-  gst: 0.25                 # GST on brokerage + exchange fee
-  sebi_charges: 0.000001    # SEBI charges (Rs.10 per crore)
-  stamp_duty: 0.00002       # Stamp duty on buy side (Rs.200 per crore)
+  # STT: Budget 2026 hiked futures STT from 0.02% → 0.05% on SELL side
+  # Effective April 1, 2026 (Zerodha circular confirmed)
+  # Using 0.05% = 0.0005 as decimal
+  stt: 0.0005                   # 0.05% on sell-side turnover (POST Apr 2026)
+
+  # NSE Exchange Txn: Rs.182.99 per crore = Rs.1.83 per lakh = 0.00183%
+  # Use Rs.1.90 per lakh (slightly pessimistic, broker pass-through markup)
+  exchange_txn_fee: 0.0000190   # 0.0019% (conservative, includes IPFT)
+
+  # Brokerage: Rs.20/order flat (Groww/Zerodha/Dhan)
+  # Rs.40 per round-trip (entry + exit) = coded as per-order
+  brokerage_per_trade: 20       # Per leg; engine should apply × 2 per round-trip
+
+  # GST: 18% on (brokerage + exchange txn fee) only — NOT on STT/stamp
+  gst: 0.18
+
+  # SEBI: Rs.10 per crore of turnover (both sides)
+  sebi_charges: 0.000001        # 1e-6 of turnover ✅ unchanged
+
+  # Stamp duty: Rs.200 per crore on BUY side only
+  stamp_duty: 0.00002           # 0.002% on buy-side ✅ unchanged
+
+  # Slippage: 2 ticks per side (pessimistic) for futures
+  # 1 tick = Rs.0.05 × qty; at 2 lots: 2 × 0.05 × qty × 2 sides
+  slippage_ticks_per_side: 2    # Pessimistic: use 2 (normal days = 1)
 
 data:
   download_retry_count: 3
@@ -59,7 +81,7 @@ strategy:
   alert_validity_candles: 1      # Entry allowed only on NEXT candle after alert
 
   # Risk Management
-  lots_per_trade: 1              # 1 lot of NIFTY Futures
+  lots_per_trade: 2              # 2 lots of NIFTY Futures
   exit_mode: single_lot          # Single lot with trailing SL
   single_lot_exit_target: 3      # Exit at T3 (3x range)
 

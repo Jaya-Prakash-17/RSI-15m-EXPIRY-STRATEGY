@@ -1,6 +1,6 @@
 
 # Holiday data completeness tracking
-HOLIDAY_DATA_VERIFIED_THROUGH = "2024-12-31"  # Update after each annual verification
+HOLIDAY_DATA_VERIFIED_THROUGH = "2026-12-31"  # Update after each annual verification
 HOLIDAY_DATA_SOURCE = "https://www.nseindia.com/resources/exchange-communication-holidays"
 
 NSE_HOLIDAYS = {
@@ -111,12 +111,12 @@ NSE_HOLIDAYS = {
         '2026-04-03',  # Good Friday
         '2026-04-14',  # Dr. Ambedkar Jayanti
         '2026-05-01',  # Maharashtra Day
-        '2026-05-27',  # Bakri Id
-        '2026-08-15',  # Independence Day
+        '2026-05-28',  # Bakri Id
+        '2026-06-26',  # Muharram
+        '2026-09-14',  # Ganesh Chaturthi
         '2026-10-02',  # Gandhi Jayanti
-        '2026-10-10',  # Dussehra
-        '2026-10-20',  # Diwali (Laxmi Pujan)
-        '2026-10-21',  # Diwali (Balipratipada)
+        '2026-10-20',  # Dussehra
+        '2026-11-10',  # Diwali (Balipratipada)
         '2026-11-24',  # Gurunanak Jayanti
         '2026-12-25',  # Christmas
     ],

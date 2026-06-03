@@ -3,34 +3,34 @@
 # =============================================================================
 
 backtest:
-  start_date: "2020-01-01"
-  offline_mode: False
-  end_date: "2025-12-31"
+  start_date: "2026-01-01"
+  offline_mode: false
+  end_date: "2026-06-03"
 
 capital:
   initial: 200000         # Starting trading capital in INR (Example: 200000)
 
 charges:
-  brokerage_per_trade: 40 # Inflated 2X for stress test. Actual: 20 (as of April 2026)
-  exchange_txn_fee: 0.0018 # Inflated 3X for stress test. Actual: 0.0006 (as of April 2026)
-  gst: 0.45                # Inflated 3X for stress test. Actual: 0.20 (as of April 2026)
+  brokerage_per_trade: 20 # Inflated 2X for stress test. Actual: 20 (as of April 2026)
+  exchange_txn_fee: 0.0019 # Inflated 3X for stress test. Actual: 0.0006 (as of April 2026)
+  gst: 0.20                # Inflated 3X for stress test. Actual: 0.20 (as of April 2026)
   sebi_charges: 9.0e-06    # Inflated 3X for stress test. Actual: 0.000003 (as of April 2026)
   stamp_duty: 0.00018      # Inflated 3X for stress test. Actual: 0.00006 (as of April 2026)
-  stt: 0.003               # Inflated 2X for stress test. Actual: 0.0015 (as of April 2026)
+  stt: 0.0015              # Inflated 2X for stress test. Actual: 0.0015 (as of April 2026)
 
 data:
   download_retry_count: 3  # Times to retry failed data downloads (Example: 3)
   storage_path: data       # Directory where CSV data is stored (Example: data)
 
 indices:
-  BANKNIFTY:
-    expiry_day: Tuesday
-    lot_size: 30
-    tick_size: 0.05
-  NIFTY:
-    expiry_day: Tuesday
-    lot_size: 65
-    tick_size: 0.05
+  # BANKNIFTY:
+  #   expiry_day: Tuesday
+  #   lot_size: 30
+  #   tick_size: 0.05
+  # NIFTY:
+  #   expiry_day: Tuesday
+  #   lot_size: 65
+  #   tick_size: 0.05
   SENSEX:
     expiry_day: Thursday
     lot_size: 20
@@ -45,12 +45,12 @@ reporting:
   slippage_ticks_per_side: 1        # Extra price points to add for slippage (Example: 1)
 
 risk:
-  max_consecutive_losses: 3     # Circuit breaker: halt after N consecutive losses
+  max_consecutive_losses: 9     # Circuit breaker: halt after N consecutive losses
   consecutive_loss_cooldown: 0  # 0 = no new trades for rest of session
-  max_loss_per_day: 6000       # Reverted for testing: Rs.6000
-  slippage_abort_min_points: 2 # ₹2 absolute gap threshold for OTM options
+  max_loss_per_day: 5000       # Reverted for testing: Rs.6000
+  slippage_abort_min_points: 5 # ₹2 absolute gap threshold for OTM options
   # For paper/backtest stress-test: can use 6000
-  max_slippage_pct: 0.02       # [SLIP-01] Max allowed slippage (2%) before entry block or exit alert
+  max_slippage_pct: 0.05       # [SLIP-01] Max allowed slippage (2%) before entry block or exit alert
 
 resilience:
   disconnect_emergency_threshold_mins: 10 # [SAFE-02] Mins of disconnect before emergency flatten
@@ -64,9 +64,10 @@ resilience:
 # Rule: Always verify max_sl_distance > typical ATM premium × min_sl_pct
 # ──────────────────────────────────────────────────────────────────────
 strategy:
+  allowed_opt_types: ["CE", "PE"] # Options to look for: ["CE", "PE"], ["CE"], or ["PE"]
   alert_validity_candles: 1        # [BUG-04] Entry allowed only on T+1 (15 min after alert)
-  direction_filter_enabled: true   # Enabled to filter out counter-trend trades and reduce drawdown
-  exit_mode: multi_lot          # Multi-lot scaling reduces drawdown significantly
+  direction_filter_enabled: false   # Enabled to filter out counter-trend trades and reduce drawdown
+  exit_mode: single_lot         # Multi-lot scaling reduces drawdown significantly
   lots_per_trade: 3          # Reverted to 3 to match profitable history
   max_correlated_positions: 2    # Max positions allowed across different indices (Example: 2)
   max_lots: 5                   # Hard cap on total lots allowed per index (Example: 5)
@@ -76,16 +77,16 @@ strategy:
 
   rsi:
     min_candles_for_signal: 33   # period*3 = 11*3
-    period: 11                   # matches production live bot
+    period: 9                   # matches production live bot
     threshold: 60            # RSI 60 to ensure higher momentum and fewer false signals
     warmup_periods: 110          # 10x period = 110 for period=11 (was 100 for period=10x)
-  rsi_debug: true               # Print detailed RSI calculations to logs (Example: false)
+  rsi_debug: false               # Print detailed RSI calculations to logs (Example: false)
   safe_sl_max_loss: 10000        # 3-lot NIFTY: 10000/(3x65)=Rs.51.28/unit max SL distance
-  safe_sl_mode: true             # Use tighter SL based on max loss param — statistically validated
+  safe_sl_mode: false             # Use tighter SL based on max loss param — statistically validated
   signal_window_start: '10:00'  # Time to start looking for signals (Example: '09:45')
-  signal_window_end: '14:45'    # Time to stop taking new trades (Example: '14:30')
+  signal_window_end: '13:45'    # Time to stop taking new trades (Example: '14:30')
   single_lot_exit_target: 2    # Reverted to T3 (3x range) to capture larger moves
-  strike_range: 3               # Number of strikes away from ATM to trade (Example: 3)
+  strike_range: 2               # Number of strikes away from ATM to trade (Example: 3)
   trade_only_on_expiry: false   # If true, only trades on expiry day (Example: false)
 
 trading:

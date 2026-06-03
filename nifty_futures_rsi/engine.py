@@ -277,8 +277,8 @@ class NiftyFuturesEngine:
 
         cost = entry_price * total_qty
 
-        # Capital check (margin-based for futures)
-        margin_required = 200000 * lots  # Rs.2L per lot margin
+        # Capital check (margin-based for futures: 22% of notional)
+        margin_required = self._round_to_tick(total_qty * entry_price * 0.22)
         if self.capital < margin_required:
             self.logger.info(
                 f"Skipping: Insufficient margin ({self.capital:.0f} < {margin_required})"

@@ -114,13 +114,9 @@ class DataManager:
         if need_download:
             if self.offline_mode:
                 self.logger.debug(f"Offline Mode: Skipping download/repair of {symbol} spot data.")
-            elif file_exists and not refresh:
-                # Smart fallback: file exists but has boundary/gap issues
-                # Use existing data without API call, just log the issue
-                self.logger.info(f"Using existing spot data for {symbol} (file present, skipping API repair)")
             else:
-                # File truly missing or refresh requested — must download
-                self.logger.info(f"Spot data for {symbol} {'updating from API...' if refresh else 'not found locally, downloading...'}")
+                # File truly missing, incomplete or refresh requested — must download
+                self.logger.info(f"Spot data for {symbol} {'updating from API...' if refresh else 'not found/incomplete locally, downloading...'}")
                 if gaps:
                     for gs, ge in gaps:
                         self.downloader.download_spot_data(symbol, gs, ge)

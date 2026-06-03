@@ -644,8 +644,9 @@ class LiveTrader:
                 for i in range(-strike_range, strike_range + 1)
             ]
 
+            allowed_types = self.config['strategy'].get('allowed_opt_types', ['CE', 'PE'])
             for strike in strikes:
-                for opt_type in ['CE', 'PE']:
+                for opt_type in allowed_types:
                     symbol = self.dm.build_option_symbol(underlying, expiry_date, strike, opt_type)
 
                     # Ensure nested dict structure

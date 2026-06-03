@@ -35,7 +35,7 @@ from datetime import date, datetime, timedelta
 # Update LAST_VERIFIED after each verification.
 # NSE circular source: https://nseindia.com/regulations/circulars
 # ──────────────────────────────────────────────────────────────────────────────
-CALENDAR_LAST_VERIFIED = "2026-03-01"  # Update this date after each verification
+CALENDAR_LAST_VERIFIED = "2026-06-04"  # Update this date after each verification
 
 logger = logging.getLogger("ExpiryCalendar")
 
